@@ -1,5 +1,4 @@
 import * as path from "path";
-import type * as vscode from "vscode";
 import { LLMClient, type LLMClientOptions } from "../llm/LLMClient";
 import type { ChatMessage, ContentPart, ToolCall } from "../llm/types";
 import type { ToolContext } from "../tools/types";
@@ -26,37 +25,33 @@ function buildSystemPrompt(
   allowMutations: boolean,
   workingMemorySection?: string,
 ): string {
-  const currentDir = root ?? process.cwd();
-  const ws = `Current Working Directory: ${currentDir}
-Active Workspace: ${workspaceName ?? path.basename(currentDir)}
-You have complete, unrestricted access to the local machine and files. You can read, create, edit, rename, and delete files anywhere on the system. Commands can run in any directory.`;
-
-  const gitEvaluationGuidance = `GITHUB REPOSITORIES & ISSUE SOLVING:
-When given a public GitHub repository link or an issue raised under a repo:
-1. If an issue URL or issue number is provided (e.g. 'https://github.com/owner/repo/issues/123'), immediately use the \`fetch_github_issue\` tool to retrieve the complete issue description, error logs, and discussions.
-2. If the repository is not yet cloned locally or you are not inside it, use the \`fetch_repo\` tool (or git CLI) with the repository URL to clone it and automatically switch the active workspace into it.
-3. Explore the project structure using \`list_files\`, \`search_workspace\`, and \`read_file\` to locate the source code files and tests relevant to the issue.
-4. Reproduce the bug or inspect the codebase to pinpoint the root cause.
-5. Implement the fix cleanly using \`edit_file\`, \`create_file\`, or \`multi_edit\`.
-6. Run the project's tests or verification commands using \`run_command\` (e.g. npm test, pytest, cargo test, go test, or custom scripts).
-7. Review your changes with \`run_command({ command: "git diff" })\` to ensure clean, focused modifications without unintended changes.
-8. Provide a clear, concise summary explaining what caused the issue, what was changed, and how it was verified.`;
+  const ws = root
+    ? `WORKSPACE (UNRESTRICTED ACCESS):
+Workspace: ${workspaceName ?? "(unnamed)"}
+Workspace root: ${root}
+You have FULL unrestricted access to the entire filesystem — you can read, write, create,
+and delete files anywhere on this machine. You can also change the active workspace directory
+at any time using the cd command or by cloning a repository with fetch_repo.`
+    : `No workspace folder is currently open. You can clone a repository using fetch_repo,
+or change directory with the run_command cd built-in.`;
 
   const modeGuidance = allowMutations
-    ? `MODE: Auto Edit (Autonomous Execution). Work autonomously to complete the task:
-- Inspect files and directories across the project or system as needed.
-- Create, edit, rename, and multi-edit files directly to accomplish the goal.
-- Run terminal commands, builds, and tests to verify your changes.
-- Keep using tools until the task is fully accomplished, then summarize what you changed.`
+    ? `MODE: Auto Edit (AUTONOMOUS). Work fully autonomously to complete the task:
+- Inspect the repository, search, and read the files you need.
+- Create, edit, rename, multi-edit, and delete files directly to accomplish the goal.
+- Run shell commands (builds, tests, lint, git) without asking for approval.
+- Keep using tools until the task is fully done, then summarize what you changed.
+- Never ask "should I proceed?" — just proceed.`
     : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
-- Inspect files, search, and read the relevant context.
-- Present a clear, numbered plan of what changes you would make and why.
+- Inspect the workspace, search, and read the relevant files.
+- Then explain precisely what changes you would make (which files, what edits, and why).
+- Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
 
   const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
 
-  return `You are ${AGENT_NAME}, an autonomous AI coding agent.
+  return `You are ${AGENT_NAME}, an autonomous AI coding assistant.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
@@ -64,18 +59,45 @@ answer honestly that you are ${AGENT_NAME} running on the "${modelDisplay}" mode
 
 ${ws}
 
-${gitEvaluationGuidance}
-
 ${modeGuidance}${memoryBlock}
 
-Work by reasoning step by step: think, choose a tool, execute it, observe the result,
-then continue until the task is complete. Inspect real files rather than guessing.
+GITHUB REPOSITORIES & ISSUE SOLVING:
+When the user gives you a GitHub repository URL and an issue number (e.g.,
+"https://github.com/owner/repo.git solve issue #42"), follow this EXACT workflow:
 
-Be efficient with tool calls to minimize API usage:
-- When you need several independent files, request them in ONE step with multiple tool
-  calls rather than one at a time.
+  STEP 1 — Fetch the issue FIRST (before any codebase exploration):
+    Use fetch_github_issue with the issue URL or repo + issue_number.
+    Read the full title, body, and comments carefully.
+
+  STEP 2 — Clone or switch to the repository:
+    Use fetch_repo with the repository URL.
+    This automatically switches the active workspace to the cloned repo.
+
+  STEP 3 — Understand the codebase:
+    Use list_files, read_file, search_workspace to understand structure and find relevant code.
+
+  STEP 4 — Implement the fix:
+    Use create_file, edit_file, multi_edit to implement the required changes.
+    Make minimal, targeted changes that directly address the issue.
+
+  STEP 5 — Validate:
+    Use run_command to run tests, build, or lint.
+    Inspect the test/build output. If failures occur, fix them and re-run.
+
+  STEP 6 — Report:
+    Summarize: what the issue was, what files you changed, and how you verified the fix.
+
+IMPORTANT RULES:
+- Never hardcode repository names, issue numbers, or paths in your reasoning.
+- Always use the dynamically cloned repository root as the working directory.
+- fetch_github_issue and fetch_repo are the entry points — use them before anything else.
+- After fetch_repo completes, ALL file tools (read_file, edit_file, etc.) automatically
+  operate inside the cloned repository — no manual path adjustment needed.
+
+EFFICIENCY:
+- When you need several independent files, request them in ONE step with parallel tool calls.
 - Read a file once; reuse what you already saw instead of re-reading it.
-- Read only the parts you need (use line ranges / search) instead of dumping whole large files.
+- Read only the parts you need (line ranges / search) instead of dumping whole large files.
 - Stop as soon as the task is done; don't make extra calls to double-check needlessly.
 
 Be concise and precise. Use fenced code blocks with correct language tags for any code.`;
@@ -89,10 +111,6 @@ function modelDisplayName(apiModelId: string): string {
 /** Map a tool name to a live status shown while it runs. */
 function statusForTool(name: string): AgentStatus {
   switch (name) {
-    case "fetch_github_issue":
-      return "Reading files…";
-    case "fetch_repo":
-      return "Working…";
     case "search_workspace":
       return "Searching workspace…";
     case "list_files":
@@ -106,9 +124,13 @@ function statusForTool(name: string): AgentStatus {
     case "multi_edit":
       return "Editing files…";
     case "delete_file":
-      return "Waiting for approval…";
+      return "Deleting file…";
     case "run_command":
       return "Running terminal command…";
+    case "fetch_github_issue":
+      return "Fetching GitHub issue…";
+    case "fetch_repo":
+      return "Cloning repository…";
     default:
       return "Working…";
   }
@@ -261,10 +283,10 @@ export class ChatSession {
     this.client.setEndpoint(baseUrl, apiKey);
   }
 
-  /** Update the active workspace root and name live. */
-  setWorkspace(root: vscode.Uri, name?: string): void {
-    (this.ctx as any).workspaceRoot = root;
-    this.workspaceName = name ?? (root.fsPath ? path.basename(root.fsPath) : "workspace");
+  /** Switch the active workspace (called when fetch_repo or cd changes the working directory). */
+  setWorkspace(root: { fsPath: string }, name?: string): void {
+    this.ctx.workspaceRoot = root as any;
+    this.workspaceName = name ?? (path.basename(root.fsPath) || root.fsPath);
     this.refreshSystemPrompt();
   }
 
@@ -425,12 +447,6 @@ export class ChatSession {
 
     // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
     this.taskMemory.recordToolExecution(name, args, ok, summary, content);
-    if (this.ctx.workspaceRoot) {
-      const rootPath = this.ctx.workspaceRoot.fsPath;
-      if (rootPath) {
-        this.workspaceName = path.basename(rootPath) || rootPath;
-      }
-    }
     this.refreshSystemPrompt();
 
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
@@ -445,6 +461,7 @@ function describeCall(name: string, args: Record<string, unknown>): string {
     (typeof args.path === "string" && args.path) ||
     (typeof args.query === "string" && args.query) ||
     (typeof args.command === "string" && args.command) ||
+    (typeof args.repo === "string" && args.repo) ||
     "";
   return hint ? `${name} → ${hint}` : name;
 }

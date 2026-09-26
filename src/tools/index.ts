@@ -27,14 +27,15 @@ export function createToolRegistry(): ToolRegistry {
     .register(readActiveEditorTool)
     .register(readSelectionTool)
     .register(searchWorkspaceTool)
+    // GitHub / repository tools
     .register(fetchGithubIssueTool)
-    // Mutating
     .register(fetchRepoTool)
+    // Mutating file tools
     .register(createFileTool)
     .register(editFileTool)
     .register(renameFileTool)
     .register(multiEditTool)
-    // Destructive / side-effecting (require modal confirmation)
+    // Destructive / side-effecting
     .register(deleteFileTool)
     .register(runCommandTool);
   return registry;

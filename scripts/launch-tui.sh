@@ -12,12 +12,12 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Verify build artifacts
 if [ ! -f "$REPO_DIR/dist/cli.js" ]; then
-  echo "Compiling Axiom TUI..."
+  echo "Compiling Daxiom TUI..."
   (cd "$REPO_DIR" && npm run compile)
 fi
 
 # Create a self-cleaning runner script for the separate terminal window
-RUNNER=$(mktemp /tmp/axiom-tui-run-XXXXXX)
+RUNNER=$(mktemp /tmp/daxiom-tui-run-XXXXXX)
 cat << 'EOF' > "$RUNNER"
 #!/bin/bash
 trap 'rm -f "$0"' EXIT INT TERM
@@ -36,23 +36,14 @@ echo "export AI_API_KEY=\"$AI_API_KEY\"" >> "$RUNNER"
 [ -n "$OPENAI_API_KEY" ] && echo "export OPENAI_API_KEY=\"$OPENAI_API_KEY\"" >> "$RUNNER"
 
 if [ $# -gt 0 ]; then
-  printf 'node dist/cli.js' >> "$RUNNER"
+  printf 'exec node dist/cli.js' >> "$RUNNER"
   for arg in "$@"; do
     printf ' %q' "$arg" >> "$RUNNER"
   done
   printf '\n' >> "$RUNNER"
 else
-  echo 'node dist/cli.js' >> "$RUNNER"
+  echo 'exec node dist/cli.js' >> "$RUNNER"
 fi
-
-cat << 'EOF' >> "$RUNNER"
-STATUS=$?
-if [ $STATUS -ne 0 ]; then
-  echo ""
-  echo "Axiom session ended with code $STATUS. Press any key to close..."
-  read -n 1 -s 2>/dev/null || sleep 3
-fi
-EOF
 
 chmod +x "$RUNNER"
 
@@ -95,5 +86,5 @@ else
   exec /bin/bash "$RUNNER"
 fi
 
-echo "Axiom TUI launched in a new terminal window."
+echo "Daxiom TUI launched in a new terminal window."
 exit 0

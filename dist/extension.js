@@ -470,33 +470,30 @@ exports.AGENT_NAME = "Axiom";
 /** Safety bound on tool round-trips within a single user turn. */
 const MAX_ITERATIONS = 25;
 function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection) {
-    const currentDir = root ?? process.cwd();
-    const ws = `Current Working Directory: ${currentDir}
-Active Workspace: ${workspaceName ?? path.basename(currentDir)}
-You have complete, unrestricted access to the local machine and files. You can read, create, edit, rename, and delete files anywhere on the system. Commands can run in any directory.`;
-    const gitEvaluationGuidance = `GITHUB REPOSITORIES & ISSUE SOLVING:
-When given a public GitHub repository link or an issue raised under a repo:
-1. If an issue URL or issue number is provided (e.g. 'https://github.com/owner/repo/issues/123'), immediately use the \`fetch_github_issue\` tool to retrieve the complete issue description, error logs, and discussions.
-2. If the repository is not yet cloned locally or you are not inside it, use the \`fetch_repo\` tool (or git CLI) with the repository URL to clone it and automatically switch the active workspace into it.
-3. Explore the project structure using \`list_files\`, \`search_workspace\`, and \`read_file\` to locate the source code files and tests relevant to the issue.
-4. Reproduce the bug or inspect the codebase to pinpoint the root cause.
-5. Implement the fix cleanly using \`edit_file\`, \`create_file\`, or \`multi_edit\`.
-6. Run the project's tests or verification commands using \`run_command\` (e.g. npm test, pytest, cargo test, go test, or custom scripts).
-7. Review your changes with \`run_command({ command: "git diff" })\` to ensure clean, focused modifications without unintended changes.
-8. Provide a clear, concise summary explaining what caused the issue, what was changed, and how it was verified.`;
+    const ws = root
+        ? `WORKSPACE (UNRESTRICTED ACCESS):
+Workspace: ${workspaceName ?? "(unnamed)"}
+Workspace root: ${root}
+You have FULL unrestricted access to the entire filesystem — you can read, write, create,
+and delete files anywhere on this machine. You can also change the active workspace directory
+at any time using the cd command or by cloning a repository with fetch_repo.`
+        : `No workspace folder is currently open. You can clone a repository using fetch_repo,
+or change directory with the run_command cd built-in.`;
     const modeGuidance = allowMutations
-        ? `MODE: Auto Edit (Autonomous Execution). Work autonomously to complete the task:
-- Inspect files and directories across the project or system as needed.
-- Create, edit, rename, and multi-edit files directly to accomplish the goal.
-- Run terminal commands, builds, and tests to verify your changes.
-- Keep using tools until the task is fully accomplished, then summarize what you changed.`
+        ? `MODE: Auto Edit (AUTONOMOUS). Work fully autonomously to complete the task:
+- Inspect the repository, search, and read the files you need.
+- Create, edit, rename, multi-edit, and delete files directly to accomplish the goal.
+- Run shell commands (builds, tests, lint, git) without asking for approval.
+- Keep using tools until the task is fully done, then summarize what you changed.
+- Never ask "should I proceed?" — just proceed.`
         : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
-- Inspect files, search, and read the relevant context.
-- Present a clear, numbered plan of what changes you would make and why.
+- Inspect the workspace, search, and read the relevant files.
+- Then explain precisely what changes you would make (which files, what edits, and why).
+- Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
     const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
-    return `You are ${exports.AGENT_NAME}, an autonomous AI coding agent.
+    return `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant.
 
 Your name is ${exports.AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
@@ -504,18 +501,45 @@ answer honestly that you are ${exports.AGENT_NAME} running on the "${modelDispla
 
 ${ws}
 
-${gitEvaluationGuidance}
-
 ${modeGuidance}${memoryBlock}
 
-Work by reasoning step by step: think, choose a tool, execute it, observe the result,
-then continue until the task is complete. Inspect real files rather than guessing.
+GITHUB REPOSITORIES & ISSUE SOLVING:
+When the user gives you a GitHub repository URL and an issue number (e.g.,
+"https://github.com/owner/repo.git solve issue #42"), follow this EXACT workflow:
 
-Be efficient with tool calls to minimize API usage:
-- When you need several independent files, request them in ONE step with multiple tool
-  calls rather than one at a time.
+  STEP 1 — Fetch the issue FIRST (before any codebase exploration):
+    Use fetch_github_issue with the issue URL or repo + issue_number.
+    Read the full title, body, and comments carefully.
+
+  STEP 2 — Clone or switch to the repository:
+    Use fetch_repo with the repository URL.
+    This automatically switches the active workspace to the cloned repo.
+
+  STEP 3 — Understand the codebase:
+    Use list_files, read_file, search_workspace to understand structure and find relevant code.
+
+  STEP 4 — Implement the fix:
+    Use create_file, edit_file, multi_edit to implement the required changes.
+    Make minimal, targeted changes that directly address the issue.
+
+  STEP 5 — Validate:
+    Use run_command to run tests, build, or lint.
+    Inspect the test/build output. If failures occur, fix them and re-run.
+
+  STEP 6 — Report:
+    Summarize: what the issue was, what files you changed, and how you verified the fix.
+
+IMPORTANT RULES:
+- Never hardcode repository names, issue numbers, or paths in your reasoning.
+- Always use the dynamically cloned repository root as the working directory.
+- fetch_github_issue and fetch_repo are the entry points — use them before anything else.
+- After fetch_repo completes, ALL file tools (read_file, edit_file, etc.) automatically
+  operate inside the cloned repository — no manual path adjustment needed.
+
+EFFICIENCY:
+- When you need several independent files, request them in ONE step with parallel tool calls.
 - Read a file once; reuse what you already saw instead of re-reading it.
-- Read only the parts you need (use line ranges / search) instead of dumping whole large files.
+- Read only the parts you need (line ranges / search) instead of dumping whole large files.
 - Stop as soon as the task is done; don't make extra calls to double-check needlessly.
 
 Be concise and precise. Use fenced code blocks with correct language tags for any code.`;
@@ -527,10 +551,6 @@ function modelDisplayName(apiModelId) {
 /** Map a tool name to a live status shown while it runs. */
 function statusForTool(name) {
     switch (name) {
-        case "fetch_github_issue":
-            return "Reading files…";
-        case "fetch_repo":
-            return "Working…";
         case "search_workspace":
             return "Searching workspace…";
         case "list_files":
@@ -544,9 +564,13 @@ function statusForTool(name) {
         case "multi_edit":
             return "Editing files…";
         case "delete_file":
-            return "Waiting for approval…";
+            return "Deleting file…";
         case "run_command":
             return "Running terminal command…";
+        case "fetch_github_issue":
+            return "Fetching GitHub issue…";
+        case "fetch_repo":
+            return "Cloning repository…";
         default:
             return "Working…";
     }
@@ -644,10 +668,10 @@ class ChatSession {
     setEndpoint(baseUrl, apiKey) {
         this.client.setEndpoint(baseUrl, apiKey);
     }
-    /** Update the active workspace root and name live. */
+    /** Switch the active workspace (called when fetch_repo or cd changes the working directory). */
     setWorkspace(root, name) {
         this.ctx.workspaceRoot = root;
-        this.workspaceName = name ?? (root.fsPath ? path.basename(root.fsPath) : "workspace");
+        this.workspaceName = name ?? (path.basename(root.fsPath) || root.fsPath);
         this.refreshSystemPrompt();
     }
     reset() {
@@ -788,12 +812,6 @@ class ChatSession {
         }
         // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
         this.taskMemory.recordToolExecution(name, args, ok, summary, content);
-        if (this.ctx.workspaceRoot) {
-            const rootPath = this.ctx.workspaceRoot.fsPath;
-            if (rootPath) {
-                this.workspaceName = path.basename(rootPath) || rootPath;
-            }
-        }
         this.refreshSystemPrompt();
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
         cb.onToolEnd(call.id, ok, summary, content);
@@ -806,6 +824,7 @@ function describeCall(name, args) {
         (typeof args.path === "string" && args.path) ||
         (typeof args.query === "string" && args.query) ||
         (typeof args.command === "string" && args.command) ||
+        (typeof args.repo === "string" && args.repo) ||
         "";
     return hint ? `${name} → ${hint}` : name;
 }
@@ -2104,7 +2123,7 @@ const readActiveEditor_1 = __webpack_require__(19);
 const readSelection_1 = __webpack_require__(20);
 const searchWorkspace_1 = __webpack_require__(21);
 const fetchGithubIssue_1 = __webpack_require__(22);
-const fetchRepo_1 = __webpack_require__(24);
+const fetchRepo_1 = __webpack_require__(25);
 const createFile_1 = __webpack_require__(27);
 const editFile_1 = __webpack_require__(28);
 const renameFile_1 = __webpack_require__(30);
@@ -2125,14 +2144,15 @@ function createToolRegistry() {
         .register(readActiveEditor_1.readActiveEditorTool)
         .register(readSelection_1.readSelectionTool)
         .register(searchWorkspace_1.searchWorkspaceTool)
+        // GitHub / repository tools
         .register(fetchGithubIssue_1.fetchGithubIssueTool)
-        // Mutating
         .register(fetchRepo_1.fetchRepoTool)
+        // Mutating file tools
         .register(createFile_1.createFileTool)
         .register(editFile_1.editFileTool)
         .register(renameFile_1.renameFileTool)
         .register(multiEdit_1.multiEditTool)
-        // Destructive / side-effecting (require modal confirmation)
+        // Destructive / side-effecting
         .register(deleteFile_1.deleteFileTool)
         .register(runCommand_1.runCommandTool);
     return registry;
@@ -2805,236 +2825,253 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchGithubIssueTool = void 0;
 const https = __importStar(__webpack_require__(23));
-const types_1 = __webpack_require__(17);
-function parseIssueUrl(raw) {
-    const trimmed = raw.trim();
-    // Pattern: https://github.com/:owner/:repo/(issues|pull)/:number
-    const urlMatch = trimmed.match(/github\.com\/([^/\s]+)\/([^/\s#]+)\/(issues|pull)\/(\d+)/i);
+const child_process_1 = __webpack_require__(24);
+/** Parse owner/repo/number from various GitHub URL formats or short "owner/repo#N". */
+function parseGitHubIssueRef(ref) {
+    // https://github.com/owner/repo/issues/123
+    // https://github.com/owner/repo/pull/123
+    const urlMatch = ref.match(/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/(?:issues|pull)\/(\d+)/i);
     if (urlMatch) {
+        const [, owner, repo, num] = urlMatch;
         return {
-            owner: urlMatch[1],
-            repo: urlMatch[2].replace(/\.git$/i, ""),
-            isPr: urlMatch[3].toLowerCase() === "pull",
-            issueNumber: parseInt(urlMatch[4], 10),
+            owner,
+            repo,
+            number: parseInt(num, 10),
+            cloneUrl: `https://github.com/${owner}/${repo}.git`,
         };
     }
-    // Pattern: :owner/:repo#:number
-    const shortMatch = trimmed.match(/^([^/\s]+)\/([^/\s#]+)#(\d+)$/);
+    // owner/repo#123
+    const shortMatch = ref.match(/^([^/\s]+)\/([^#\s]+)#(\d+)$/);
     if (shortMatch) {
+        const [, owner, repo, num] = shortMatch;
         return {
-            owner: shortMatch[1],
-            repo: shortMatch[2],
-            issueNumber: parseInt(shortMatch[3], 10),
+            owner,
+            repo,
+            number: parseInt(num, 10),
+            cloneUrl: `https://github.com/${owner}/${repo}.git`,
         };
     }
     return null;
 }
-function httpsGet(url, headers = {}) {
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, {
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                Accept: "text/html,application/xhtml+xml,application/json,*/*",
-                ...headers,
-            },
-            timeout: 15_000,
-        }, (res) => {
-            // Handle HTTP redirects
-            if (res.statusCode &&
-                [301, 302, 307, 308].includes(res.statusCode) &&
-                res.headers.location) {
-                return resolve(httpsGet(res.headers.location, headers));
+/** Check whether the `gh` CLI is available and authenticated. */
+function ghAvailable() {
+    try {
+        (0, child_process_1.execSync)("gh auth status", { stdio: "pipe", timeout: 5000 });
+        return true;
+    }
+    catch {
+        // gh might still work for public repos even without auth
+        try {
+            (0, child_process_1.execSync)("gh --version", { stdio: "pipe", timeout: 3000 });
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+}
+/** Fetch issue via `gh` CLI (most reliable, handles auth automatically). */
+function fetchViaGhCli(owner, repo, number) {
+    try {
+        const json = (0, child_process_1.execSync)(`gh issue view ${number} --repo ${owner}/${repo} --json number,title,body,state,author,labels,comments,url`, { stdio: "pipe", timeout: 15000 }).toString("utf-8");
+        const data = JSON.parse(json);
+        // gh CLI uses "author" not "user", and "url" not "html_url"
+        return {
+            number: data.number,
+            title: data.title,
+            body: data.body ?? "",
+            state: data.state ?? "open",
+            html_url: data.url ?? `https://github.com/${owner}/${repo}/issues/${number}`,
+            user: data.author ? { login: data.author.login } : undefined,
+            labels: data.labels ?? [],
+            comments: (data.comments ?? []).map((c) => ({
+                user: c.author ? { login: c.author.login } : undefined,
+                body: c.body ?? "",
+            })),
+        };
+    }
+    catch {
+        return null;
+    }
+}
+/** Fetch issue via GitHub REST API. */
+function fetchViaRestApi(owner, repo, number, token) {
+    return new Promise((resolve) => {
+        const headers = {
+            "User-Agent": "Axiom-Agent/1.0",
+            Accept: "application/vnd.github.v3+json",
+        };
+        if (token) {
+            headers["Authorization"] = `token ${token}`;
+        }
+        const makeRequest = (url) => new Promise((res, rej) => {
+            const req = https.get(url, { headers }, (resp) => {
+                if (resp.statusCode === 301 || resp.statusCode === 302) {
+                    return makeRequest(resp.headers.location).then(res, rej);
+                }
+                const chunks = [];
+                resp.on("data", (chunk) => chunks.push(chunk));
+                resp.on("end", () => res(Buffer.concat(chunks).toString("utf-8")));
+            });
+            req.on("error", rej);
+            req.setTimeout(15000, () => {
+                req.destroy();
+                rej(new Error("timeout"));
+            });
+        });
+        Promise.all([
+            makeRequest(`https://api.github.com/repos/${owner}/${repo}/issues/${number}`),
+            makeRequest(`https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments`),
+        ])
+            .then(([issueJson, commentsJson]) => {
+            const issue = JSON.parse(issueJson);
+            const comments = JSON.parse(commentsJson);
+            if (!issue.title) {
+                resolve(null);
+                return;
             }
-            let data = "";
-            res.on("data", (chunk) => (data += chunk));
-            res.on("end", () => resolve({ statusCode: res.statusCode || 200, data }));
-        });
-        req.on("timeout", () => {
-            req.destroy();
-            reject(new Error("Request timed out"));
-        });
-        req.on("error", (err) => reject(err));
+            resolve({
+                number: issue.number,
+                title: issue.title,
+                body: issue.body ?? "",
+                state: issue.state ?? "open",
+                html_url: issue.html_url,
+                user: issue.user,
+                labels: issue.labels ?? [],
+                comments: comments.map((c) => ({ user: c.user, body: c.body })),
+            });
+        })
+            .catch(() => resolve(null));
     });
 }
-function cleanHtmlText(html) {
-    return html
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "")
-        .replace(/<br\s*\/?>/gi, "\n")
-        .replace(/<\/p>/gi, "\n\n")
-        .replace(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n```\n$1\n```\n")
-        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
-        .replace(/<[^>]+>/g, "")
-        .replace(/&amp;/g, "&")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+/** Format issue into a markdown context block for the agent. */
+function formatIssue(issue, owner, repo) {
+    const labels = issue.labels && issue.labels.length > 0
+        ? issue.labels.map((l) => l.name).join(", ")
+        : "none";
+    const author = issue.user?.login ?? "unknown";
+    let md = `## GitHub Issue #${issue.number}: ${issue.title}
+
+**Repository:** ${owner}/${repo}
+**URL:** ${issue.html_url}
+**State:** ${issue.state}
+**Author:** ${author}
+**Labels:** ${labels}
+
+### Description
+
+${issue.body || "_No description provided._"}
+`;
+    if (issue.comments && issue.comments.length > 0) {
+        md += `\n### Comments (${issue.comments.length})\n\n`;
+        for (const c of issue.comments.slice(0, 10)) {
+            md += `**${c.user?.login ?? "unknown"}:** ${c.body}\n\n---\n\n`;
+        }
+    }
+    md += `\n### Recommended Next Steps
+
+1. Clone or switch to the repository: \`https://github.com/${owner}/${repo}.git\`
+2. Understand the issue requirements above.
+3. Inspect the repository structure (list_files, read_file, search_workspace).
+4. Implement the required changes (create_file, edit_file, multi_edit).
+5. Run relevant tests/build commands (run_command).
+6. Fix any failures and verify the solution.
+7. Report what was changed and confirm the issue is resolved.
+`;
+    return md;
 }
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
 exports.fetchGithubIssueTool = {
     name: "fetch_github_issue",
-    description: "Fetch the complete description, requirements, error logs, and discussions for a GitHub " +
-        "issue or pull request. Accepts a full GitHub URL (e.g. 'https://github.com/owner/repo/issues/123') " +
-        "or repo and issue number. Returns the issue body, comments, and the repo clone URL.",
+    mutates: false,
+    description: "Fetch a GitHub issue or pull request by URL, or by owner/repo + issue number. " +
+        "Uses gh CLI if available, falls back to GitHub REST API. " +
+        "Returns the issue title, body, labels, and comments formatted as markdown.",
     parameters: {
         type: "object",
         properties: {
             url: {
                 type: "string",
-                description: "Full GitHub issue or PR URL (e.g. 'https://github.com/owner/repo/issues/123').",
+                description: "Full GitHub issue URL, e.g. https://github.com/owner/repo/issues/42. " +
+                    "Or short form: owner/repo#42.",
             },
             repo: {
                 type: "string",
-                description: "Optional repository in 'owner/repo' format.",
+                description: "Repository in owner/repo format (e.g. facebook/react).",
             },
             issue_number: {
                 type: "integer",
-                description: "Optional issue or pull request number.",
+                description: "Issue number (used with the repo parameter).",
             },
         },
     },
     async execute(args, _ctx) {
-        let owner = "";
-        let repo = "";
-        let issueNumber = 0;
-        let isPr = false;
-        if (typeof args.url === "string" && args.url.trim()) {
-            const parsed = parseIssueUrl(args.url);
-            if (parsed) {
-                owner = parsed.owner;
-                repo = parsed.repo;
-                issueNumber = parsed.issueNumber;
-                isPr = !!parsed.isPr;
+        // --- Resolve owner, repo, number ---
+        let owner;
+        let repo;
+        let number;
+        if (typeof args.url === "string" && args.url) {
+            const parsed = parseGitHubIssueRef(args.url);
+            if (!parsed) {
+                return {
+                    content: `Error: could not parse a GitHub issue reference from: ${args.url}`,
+                    isError: true,
+                    summary: "Invalid GitHub issue URL",
+                };
             }
+            ({ owner, repo, number } = parsed);
         }
-        if (!owner && typeof args.repo === "string") {
-            const parts = args.repo.trim().split("/");
-            if (parts.length === 2) {
-                owner = parts[0];
-                repo = parts[1].replace(/\.git$/i, "");
+        else if (typeof args.repo === "string" &&
+            typeof args.issue_number === "number") {
+            const repoStr = args.repo;
+            const parts = repoStr.split("/");
+            if (parts.length !== 2) {
+                return {
+                    content: "Error: repo must be in owner/repo format.",
+                    isError: true,
+                    summary: "Invalid repo format",
+                };
             }
+            [owner, repo] = parts;
+            number = args.issue_number;
         }
-        if (!issueNumber && typeof args.issue_number === "number") {
-            issueNumber = args.issue_number;
+        else {
+            return {
+                content: "Error: provide either 'url' (GitHub issue URL) or 'repo' (owner/repo) + 'issue_number'.",
+                isError: true,
+                summary: "Missing parameters",
+            };
         }
-        if (!owner || !repo || !issueNumber) {
-            throw new types_1.ToolError("Could not determine GitHub repository and issue number. Please provide a valid URL like 'https://github.com/owner/repo/issues/123'.");
+        // --- Try gh CLI first (fastest, most reliable for auth) ---
+        const token = process.env.GITHUB_TOKEN?.trim() ||
+            process.env.GH_TOKEN?.trim() ||
+            undefined;
+        let issue = null;
+        if (ghAvailable()) {
+            issue = fetchViaGhCli(owner, repo, number);
         }
-        const cloneUrl = `https://github.com/${owner}/${repo}.git`;
-        const issueWebUrl = `https://github.com/${owner}/${repo}/${isPr ? "pull" : "issues"}/${issueNumber}`;
-        // Attempt 1: GitHub REST API
-        const apiToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-        const apiHeaders = {
-            Accept: "application/vnd.github.v3+json",
-        };
-        if (apiToken) {
-            apiHeaders["Authorization"] = `Bearer ${apiToken.trim()}`;
+        // --- Fallback: REST API ---
+        if (!issue) {
+            issue = await fetchViaRestApi(owner, repo, number, token);
         }
-        let title = "";
-        let body = "";
-        let state = "open";
-        let author = "";
-        let labels = [];
-        const commentsList = [];
-        let apiSucceeded = false;
-        try {
-            const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
-            const res = await httpsGet(apiUrl, apiHeaders);
-            if (res.statusCode === 200) {
-                const issueData = JSON.parse(res.data);
-                title = issueData.title || "";
-                body = issueData.body || "";
-                state = issueData.state || "open";
-                author = issueData.user?.login || "";
-                labels = (issueData.labels || []).map((l) => l.name || l);
-                apiSucceeded = true;
-                // Also fetch comments if any
-                if (issueData.comments > 0) {
-                    try {
-                        const commentsRes = await httpsGet(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=10`, apiHeaders);
-                        if (commentsRes.statusCode === 200) {
-                            const commentsData = JSON.parse(commentsRes.data);
-                            for (const c of commentsData) {
-                                if (c.body) {
-                                    commentsList.push({
-                                        user: c.user?.login || "user",
-                                        body: c.body,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    catch {
-                        // comments fetch error is non-fatal
-                    }
-                }
-            }
+        if (!issue) {
+            return {
+                content: `Error: could not fetch issue #${number} from ${owner}/${repo}.\n` +
+                    `Possible reasons:\n` +
+                    `- The repository is private and you need to set GITHUB_TOKEN or run \`gh auth login\`.\n` +
+                    `- The issue number does not exist.\n` +
+                    `- GitHub API rate limit exceeded (set GITHUB_TOKEN to raise the limit).`,
+                isError: true,
+                summary: `Failed to fetch issue #${number}`,
+            };
         }
-        catch {
-            // API call failed, fall back to web scraping
-        }
-        // Attempt 2: Fallback to scraping the public web page directly
-        if (!apiSucceeded) {
-            try {
-                const webRes = await httpsGet(issueWebUrl);
-                if (webRes.statusCode === 200) {
-                    const html = webRes.data;
-                    // Extract title
-                    const titleMatch = html.match(/<bdi class="js-issue-title[^>]*>([\s\S]*?)<\/bdi>/i) ||
-                        html.match(/<meta property="og:title" content="([^"]+)"/i) ||
-                        html.match(/<title>([\s\S]*?)<\/title>/i);
-                    if (titleMatch) {
-                        title = cleanHtmlText(titleMatch[1]).replace(/ · GitHub$/i, "");
-                    }
-                    // Extract og:description
-                    const ogDescMatch = html.match(/<meta property="og:description" content="([^"]+)"/i);
-                    const metaDesc = ogDescMatch ? ogDescMatch[1] : "";
-                    // Extract comment bodies from rendered markdown containers
-                    const commentBlocks = [
-                        ...html.matchAll(/class="[^"]*(?:comment-body|markdown-body)[^"]*"[^>]*>([\s\S]*?)<\/td>/gi),
-                    ];
-                    if (commentBlocks.length > 0) {
-                        body = cleanHtmlText(commentBlocks[0][1]);
-                        for (let i = 1; i < Math.min(commentBlocks.length, 6); i++) {
-                            const cleaned = cleanHtmlText(commentBlocks[i][1]);
-                            if (cleaned) {
-                                commentsList.push({ user: `Commenter #${i}`, body: cleaned });
-                            }
-                        }
-                    }
-                    else if (metaDesc) {
-                        body = metaDesc;
-                    }
-                }
-            }
-            catch (err) {
-                throw new types_1.ToolError(`Failed to fetch GitHub issue from both API and web page: ${err.message}`);
-            }
-        }
-        if (!title && !body) {
-            throw new types_1.ToolError(`Could not retrieve issue #${issueNumber} from https://github.com/${owner}/${repo}. Please check the URL.`);
-        }
-        const docSections = [
-            `# ${isPr ? "Pull Request" : "Issue"} #${issueNumber}: ${title || "Untitled"}`,
-            `**Repository:** \`${owner}/${repo}\``,
-            `**Git Clone URL:** \`${cloneUrl}\``,
-            `**URL:** ${issueWebUrl}`,
-            `**State:** ${state.toUpperCase()}${author ? ` | **Author:** @${author}` : ""}${labels.length ? ` | **Labels:** ${labels.join(", ")}` : ""}`,
-            "\n## Issue Description\n",
-            body || "(No description body provided in issue)",
-        ];
-        if (commentsList.length > 0) {
-            docSections.push(`\n## Discussion Comments (${commentsList.length})`);
-            for (const comment of commentsList) {
-                docSections.push(`\n### Comment by @${comment.user}:\n${comment.body}`);
-            }
-        }
-        docSections.push("\n---", "**Recommended Next Step:**", `1. Use \`fetch_repo\` with \`url: "${cloneUrl}"\` to clone this repository and switch into it.`, "2. Search the codebase for the relevant files using `search_workspace` or `list_files`.", "3. Inspect and edit files with `read_file`, `edit_file`, and `multi_edit`.", "4. Run tests or verification commands with `run_command`.");
+        const formatted = formatIssue(issue, owner, repo);
         return {
-            content: docSections.join("\n"),
-            summary: `Fetched issue #${issueNumber}: ${title.slice(0, 60)}${title.length > 60 ? "…" : ""}`,
+            content: formatted,
+            isError: false,
+            summary: `Issue #${issue.number}: ${issue.title}`,
         };
     },
 };
@@ -3048,6 +3085,12 @@ module.exports = require("https");
 
 /***/ }),
 /* 24 */
+/***/ ((module) => {
+
+module.exports = require("child_process");
+
+/***/ }),
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3086,188 +3129,221 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchRepoTool = void 0;
-const child_process_1 = __webpack_require__(25);
-const fs = __importStar(__webpack_require__(26));
 const path = __importStar(__webpack_require__(4));
+const fs = __importStar(__webpack_require__(26));
+const child_process_1 = __webpack_require__(24);
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(17);
-const fsutil_1 = __webpack_require__(16);
+const DEFAULT_CLONE_BASE = path.join(process.env.HOME ?? "/tmp", ".axiom", "repos");
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+/** Normalise GitHub SSH URLs to HTTPS. */
+function normalizeGitUrl(raw) {
+    const trimmed = raw.trim();
+    // git@github.com:owner/repo.git → https://github.com/owner/repo.git
+    const sshMatch = trimmed.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+    if (sshMatch) {
+        return `https://${sshMatch[1]}/${sshMatch[2]}.git`;
+    }
+    return trimmed.replace(/\.git$/, "") + ".git";
+}
+/** Extract repo name (last path segment without .git). */
+function repoNameFromUrl(url) {
+    const base = url.replace(/\.git$/, "");
+    return path.basename(base);
+}
+/** Detect primary branch name from remote. */
+function detectDefaultBranch(dir) {
+    try {
+        const out = (0, child_process_1.execSync)("git remote show origin", {
+            cwd: dir,
+            stdio: "pipe",
+            timeout: 10000,
+        }).toString("utf-8");
+        const m = out.match(/HEAD branch:\s*(.+)/);
+        if (m)
+            return m[1].trim();
+    }
+    catch {
+        // ignore
+    }
+    return "main";
+}
+/** Detect project stack for helpful guidance. */
+function detectStack(dir) {
+    const stacks = [];
+    const files = fs.readdirSync(dir).map((f) => f.toLowerCase());
+    if (files.includes("package.json"))
+        stacks.push("Node.js (npm/yarn)");
+    if (files.includes("requirements.txt") || files.includes("pyproject.toml"))
+        stacks.push("Python (pip)");
+    if (files.includes("cargo.toml"))
+        stacks.push("Rust (cargo)");
+    if (files.includes("go.mod"))
+        stacks.push("Go (go build)");
+    if (files.includes("pom.xml") || files.includes("build.gradle"))
+        stacks.push("Java (maven/gradle)");
+    if (files.includes("makefile") || files.includes("gnumakefile"))
+        stacks.push("Make");
+    return stacks;
+}
+/** Run a shell command in a directory, return stdout+stderr. */
+function runIn(cmd, cwd, timeoutMs = 60000) {
+    return new Promise((resolve) => {
+        (0, child_process_1.exec)(cmd, { cwd, timeout: timeoutMs, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
+            resolve((stdout + "\n" + stderr).trim());
+        });
+    });
+}
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
 exports.fetchRepoTool = {
     name: "fetch_repo",
     mutates: true,
-    description: "Clone or fetch a public Git repository from a URL (e.g. GitHub URL) to a local " +
-        "directory, and automatically switch the agent's active working directory and workspace " +
-        "root to that repository. All subsequent tool calls will operate directly inside the cloned repo.",
+    description: "Clone or fetch a public Git repository from a URL and set it as the active workspace. " +
+        "If the repository is already cloned locally (matching URL), it is fetched/pulled instead of re-cloned. " +
+        "After cloning, the active workspace is switched to the repository root so all tools operate inside it. " +
+        "Accepts HTTPS or SSH GitHub URLs. Optional: specify a destination directory, branch, or clone depth.",
     parameters: {
         type: "object",
         properties: {
             url: {
                 type: "string",
-                description: "The Git repository URL (e.g. 'https://github.com/owner/repo' or 'https://github.com/owner/repo.git').",
+                description: "The Git repository URL. Examples:\n" +
+                    "  https://github.com/owner/repo.git\n" +
+                    "  git@github.com:owner/repo.git",
             },
             dest_dir: {
                 type: "string",
-                description: "Optional destination directory path. Defaults to a folder named after the repo in the current working directory.",
+                description: "Optional absolute or relative path where the repo should be cloned. " +
+                    `Defaults to ~/.axiom/repos/<repo-name>.`,
             },
             branch: {
                 type: "string",
-                description: "Optional branch, tag, or commit to checkout.",
+                description: "Optional branch or tag to checkout after cloning. Defaults to the remote HEAD.",
             },
             depth: {
                 type: "integer",
-                description: "Clone depth (default 50). Set to 0 or negative for full clone.",
+                description: "Clone depth (default 50). Use 0 for a full clone.",
             },
         },
         required: ["url"],
     },
     async execute(args, ctx) {
-        const rawUrl = (0, fsutil_1.requireString)(args, "url").trim();
+        const rawUrl = args.url?.trim();
         if (!rawUrl) {
-            throw new types_1.ToolError("Repository URL is required.");
+            return {
+                content: "Error: url is required.",
+                isError: true,
+                summary: "Missing url",
+            };
         }
-        // Parse URL and extract potential tree/branch references like:
-        // https://github.com/owner/repo/tree/branch-name
-        let cleanUrl = rawUrl;
-        let urlBranch;
-        const treeMatch = rawUrl.match(/^(https?:\/\/github\.com\/[^/]+\/[^/]+)\/tree\/([^/]+(?:\/[^/]+)*)\/?$/);
-        if (treeMatch) {
-            cleanUrl = treeMatch[1];
-            urlBranch = treeMatch[2];
-        }
-        else if (cleanUrl.endsWith(".git")) {
-            // keep clean
-        }
-        const branch = typeof args.branch === "string" && args.branch.trim() ? args.branch.trim() : urlBranch;
-        const depth = typeof args.depth === "number" ? args.depth : 50;
-        // Derive repo name: https://github.com/owner/repo -> repo
-        const match = cleanUrl.match(/\/([^/]+?)(?:\.git)?$/);
-        const repoName = match ? match[1] : "repo";
-        // Determine target destination path
-        const baseCwd = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
+        const normalizedUrl = normalizeGitUrl(rawUrl);
+        const repoName = repoNameFromUrl(normalizedUrl);
+        const depth = typeof args.depth === "number" && args.depth >= 0
+            ? args.depth
+            : 50;
+        const requestedBranch = typeof args.branch === "string" ? args.branch.trim() : undefined;
+        // Determine target path
         let targetPath;
         if (typeof args.dest_dir === "string" && args.dest_dir.trim()) {
-            const customDest = args.dest_dir.trim().replace(/^~/, process.env.HOME || "");
-            targetPath = path.isAbsolute(customDest)
-                ? path.normalize(customDest)
-                : path.normalize(path.join(baseCwd, customDest));
+            const d = args.dest_dir.trim().replace(/^~/, process.env.HOME ?? "/tmp");
+            targetPath = path.isAbsolute(d)
+                ? d
+                : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), d);
         }
         else {
-            targetPath = path.normalize(path.join(baseCwd, repoName));
+            targetPath = path.join(DEFAULT_CLONE_BASE, repoName);
         }
-        // Check if target directory already exists and is a git repository
-        const isExistingGit = fs.existsSync(targetPath) &&
-            fs.existsSync(path.join(targetPath, ".git"));
-        let command;
-        if (isExistingGit) {
-            // Fetch latest and optionally switch branch
-            if (branch) {
-                command = `git fetch --all && git checkout ${branch} && git pull origin ${branch}`;
+        const gitDir = path.join(targetPath, ".git");
+        const alreadyCloned = fs.existsSync(gitDir);
+        let log = "";
+        if (alreadyCloned) {
+            // Check if the remote URL matches
+            let existingRemote = "";
+            try {
+                existingRemote = (0, child_process_1.execSync)("git remote get-url origin", {
+                    cwd: targetPath,
+                    stdio: "pipe",
+                })
+                    .toString("utf-8")
+                    .trim();
+            }
+            catch {
+                // ignore
+            }
+            const normalizedExisting = normalizeGitUrl(existingRemote);
+            if (normalizedExisting === normalizedUrl) {
+                log += `Repository already cloned at ${targetPath}. Fetching latest changes...\n`;
+                log += await runIn("git fetch --all --prune", targetPath);
+                log += "\n";
+                log += await runIn("git pull --ff-only", targetPath);
             }
             else {
-                command = `git fetch --all && git pull`;
+                log += `Directory exists but has a different remote (${existingRemote}). Re-cloning...\n`;
+                fs.rmSync(targetPath, { recursive: true, force: true });
+                // fall through to clone — gitDir no longer exists after rmSync
             }
         }
-        else {
-            // Clone fresh
-            const branchFlag = branch ? ` --branch ${branch}` : "";
-            const depthFlag = depth > 0 ? ` --depth ${depth}` : "";
-            command = `git clone${depthFlag}${branchFlag} "${cleanUrl}" "${targetPath}"`;
+        if (!fs.existsSync(gitDir)) {
+            fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+            const depthFlag = depth > 0 ? `--depth ${depth}` : "";
+            const branchFlag = requestedBranch
+                ? `--branch ${requestedBranch}`
+                : "";
+            const cloneCmd = `git clone ${depthFlag} ${branchFlag} ${normalizedUrl} ${targetPath}`.trim();
+            log += `Cloning: ${cloneCmd}\n`;
+            log += await runIn(cloneCmd, path.dirname(targetPath), 120_000);
         }
-        // Run git command
-        const { stdout, stderr, code } = await new Promise((resolve) => {
-            (0, child_process_1.exec)(command, { cwd: isExistingGit ? targetPath : baseCwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (err, out, errOut) => {
-                resolve({
-                    stdout: out || "",
-                    stderr: errOut || "",
-                    code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
-                });
-            });
-        });
-        if (code !== 0) {
-            throw new types_1.ToolError(`Git command failed (exit code ${code}):\n$ ${command}\n${stderr || stdout}`);
+        if (!fs.existsSync(path.join(targetPath, ".git"))) {
+            return {
+                content: `Error: Clone failed. Output:\n${log}`,
+                isError: true,
+                summary: `Failed to clone ${repoName}`,
+            };
         }
-        // Switch working directory and update workspace root
+        // Checkout requested branch if provided
+        if (requestedBranch) {
+            log += "\n";
+            log += await runIn(`git checkout ${requestedBranch}`, targetPath);
+        }
+        // Update process working directory
         try {
             process.chdir(targetPath);
         }
-        catch (err) {
-            throw new types_1.ToolError(`Failed to chdir into ${targetPath}: ${err.message}`);
+        catch {
+            // ignore — some envs restrict chdir
         }
-        const newRootUri = vscode.Uri.file(targetPath);
-        ctx.workspaceRoot = newRootUri;
-        if (vscode.workspace.workspaceFolders) {
-            vscode.workspace.workspaceFolders = [
-                {
-                    uri: newRootUri,
-                    name: path.basename(targetPath) || repoName,
-                    index: 0,
-                },
-            ];
-        }
+        // Switch workspace context so all tools operate inside repo
+        const newRoot = vscode.Uri.file(targetPath);
+        ctx.workspaceRoot = newRoot;
+        vscode.workspace.workspaceFolders = [
+            { uri: newRoot, name: repoName, index: 0 },
+        ];
+        // Fire workspace-changed callback (registered in cli.ts)
         if (typeof ctx.onWorkspaceChanged === "function") {
-            ctx.onWorkspaceChanged(newRootUri);
+            ctx.onWorkspaceChanged(newRoot);
         }
-        // Inspect repository to provide helpful starting context
-        let recentCommit = "";
-        try {
-            recentCommit = (__webpack_require__(25).execSync)("git log -1 --oneline", { cwd: targetPath, encoding: "utf-8" })
-                .trim();
-        }
-        catch {
-            // ignore
-        }
-        let currentBranch = "";
-        try {
-            currentBranch = (__webpack_require__(25).execSync)("git branch --show-current", { cwd: targetPath, encoding: "utf-8" })
-                .trim();
-        }
-        catch {
-            // ignore
-        }
-        // Identify project stack
-        const detected = [];
-        if (fs.existsSync(path.join(targetPath, "package.json"))) {
-            try {
-                const pkg = JSON.parse(fs.readFileSync(path.join(targetPath, "package.json"), "utf-8"));
-                detected.push(`Node.js/npm (${pkg.name || "package"}${pkg.version ? `@${pkg.version}` : ""})`);
-            }
-            catch {
-                detected.push("Node.js/npm");
-            }
-        }
-        if (fs.existsSync(path.join(targetPath, "requirements.txt")) || fs.existsSync(path.join(targetPath, "pyproject.toml"))) {
-            detected.push("Python");
-        }
-        if (fs.existsSync(path.join(targetPath, "Cargo.toml"))) {
-            detected.push("Rust (Cargo)");
-        }
-        if (fs.existsSync(path.join(targetPath, "go.mod"))) {
-            detected.push("Go");
-        }
-        if (fs.existsSync(path.join(targetPath, "pom.xml")) || fs.existsSync(path.join(targetPath, "build.gradle"))) {
-            detected.push("Java");
-        }
-        const sections = [
-            `Successfully ${isExistingGit ? "updated" : "cloned"} repository: ${cleanUrl}`,
-            `Local path: ${targetPath}`,
-            `Current branch: ${currentBranch || branch || "default"}`,
-            recentCommit ? `Latest commit: ${recentCommit}` : "",
-            detected.length ? `Detected stack: ${detected.join(", ")}` : "",
-            `\n✓ Active workspace has been switched to ${targetPath}. All file operations and terminal commands are now scoped to this repository.`,
-        ].filter(Boolean);
+        // Detect stack for helpful context
+        const stacks = detectStack(targetPath);
+        const branch = detectDefaultBranch(targetPath);
+        const stackInfo = stacks.length > 0
+            ? `\nDetected stack: ${stacks.join(", ")}`
+            : "";
+        const summary = `Repository: ${repoName}\n` +
+            `Location: ${targetPath}\n` +
+            `Branch: ${branch}${stackInfo}\n\n` +
+            `Workspace switched to ${targetPath}.\n` +
+            `All tools now operate inside this repository.`;
         return {
-            content: sections.join("\n"),
-            summary: `${isExistingGit ? "Updated" : "Cloned"} ${repoName} (${currentBranch || "ready"})`,
+            content: `${summary}\n\nClone/fetch log:\n${log}`,
+            isError: false,
+            summary: `Cloned ${repoName} → ${targetPath}`,
         };
     },
 };
 
-
-/***/ }),
-/* 25 */
-/***/ ((module) => {
-
-module.exports = require("child_process");
 
 /***/ }),
 /* 26 */
@@ -3868,20 +3944,21 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(25);
+const child_process_1 = __webpack_require__(24);
 const path = __importStar(__webpack_require__(4));
 const vscode = __importStar(__webpack_require__(1));
 const types_1 = __webpack_require__(17);
 const fsutil_1 = __webpack_require__(16);
-const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_OUTPUT_CHARS = 20_000;
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes — enough for builds/tests
+const MAX_OUTPUT_CHARS = 30_000;
 exports.runCommandTool = {
     name: "run_command",
     mutates: true,
-    description: "Run a shell command and return its stdout, stderr, and exit code. Use for " +
-        "builds, tests, git operations, file inspection, scripts, etc. Supports optional " +
-        "custom cwd to run in any directory. Special commands: 'cd <dir>' persistently " +
-        "moves the agent's working directory, and 'pwd' prints current directory.",
+    description: "Run a shell command and return its stdout/stderr and exit code. " +
+        "Use for builds, tests, linters, git operations, and any other shell commands. " +
+        "Supports an optional `cwd` parameter to run in a specific directory. " +
+        "The `cd <dir>` built-in updates the persistent working directory for subsequent commands. " +
+        "Commands run non-interactively; do not start long-lived watchers or servers.",
     parameters: {
         type: "object",
         properties: {
@@ -3891,7 +3968,7 @@ exports.runCommandTool = {
             },
             cwd: {
                 type: "string",
-                description: "Directory path to execute the command in. Defaults to current working directory, but can be any system path.",
+                description: "Optional working directory for this command. Defaults to the current workspace root.",
             },
             timeout_ms: {
                 type: "integer",
@@ -3901,73 +3978,77 @@ exports.runCommandTool = {
         required: ["command"],
     },
     async execute(args, ctx) {
-        const command = (0, fsutil_1.requireString)(args, "command");
+        const command = (0, fsutil_1.requireString)(args, "command").trim();
         const timeout = typeof args.timeout_ms === "number" && args.timeout_ms > 0
-            ? Math.min(args.timeout_ms, 5 * 60_000)
+            ? Math.min(args.timeout_ms, 10 * 60_000)
             : DEFAULT_TIMEOUT_MS;
-        const baseDir = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
-        const customCwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd.trim() : undefined;
-        const cwd = customCwd
-            ? customCwd.startsWith("~")
-                ? path.normalize(path.join(process.env.HOME || "", customCwd.slice(1)))
-                : path.isAbsolute(customCwd)
-                    ? path.normalize(customCwd)
-                    : path.normalize(path.join(baseDir, customCwd))
-            : baseDir;
-        // In manual mode ask for confirmation; in auto mode run directly.
-        if (!ctx.terminalAutoRun && !ctx.autoEdit) {
+        // --- Built-in: cd ---
+        // Handles `cd <dir>` by updating the workspace context persistently
+        if (/^cd(\s+.*)?$/.test(command)) {
+            const target = command.slice(2).trim() || process.env.HOME || "/";
+            const expanded = target.startsWith("~/")
+                ? path.join(process.env.HOME ?? "/", target.slice(2))
+                : target.startsWith("~")
+                    ? process.env.HOME ?? "/"
+                    : target;
+            const resolved = path.isAbsolute(expanded)
+                ? expanded
+                : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), expanded);
+            try {
+                process.chdir(resolved);
+                const newRoot = vscode.Uri.file(resolved);
+                ctx.workspaceRoot = newRoot;
+                vscode.workspace.workspaceFolders = [
+                    {
+                        uri: newRoot,
+                        name: path.basename(resolved) || resolved,
+                        index: 0,
+                    },
+                ];
+                if (typeof ctx.onWorkspaceChanged === "function") {
+                    ctx.onWorkspaceChanged(newRoot);
+                }
+                return {
+                    content: `Changed directory to: ${resolved}`,
+                    isError: false,
+                    summary: `cd → ${resolved}`,
+                };
+            }
+            catch (err) {
+                return {
+                    content: `Error: ${err.message}`,
+                    isError: true,
+                    summary: `cd failed`,
+                };
+            }
+        }
+        // --- Built-in: pwd ---
+        if (command === "pwd") {
+            const cwd = ctx.workspaceRoot?.fsPath ?? process.cwd();
+            return { content: cwd, isError: false, summary: `pwd: ${cwd}` };
+        }
+        // --- Determine working directory ---
+        let cwd;
+        if (typeof args.cwd === "string" && args.cwd.trim()) {
+            const rawCwd = args.cwd.trim().replace(/^~/, process.env.HOME ?? "/");
+            cwd = path.isAbsolute(rawCwd)
+                ? rawCwd
+                : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), rawCwd);
+        }
+        else {
+            // Use ctx.workspaceRoot if set, else process.cwd()
+            cwd = ctx.workspaceRoot?.fsPath ?? process.cwd();
+        }
+        // --- Manual mode: ask for confirmation ---
+        if (!ctx.terminalAutoRun) {
             const approved = await ctx.confirm("Run this command?", `${command}\n\nWorking directory:\n${cwd}`);
             if (!approved) {
                 throw new types_1.ToolDeniedError(`Running "${command}" was declined by the user.`);
             }
         }
-        // Direct support for cd command to change process working directory persistently
-        const cdMatch = command.match(/^\s*cd(?:\s+(.+))?\s*$/);
-        if (cdMatch) {
-            const rawTarget = cdMatch[1]?.trim() || "~";
-            const target = rawTarget.startsWith("~")
-                ? path.join(process.env.HOME || "", rawTarget.slice(1))
-                : rawTarget;
-            const resolved = path.isAbsolute(target)
-                ? path.normalize(target)
-                : path.normalize(path.join(cwd, target));
-            try {
-                process.chdir(resolved);
-                const newUri = vscode.Uri.file(resolved);
-                ctx.workspaceRoot = newUri;
-                if (vscode.workspace.workspaceFolders) {
-                    vscode.workspace.workspaceFolders = [
-                        {
-                            uri: newUri,
-                            name: path.basename(resolved) || resolved,
-                            index: 0,
-                        },
-                    ];
-                }
-                if (typeof ctx.onWorkspaceChanged === "function") {
-                    ctx.onWorkspaceChanged(newUri);
-                }
-                return {
-                    content: `Working directory changed to: ${resolved}`,
-                    summary: `Changed directory to ${resolved}`,
-                };
-            }
-            catch (err) {
-                return {
-                    content: `Failed to change directory to ${resolved}: ${err.message}`,
-                    isError: true,
-                    summary: `cd failed: ${err.message}`,
-                };
-            }
-        }
-        if (command.trim() === "pwd") {
-            return {
-                content: cwd,
-                summary: `pwd: ${cwd}`,
-            };
-        }
+        // --- Execute ---
         const { stdout, stderr, code, timedOut } = await new Promise((resolve) => {
-            const child = (0, child_process_1.exec)(command, { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
+            const child = (0, child_process_1.exec)(command, { cwd, timeout, maxBuffer: 20 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
                 const execErr = err;
                 const timedOut = !!execErr && execErr.signal === "SIGTERM";
                 const code = execErr && typeof execErr.code === "number"
@@ -3977,19 +4058,19 @@ exports.runCommandTool = {
                         : 0;
                 resolve({ stdout: out, stderr: errOut, code, timedOut });
             });
-            // Ensure the process is killed if the timeout elapses.
-            child.on("error", () => resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false }));
+            child.on("error", () => resolve({ stdout: "", stderr: "failed to start process", code: 1, timedOut: false }));
         });
         const clip = (s) => s.length > MAX_OUTPUT_CHARS
             ? s.slice(0, MAX_OUTPUT_CHARS) + "\n… output truncated."
             : s;
-        const sections = [`$ ${command}`, `exit code: ${code}${timedOut ? " (timed out)" : ""}`];
-        if (stdout.trim()) {
+        const sections = [
+            `$ ${command}`,
+            `exit code: ${code}${timedOut ? " (timed out)" : ""}`,
+        ];
+        if (stdout.trim())
             sections.push(`stdout:\n${clip(stdout)}`);
-        }
-        if (stderr.trim()) {
+        if (stderr.trim())
             sections.push(`stderr:\n${clip(stderr)}`);
-        }
         return {
             content: sections.join("\n\n"),
             isError: code !== 0,
@@ -4044,6 +4125,7 @@ exports.isInside = isInside;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
 const path = __importStar(__webpack_require__(4));
+const os = __importStar(__webpack_require__(35));
 const types_1 = __webpack_require__(17);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
@@ -4055,9 +4137,6 @@ function toRelative(root, uri) {
         return uri.fsPath;
     }
     const rel = path.relative(root.fsPath, uri.fsPath);
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-        return uri.fsPath;
-    }
     return rel === "" ? "." : rel.split(path.sep).join("/");
 }
 /** True if `candidate` is the root itself or nested strictly inside it. */
@@ -4067,26 +4146,48 @@ function isInside(root, candidate) {
 }
 /**
  * Resolve a model-supplied path to an absolute Uri.
- * Fully unrestricted: resolves relative paths against the workspace root or cwd,
- * supports tilde (~) expansion for the user home directory,
- * and allows absolute paths anywhere on the system.
+ *
+ * UNRESTRICTED MODE (TUI/evaluation):
+ * - Supports tilde expansion (~/ → home dir)
+ * - Absolute paths are always honored as-is
+ * - Relative paths are resolved against workspaceRoot (or cwd if none)
+ * - No approval dialogs — the agent can access any path on the filesystem
+ * - `confirm` param is kept for API compatibility but never called for outside-workspace access
+ *
+ * This is intentional for the evaluation harness where the agent must be able
+ * to clone repos, read/write anywhere, and operate without human approval.
  */
 async function resolvePathInWorkspace(input, root, _confirm) {
     const trimmed = input.trim();
     if (!trimmed) {
         throw new types_1.ToolError("An empty path is not valid.");
     }
-    const home = process.env.HOME || process.env.USERPROFILE || "";
-    const expanded = trimmed.startsWith("~")
-        ? path.join(home, trimmed.slice(1))
-        : trimmed;
-    const basePath = root ? root.fsPath : process.cwd();
-    const absolute = path.isAbsolute(expanded)
-        ? path.normalize(expanded)
-        : path.normalize(path.join(basePath, expanded));
+    // Tilde expansion
+    const expanded = trimmed.startsWith("~/")
+        ? path.join(os.homedir(), trimmed.slice(2))
+        : trimmed.startsWith("~")
+            ? os.homedir()
+            : trimmed;
+    // Resolve to absolute
+    let absolute;
+    if (path.isAbsolute(expanded)) {
+        absolute = path.normalize(expanded);
+    }
+    else if (root) {
+        absolute = path.normalize(path.join(root.fsPath, expanded));
+    }
+    else {
+        absolute = path.normalize(path.join(process.cwd(), expanded));
+    }
     return vscode.Uri.file(absolute);
 }
 
+
+/***/ }),
+/* 35 */
+/***/ ((module) => {
+
+module.exports = require("os");
 
 /***/ })
 /******/ 	]);

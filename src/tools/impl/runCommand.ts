@@ -2,20 +2,21 @@ import { exec } from "child_process";
 import * as path from "path";
 import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
-import { ToolDeniedError } from "../types";
+import { ToolDeniedError, ToolError } from "../types";
 import { requireString } from "../fsutil";
 
-const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_OUTPUT_CHARS = 20_000;
+const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes — enough for builds/tests
+const MAX_OUTPUT_CHARS = 30_000;
 
 export const runCommandTool: Tool = {
   name: "run_command",
   mutates: true,
   description:
-    "Run a shell command and return its stdout, stderr, and exit code. Use for " +
-    "builds, tests, git operations, file inspection, scripts, etc. Supports optional " +
-    "custom cwd to run in any directory. Special commands: 'cd <dir>' persistently " +
-    "moves the agent's working directory, and 'pwd' prints current directory.",
+    "Run a shell command and return its stdout/stderr and exit code. " +
+    "Use for builds, tests, linters, git operations, and any other shell commands. " +
+    "Supports an optional `cwd` parameter to run in a specific directory. " +
+    "The `cd <dir>` built-in updates the persistent working directory for subsequent commands. " +
+    "Commands run non-interactively; do not start long-lived watchers or servers.",
   parameters: {
     type: "object",
     properties: {
@@ -26,7 +27,7 @@ export const runCommandTool: Tool = {
       cwd: {
         type: "string",
         description:
-          "Directory path to execute the command in. Defaults to current working directory, but can be any system path.",
+          "Optional working directory for this command. Defaults to the current workspace root.",
       },
       timeout_ms: {
         type: "integer",
@@ -37,25 +38,72 @@ export const runCommandTool: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
-    const command = requireString(args, "command");
+    const command = requireString(args, "command").trim();
     const timeout =
       typeof args.timeout_ms === "number" && args.timeout_ms > 0
-        ? Math.min(args.timeout_ms, 5 * 60_000)
+        ? Math.min(args.timeout_ms, 10 * 60_000)
         : DEFAULT_TIMEOUT_MS;
 
-    const baseDir = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
-    const customCwd =
-      typeof args.cwd === "string" && args.cwd.trim() ? args.cwd.trim() : undefined;
-    const cwd = customCwd
-      ? customCwd.startsWith("~")
-        ? path.normalize(path.join(process.env.HOME || "", customCwd.slice(1)))
-        : path.isAbsolute(customCwd)
-          ? path.normalize(customCwd)
-          : path.normalize(path.join(baseDir, customCwd))
-      : baseDir;
+    // --- Built-in: cd ---
+    // Handles `cd <dir>` by updating the workspace context persistently
+    if (/^cd(\s+.*)?$/.test(command)) {
+      const target = command.slice(2).trim() || process.env.HOME || "/";
+      const expanded = target.startsWith("~/")
+        ? path.join(process.env.HOME ?? "/", target.slice(2))
+        : target.startsWith("~")
+        ? process.env.HOME ?? "/"
+        : target;
+      const resolved = path.isAbsolute(expanded)
+        ? expanded
+        : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), expanded);
+      try {
+        process.chdir(resolved);
+        const newRoot = vscode.Uri.file(resolved);
+        ctx.workspaceRoot = newRoot;
+        (vscode.workspace as any).workspaceFolders = [
+          {
+            uri: newRoot,
+            name: path.basename(resolved) || resolved,
+            index: 0,
+          },
+        ];
+        if (typeof (ctx as any).onWorkspaceChanged === "function") {
+          (ctx as any).onWorkspaceChanged(newRoot);
+        }
+        return {
+          content: `Changed directory to: ${resolved}`,
+          isError: false,
+          summary: `cd → ${resolved}`,
+        };
+      } catch (err: any) {
+        return {
+          content: `Error: ${err.message}`,
+          isError: true,
+          summary: `cd failed`,
+        };
+      }
+    }
 
-    // In manual mode ask for confirmation; in auto mode run directly.
-    if (!ctx.terminalAutoRun && !ctx.autoEdit) {
+    // --- Built-in: pwd ---
+    if (command === "pwd") {
+      const cwd = ctx.workspaceRoot?.fsPath ?? process.cwd();
+      return { content: cwd, isError: false, summary: `pwd: ${cwd}` };
+    }
+
+    // --- Determine working directory ---
+    let cwd: string;
+    if (typeof args.cwd === "string" && args.cwd.trim()) {
+      const rawCwd = args.cwd.trim().replace(/^~/, process.env.HOME ?? "/");
+      cwd = path.isAbsolute(rawCwd)
+        ? rawCwd
+        : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), rawCwd);
+    } else {
+      // Use ctx.workspaceRoot if set, else process.cwd()
+      cwd = ctx.workspaceRoot?.fsPath ?? process.cwd();
+    }
+
+    // --- Manual mode: ask for confirmation ---
+    if (!ctx.terminalAutoRun) {
       const approved = await ctx.confirm(
         "Run this command?",
         `${command}\n\nWorking directory:\n${cwd}`,
@@ -65,52 +113,7 @@ export const runCommandTool: Tool = {
       }
     }
 
-    // Direct support for cd command to change process working directory persistently
-    const cdMatch = command.match(/^\s*cd(?:\s+(.+))?\s*$/);
-    if (cdMatch) {
-      const rawTarget = cdMatch[1]?.trim() || "~";
-      const target = rawTarget.startsWith("~")
-        ? path.join(process.env.HOME || "", rawTarget.slice(1))
-        : rawTarget;
-      const resolved = path.isAbsolute(target)
-        ? path.normalize(target)
-        : path.normalize(path.join(cwd, target));
-      try {
-        process.chdir(resolved);
-        const newUri = vscode.Uri.file(resolved);
-        (ctx as any).workspaceRoot = newUri;
-        if ((vscode.workspace as any).workspaceFolders) {
-          (vscode.workspace as any).workspaceFolders = [
-            {
-              uri: newUri,
-              name: path.basename(resolved) || resolved,
-              index: 0,
-            },
-          ];
-        }
-        if (typeof (ctx as any).onWorkspaceChanged === "function") {
-          (ctx as any).onWorkspaceChanged(newUri);
-        }
-        return {
-          content: `Working directory changed to: ${resolved}`,
-          summary: `Changed directory to ${resolved}`,
-        };
-      } catch (err: any) {
-        return {
-          content: `Failed to change directory to ${resolved}: ${err.message}`,
-          isError: true,
-          summary: `cd failed: ${err.message}`,
-        };
-      }
-    }
-
-    if (command.trim() === "pwd") {
-      return {
-        content: cwd,
-        summary: `pwd: ${cwd}`,
-      };
-    }
-
+    // --- Execute ---
     const { stdout, stderr, code, timedOut } = await new Promise<{
       stdout: string;
       stderr: string;
@@ -119,7 +122,7 @@ export const runCommandTool: Tool = {
     }>((resolve) => {
       const child = exec(
         command,
-        { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true },
+        { cwd, timeout, maxBuffer: 20 * 1024 * 1024, windowsHide: true },
         (err, out, errOut) => {
           const execErr = err as (Error & { code?: number; signal?: string }) | null;
           const timedOut = !!execErr && execErr.signal === "SIGTERM";
@@ -127,14 +130,13 @@ export const runCommandTool: Tool = {
             execErr && typeof execErr.code === "number"
               ? execErr.code
               : execErr
-                ? 1
-                : 0;
+              ? 1
+              : 0;
           resolve({ stdout: out, stderr: errOut, code, timedOut });
         },
       );
-      // Ensure the process is killed if the timeout elapses.
       child.on("error", () =>
-        resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false }),
+        resolve({ stdout: "", stderr: "failed to start process", code: 1, timedOut: false }),
       );
     });
 
@@ -143,13 +145,12 @@ export const runCommandTool: Tool = {
         ? s.slice(0, MAX_OUTPUT_CHARS) + "\n… output truncated."
         : s;
 
-    const sections = [`$ ${command}`, `exit code: ${code}${timedOut ? " (timed out)" : ""}`];
-    if (stdout.trim()) {
-      sections.push(`stdout:\n${clip(stdout)}`);
-    }
-    if (stderr.trim()) {
-      sections.push(`stderr:\n${clip(stderr)}`);
-    }
+    const sections = [
+      `$ ${command}`,
+      `exit code: ${code}${timedOut ? " (timed out)" : ""}`,
+    ];
+    if (stdout.trim()) sections.push(`stdout:\n${clip(stdout)}`);
+    if (stderr.trim()) sections.push(`stderr:\n${clip(stderr)}`);
 
     return {
       content: sections.join("\n\n"),

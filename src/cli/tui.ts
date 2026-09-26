@@ -9,25 +9,44 @@ export const colors = {
   bold: USE_COLOR ? "\x1b[1m" : "",
   dim: USE_COLOR ? "\x1b[2m" : "",
   italic: USE_COLOR ? "\x1b[3m" : "",
-  // Claude Code warm coral & pastel palette (256-color with ANSI fallbacks)
-  coral: USE_COLOR ? "\x1b[38;5;209m" : "", // Claude coral
-  amber: USE_COLOR ? "\x1b[38;5;214m" : "", // Warm gold
-  cyan: USE_COLOR ? "\x1b[38;5;44m" : "",   // Soft cyan
-  purple: USE_COLOR ? "\x1b[38;5;141m" : "", // Soft lavender
-  slate: USE_COLOR ? "\x1b[38;5;244m" : "",  // Muted gray
-  green: USE_COLOR ? "\x1b[38;5;77m" : "",   // Mint green
-  red: USE_COLOR ? "\x1b[38;5;203m" : "",     // Soft red
-  white: USE_COLOR ? "\x1b[97m" : "",
-  // Background pill chips
-  bgGreen: USE_COLOR ? "\x1b[48;5;22m" : "",
-  bgYellow: USE_COLOR ? "\x1b[48;5;58m" : "",
-  bgCyan: USE_COLOR ? "\x1b[48;5;24m" : "",
-  bgCoral: USE_COLOR ? "\x1b[48;5;52m" : "",
+  cyan: USE_COLOR ? "\x1b[36m" : "",
+  green: USE_COLOR ? "\x1b[32m" : "",
+  yellow: USE_COLOR ? "\x1b[33m" : "",
+  red: USE_COLOR ? "\x1b[31m" : "",
+  magenta: USE_COLOR ? "\x1b[35m" : "",
+  blue: USE_COLOR ? "\x1b[34m" : "",
+  brightCyan: USE_COLOR ? "\x1b[96m" : "",
+  brightGreen: USE_COLOR ? "\x1b[92m" : "",
+  brightYellow: USE_COLOR ? "\x1b[93m" : "",
+  brightRed: USE_COLOR ? "\x1b[91m" : "",
+  brightWhite: USE_COLOR ? "\x1b[97m" : "",
+  bgBlue: USE_COLOR ? "\x1b[44m" : "",
+  bgCyan: USE_COLOR ? "\x1b[46m" : "",
 };
+
+// AXIOM ASCII logo — coral/cyan gradient effect using ANSI
+const AXIOM_LOGO = USE_COLOR
+  ? [
+      `${colors.brightCyan}${colors.bold}   ▄████████ ▀████    ▐████▀  ▄█   ▄██████▄    ▄▄▄▄███▄▄▄▄   ${colors.reset}`,
+      `${colors.cyan}${colors.bold}  ███    ███   ███▌   ████▀  ███  ███    ███  ▄██▀▀▀███▀▀▀██▄ ${colors.reset}`,
+      `${colors.brightCyan}${colors.bold}  ███    ███    ███  ▐███   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
+      `${colors.cyan}${colors.bold}  ███    ███    ▀███▄███▀   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
+      `${colors.brightCyan}${colors.bold}▀███████████    ████▀██▄   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
+      `${colors.cyan}${colors.bold}  ███    ███   ▐███  ▀███  ███  ███    ███  ███   ███   ███ ${colors.reset}`,
+      `${colors.brightCyan}${colors.bold}  ███    ███  ▄███     ███▄ ███  ███    ███  ███   ███   ███ ${colors.reset}`,
+      `${colors.cyan}${colors.bold}  ███    █▀  ████       ███▄█▀    ▀██████▀    ▀█   ███   █▀  ${colors.reset}`,
+    ]
+  : [
+      "   AAAAAA  XX  XX  IIII   OOOO   MM   MM",
+      "  AA   AA   XXXX    II   OO  OO  MMM MMM",
+      "  AAAAAAA    XX     II   OO  OO  MM M MM",
+      "  AA   AA   XXXX    II   OO  OO  MM   MM",
+      "  AA   AA  XX  XX  IIII   OOOO   MM   MM",
+    ];
 
 export function getTerminalWidth(): number {
   const cols = process.stdout.columns || 80;
-  return Math.min(Math.max(cols - 2, 60), 96);
+  return Math.min(Math.max(cols - 2, 60), 100);
 }
 
 export function padBetween(left: string, right: string, width: number): string {
@@ -38,6 +57,7 @@ export function padBetween(left: string, right: string, width: number): string {
 }
 
 export function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -52,248 +72,241 @@ export class TerminalUI {
   printHeader(autoEdit: boolean, modelName: string, workspacePath: string): void {
     const w = this.width;
 
-    // Stylized Axiom ASCII Logo (Claude Code aesthetic)
-    const logoLines = [
-      "   █████╗ ██╗  ██╗██╗ ██████╗ ███╗   ███╗",
-      "  ██╔══██╗╚██╗██╔╝██║██╔═══██╗████╗ ████║",
-      "  ███████║ ╚███╔╝ ██║██║   ██║██╔████╔██║",
-      "  ██╔══██║ ██╔██╗ ██║██║   ██║██║╚██╔╝██║",
-      "  ██║  ██║██╔╝ ██╗██║╚██████╔╝██║ ╚═╝ ██║",
-      "  ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚═╝",
-    ];
+    // Top border
+    console.log(`${colors.cyan}${colors.bold}╔${"═".repeat(w)}╗${colors.reset}`);
 
-    console.log("");
-    for (const line of logoLines) {
-      console.log(`  ${colors.coral}${colors.bold}${line}${colors.reset}`);
+    // Logo
+    for (const line of AXIOM_LOGO) {
+      const visLen = stripAnsi(line).length;
+      const pad = Math.max(0, w - visLen);
+      console.log(`${colors.cyan}${colors.bold}║${colors.reset}${line}${" ".repeat(pad)}${colors.cyan}${colors.bold}║${colors.reset}`);
     }
 
-    console.log(
-      `\n  ${colors.bold}${colors.white}Axiom${colors.reset} ${colors.dim}v0.0.1${colors.reset} ${colors.slate}· Autonomous AI Coding Agent & Issue Solver${colors.reset}`,
-    );
+    // Separator
+    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
 
-    // Claude Code style status pill badges
+    // Status bar
     const autoEditBadge = autoEdit
-      ? `${colors.bgGreen}${colors.green}${colors.bold} ▰ AUTO EDIT: ON ${colors.reset}`
-      : `${colors.bgYellow}${colors.amber}${colors.bold} ▰ PLAN MODE (READ-ONLY) ${colors.reset}`;
-
-    const unrestrictedBadge = `${colors.bgCyan}${colors.cyan}${colors.bold} ▰ UNRESTRICTED ACCESS ${colors.reset}`;
-
-    console.log(`\n  ${autoEditBadge}  ${unrestrictedBadge}`);
-
-    // Context metadata line
-    const relDir = path.basename(workspacePath) || workspacePath;
+      ? `${colors.bold}${colors.brightGreen}● AUTO EDIT${colors.reset}`
+      : `${colors.bold}${colors.brightYellow}● PLAN MODE${colors.reset}`;
+    const modeLabel = autoEdit
+      ? `${colors.dim}Autonomous Execution${colors.reset}`
+      : `${colors.dim}Read-Only Inspection${colors.reset}`;
+    const statusLine = `  ${autoEditBadge}  ${modeLabel}`;
+    const statusPad = Math.max(1, w - stripAnsi(statusLine).length - 2);
     console.log(
-      `  ${colors.slate}Model:${colors.reset} ${colors.cyan}${modelName}${colors.reset}  ${colors.slate}Cwd:${colors.reset} ${colors.amber}${relDir}${colors.reset} ${colors.dim}(${workspacePath})${colors.reset}`,
+      `${colors.cyan}${colors.bold}║${colors.reset}${statusLine}${" ".repeat(statusPad)}${colors.dim}Axiom v1.0${colors.reset}  ${colors.cyan}${colors.bold}║${colors.reset}`,
     );
 
-    console.log(
-      `  ${colors.dim}Type ${colors.coral}/help${colors.dim} for commands · ${colors.coral}/clone <url>${colors.dim} to fetch repo · ${colors.coral}/cd <dir>${colors.dim} to move anywhere · ${colors.coral}Ctrl+C${colors.dim} to quit${colors.reset}`,
-    );
+    // Separator
+    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
 
-    // Divider bar
-    console.log(`\n  ${colors.slate}${"─".repeat(w - 4)}${colors.reset}\n`);
+    // Model + workspace info
+    const wsName = workspacePath ? (path.basename(workspacePath) || workspacePath) : "~";
+    const infoLeft = `  ${colors.dim}Model: ${colors.reset}${colors.brightWhite}${modelName}${colors.reset}`;
+    const infoRight = `${colors.dim}Workspace: ${colors.reset}${colors.brightWhite}${wsName}${colors.reset}  `;
+    console.log(`${colors.cyan}${colors.bold}║${colors.reset}${padBetween(infoLeft, infoRight, w)}${colors.cyan}${colors.bold}║${colors.reset}`);
+
+    // Bottom border
+    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
+
+    // Hint line
+    const hint = `  ${colors.dim}Type a task, paste a GitHub URL, or /help for commands${colors.reset}`;
+    const hintPad = Math.max(1, w - stripAnsi(hint).length);
+    console.log(`${colors.cyan}${colors.bold}║${colors.reset}${hint}${" ".repeat(hintPad)}${colors.cyan}${colors.bold}║${colors.reset}`);
+    console.log(`${colors.cyan}${colors.bold}╚${"═".repeat(w)}╝${colors.reset}`);
+    console.log("");
   }
 
-  printPromptBox(placeholder = "What would you like to build or solve?"): void {
+  printDivider(): void {
     const w = this.width;
-    const title = ` ${placeholder} `;
-    const innerW = Math.min(w - 4, 76);
-    const lineLen = Math.max(2, innerW - title.length);
-
-    console.log(`  ${colors.slate}╭─${colors.reset}${colors.bold}${colors.white}${title}${colors.reset}${colors.slate}${"─".repeat(lineLen)}╮${colors.reset}`);
-    console.log(`  ${colors.slate}│${colors.reset} ${colors.dim}Type a task, issue URL, or command. Axiom keeps running until Ctrl+C.${colors.reset}`);
-    console.log(`  ${colors.slate}╰${"─".repeat(innerW + 2)}╯${colors.reset}\n`);
+    console.log(`${colors.dim}${"─".repeat(w + 2)}${colors.reset}`);
   }
 
-  printFooter(placeholder = "What would you like to build or solve?"): void {
-    this.printPromptBox(placeholder);
+  printFooter(promptPlaceholder = "Enter task..."): void {
+    console.log(`\n${colors.dim}${promptPlaceholder}${colors.reset}`);
   }
 
   printPromptPrefix(): string {
-    return `  ${colors.coral}${colors.bold}❯${colors.reset} `;
+    return `${colors.bold}${colors.brightCyan}❯ ${colors.reset}`;
   }
 
   printToolStart(name: string, title: string): void {
     if (this.assistantActive) {
-      console.log("");
+      process.stdout.write("\n");
       this.assistantActive = false;
     }
-    const { icon, label } = formatToolCard(name, title);
-    console.log(`  ${icon} ${colors.amber}${label}${colors.reset}`);
+    const label = formatToolStartLabel(name, title);
+    console.log(`  ${colors.yellow}◉${colors.reset} ${colors.dim}${label}${colors.reset}`);
   }
 
   printToolEnd(ok: boolean, summary: string, rawContent?: string): void {
     if (this.assistantActive) {
-      console.log("");
+      process.stdout.write("\n");
       this.assistantActive = false;
     }
 
     if (ok) {
       if (rawContent && isTestPassOutput(rawContent)) {
-        const testMatch = rawContent.match(
-          /(\d+\s+passing|\d+\s+tests?\s+passed)/i,
-        );
+        const testMatch = rawContent.match(/(\d+\s+passing|\d+\s+tests?\s+passed)/i);
         const passSummary = testMatch ? testMatch[1] : summary;
-        console.log(`    ${colors.green}${colors.bold}✔${colors.reset} ${colors.green}${passSummary}${colors.reset}`);
+        console.log(`  ${colors.brightGreen}✔${colors.reset} ${passSummary}`);
       } else {
-        console.log(`    ${colors.green}${colors.bold}✔${colors.reset} ${colors.dim}${summary}${colors.reset}`);
+        console.log(`  ${colors.brightGreen}✔${colors.reset} ${summary}`);
       }
     } else {
-      const failureExtract = rawContent
-        ? extractFailureSnippet(rawContent)
-        : undefined;
-      console.log(`    ${colors.red}${colors.bold}✖${colors.reset} ${colors.red}${summary}${colors.reset}`);
+      const failureExtract = rawContent ? extractFailureSnippet(rawContent) : undefined;
+      console.log(`  ${colors.brightRed}✘${colors.reset} ${summary}`);
       if (failureExtract) {
-        console.log(`      ${colors.red}${failureExtract}${colors.reset}`);
+        console.log(`    ${colors.red}${failureExtract}${colors.reset}`);
       }
     }
-  }
-
-  printAssistantDelta(delta: string): void {
-    process.stdout.write(delta);
-  }
-
-  printDivider(): void {
-    const w = this.width;
-    console.log(`\n  ${colors.slate}${"─".repeat(w - 4)}${colors.reset}\n`);
   }
 
   printStatus(status: string): void {
+    if (
+      status === "Finished" ||
+      status === "Idle" ||
+      status === "Thinking…" ||
+      status === "Generating response…"
+    ) {
+      return;
+    }
     if (this.assistantActive) {
-      console.log("");
+      process.stdout.write("\n");
       this.assistantActive = false;
     }
-    console.log(`  ${colors.slate}⋯ ${status}${colors.reset}`);
+    console.log(`  ${colors.yellow}◉${colors.reset} ${colors.dim}${status}${colors.reset}`);
   }
 
   printAssistantStart(): void {
     if (!this.assistantActive) {
-      console.log(`\n  ${colors.coral}╭─ Axiom ────────────────────────────────────────────────────────${colors.reset}`);
+      console.log(`\n  ${colors.bold}${colors.brightCyan}╭─ Axiom${colors.reset}`);
+      process.stdout.write(`  ${colors.dim}│${colors.reset} `);
       this.assistantActive = true;
     }
   }
 
+  printAssistantDelta(delta: string): void {
+    if (!this.assistantActive) {
+      this.printAssistantStart();
+    }
+    // Prefix each newline with the │ gutter
+    const formatted = delta.replace(/\n/g, `\n  ${colors.dim}│${colors.reset} `);
+    process.stdout.write(formatted);
+  }
+
   printAssistantDone(): void {
     if (this.assistantActive) {
-      console.log(`\n  ${colors.coral}╰────────────────────────────────────────────────────────────────${colors.reset}\n`);
+      process.stdout.write(`\n  ${colors.bold}${colors.brightCyan}╰─${colors.reset}\n\n`);
       this.assistantActive = false;
     }
   }
 
   printError(message: string): void {
     if (this.assistantActive) {
-      console.log("");
+      process.stdout.write("\n");
       this.assistantActive = false;
     }
-    console.log(`  ${colors.red}${colors.bold}✖ Error:${colors.reset} ${colors.red}${message}${colors.reset}`);
+    console.log(`  ${colors.brightRed}✘ Error:${colors.reset} ${message}`);
   }
 
   printNotice(message: string): void {
-    console.log(`  ${colors.dim}${message}${colors.reset}`);
+    console.log(`  ${colors.brightCyan}ℹ${colors.reset} ${message}`);
+  }
+
+  /** Print an orchestration step (e.g. cloning, fetching issue). */
+  printOrchestrationStep(step: string, detail?: string): void {
+    if (this.assistantActive) {
+      process.stdout.write("\n");
+      this.assistantActive = false;
+    }
+    console.log(`  ${colors.cyan}◈${colors.reset} ${colors.bold}${step}${colors.reset}${detail ? `  ${colors.dim}${detail}${colors.reset}` : ""}`);
+  }
+
+  /** Print success of an orchestration step. */
+  printOrchestrationDone(step: string, detail?: string): void {
+    if (this.assistantActive) {
+      process.stdout.write("\n");
+      this.assistantActive = false;
+    }
+    console.log(`  ${colors.brightGreen}◈${colors.reset} ${colors.bold}${step}${colors.reset}${detail ? `  ${colors.dim}${detail}${colors.reset}` : ""}`);
+  }
+
+  /** Print a prominent section header. */
+  printSectionHeader(title: string): void {
+    if (this.assistantActive) {
+      process.stdout.write("\n");
+      this.assistantActive = false;
+    }
+    const w = this.width;
+    const line = `── ${title} `;
+    const pad = Math.max(0, w - line.length);
+    console.log(`\n${colors.cyan}${colors.dim}${line}${"─".repeat(pad)}${colors.reset}`);
   }
 }
 
-function formatToolCard(
-  name: string,
-  title: string,
-): { icon: string; label: string } {
+function formatToolStartLabel(name: string, title: string): string {
   switch (name) {
-    case "fetch_github_issue": {
-      const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.purple}📋${colors.reset}`,
-        label: match ? `Fetching GitHub issue: ${match[1]}` : `Fetching GitHub issue...`,
-      };
-    }
-    case "fetch_repo": {
-      const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.coral}⚡${colors.reset}`,
-        label: match ? `Cloning repository: ${match[1]}` : `Cloning repository...`,
-      };
-    }
-    case "search_workspace": {
-      const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.cyan}⚡${colors.reset}`,
-        label: match ? `Searching workspace for "${match[1]}"` : `Searching workspace...`,
-      };
-    }
-    case "list_files": {
-      const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.purple}📁${colors.reset}`,
-        label: match ? `Listing files in ${match[1]}` : `Listing workspace files`,
-      };
-    }
+    case "search_workspace":
+      return `Searching workspace...`;
+    case "list_files":
+      return `Listing files...`;
     case "read_file": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.cyan}📖${colors.reset}`,
-        label: match ? `Reading ${match[1]}` : `Reading file...`,
-      };
+      return match ? `Reading ${match[1]}` : `Reading file...`;
     }
     case "edit_file":
     case "multi_edit": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.amber}✏️ ${colors.reset}`,
-        label: match ? `Editing ${match[1]}` : `Editing file...`,
-      };
+      return match ? `Editing ${match[1]}` : `Editing file...`;
     }
     case "create_file": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.green}➕${colors.reset}`,
-        label: match ? `Creating ${match[1]}` : `Creating file...`,
-      };
+      return match ? `Creating ${match[1]}` : `Creating file...`;
     }
     case "delete_file": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.red}🗑️ ${colors.reset}`,
-        label: match ? `Deleting ${match[1]}` : `Deleting file...`,
-      };
+      return match ? `Deleting ${match[1]}` : `Deleting file...`;
     }
     case "rename_file": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.amber}🔄${colors.reset}`,
-        label: match ? `Renaming ${match[1]}` : `Renaming file...`,
-      };
+      return match ? `Renaming ${match[1]}` : `Renaming file...`;
     }
     case "run_command": {
       const match = title.match(/→\s*(.+)$/);
-      return {
-        icon: `${colors.coral}⚙️ ${colors.reset}`,
-        label: match ? `Running \`${match[1]}\`` : `Running shell command...`,
-      };
+      return match ? `Running: ${match[1]}` : `Running command...`;
+    }
+    case "fetch_repo": {
+      const match = title.match(/→\s*(.+)$/);
+      return match ? `Cloning repo: ${match[1]}` : `Cloning repository...`;
+    }
+    case "fetch_github_issue": {
+      const match = title.match(/→\s*(.+)$/);
+      return match ? `Fetching issue: ${match[1]}` : `Fetching GitHub issue...`;
     }
     default:
-      return {
-        icon: `${colors.cyan}◉${colors.reset}`,
-        label: title || `Executing ${name}...`,
-      };
+      return title || `Executing ${name}...`;
   }
 }
 
-function isTestPassOutput(output: string): boolean {
+function isTestPassOutput(content: string): boolean {
   return (
-    /\d+\s+passing/i.test(output) ||
-    /\d+\s+tests?\s+passed/i.test(output) ||
-    /tests?:\s+\d+\s+passed/i.test(output) ||
-    /ok\s+\d+\s+-\s+/i.test(output)
+    /\b(\d+\s+passing|\d+\s+tests?\s+passed|test suites?:\s*\d+\s*passed)\b/i.test(content) &&
+    !/\bfailed\b/i.test(content)
   );
 }
 
-function extractFailureSnippet(output: string): string | undefined {
-  const lines = output.split("\n");
+function extractFailureSnippet(content: string): string | undefined {
+  const lines = content.split("\n");
   for (const line of lines) {
+    const trimmed = line.trim();
     if (
-      /error:|failed:|AssertionError|FAIL\s/i.test(line) &&
-      !line.startsWith("$")
+      /\b(\d+\s+tests?\s+failed|tests? failed|FAIL|AssertionError|Error:)\b/i.test(trimmed) &&
+      !trimmed.startsWith("$") &&
+      !trimmed.startsWith("exit code")
     ) {
-      return line.trim().slice(0, 100);
+      return trimmed.slice(0, 120);
     }
   }
   return undefined;

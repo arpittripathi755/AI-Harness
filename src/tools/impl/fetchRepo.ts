@@ -1,202 +1,250 @@
-import { exec } from "child_process";
-import * as fs from "fs";
 import * as path from "path";
+import * as fs from "fs";
+import { execSync, exec } from "child_process";
 import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
-import { ToolError } from "../types";
-import { requireString } from "../fsutil";
+
+const DEFAULT_CLONE_BASE = path.join(
+  process.env.HOME ?? "/tmp",
+  ".axiom",
+  "repos",
+);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Normalise GitHub SSH URLs to HTTPS. */
+function normalizeGitUrl(raw: string): string {
+  const trimmed = raw.trim();
+  // git@github.com:owner/repo.git → https://github.com/owner/repo.git
+  const sshMatch = trimmed.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return `https://${sshMatch[1]}/${sshMatch[2]}.git`;
+  }
+  return trimmed.replace(/\.git$/, "") + ".git";
+}
+
+/** Extract repo name (last path segment without .git). */
+function repoNameFromUrl(url: string): string {
+  const base = url.replace(/\.git$/, "");
+  return path.basename(base);
+}
+
+/** Detect primary branch name from remote. */
+function detectDefaultBranch(dir: string): string {
+  try {
+    const out = execSync("git remote show origin", {
+      cwd: dir,
+      stdio: "pipe",
+      timeout: 10000,
+    }).toString("utf-8");
+    const m = out.match(/HEAD branch:\s*(.+)/);
+    if (m) return m[1].trim();
+  } catch {
+    // ignore
+  }
+  return "main";
+}
+
+/** Detect project stack for helpful guidance. */
+function detectStack(dir: string): string[] {
+  const stacks: string[] = [];
+  const files = fs.readdirSync(dir).map((f) => f.toLowerCase());
+  if (files.includes("package.json")) stacks.push("Node.js (npm/yarn)");
+  if (files.includes("requirements.txt") || files.includes("pyproject.toml"))
+    stacks.push("Python (pip)");
+  if (files.includes("cargo.toml")) stacks.push("Rust (cargo)");
+  if (files.includes("go.mod")) stacks.push("Go (go build)");
+  if (files.includes("pom.xml") || files.includes("build.gradle"))
+    stacks.push("Java (maven/gradle)");
+  if (files.includes("makefile") || files.includes("gnumakefile"))
+    stacks.push("Make");
+  return stacks;
+}
+
+/** Run a shell command in a directory, return stdout+stderr. */
+function runIn(cmd: string, cwd: string, timeoutMs = 60000): Promise<string> {
+  return new Promise((resolve) => {
+    exec(
+      cmd,
+      { cwd, timeout: timeoutMs, maxBuffer: 5 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        resolve((stdout + "\n" + stderr).trim());
+      },
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition
+// ---------------------------------------------------------------------------
 
 export const fetchRepoTool: Tool = {
   name: "fetch_repo",
   mutates: true,
   description:
-    "Clone or fetch a public Git repository from a URL (e.g. GitHub URL) to a local " +
-    "directory, and automatically switch the agent's active working directory and workspace " +
-    "root to that repository. All subsequent tool calls will operate directly inside the cloned repo.",
+    "Clone or fetch a public Git repository from a URL and set it as the active workspace. " +
+    "If the repository is already cloned locally (matching URL), it is fetched/pulled instead of re-cloned. " +
+    "After cloning, the active workspace is switched to the repository root so all tools operate inside it. " +
+    "Accepts HTTPS or SSH GitHub URLs. Optional: specify a destination directory, branch, or clone depth.",
   parameters: {
     type: "object",
     properties: {
       url: {
         type: "string",
         description:
-          "The Git repository URL (e.g. 'https://github.com/owner/repo' or 'https://github.com/owner/repo.git').",
+          "The Git repository URL. Examples:\n" +
+          "  https://github.com/owner/repo.git\n" +
+          "  git@github.com:owner/repo.git",
       },
       dest_dir: {
         type: "string",
         description:
-          "Optional destination directory path. Defaults to a folder named after the repo in the current working directory.",
+          "Optional absolute or relative path where the repo should be cloned. " +
+          `Defaults to ~/.axiom/repos/<repo-name>.`,
       },
       branch: {
         type: "string",
-        description: "Optional branch, tag, or commit to checkout.",
+        description:
+          "Optional branch or tag to checkout after cloning. Defaults to the remote HEAD.",
       },
       depth: {
         type: "integer",
-        description: "Clone depth (default 50). Set to 0 or negative for full clone.",
+        description: "Clone depth (default 50). Use 0 for a full clone.",
       },
     },
     required: ["url"],
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
-    const rawUrl = requireString(args, "url").trim();
+    const rawUrl = (args.url as string)?.trim();
     if (!rawUrl) {
-      throw new ToolError("Repository URL is required.");
+      return {
+        content: "Error: url is required.",
+        isError: true,
+        summary: "Missing url",
+      };
     }
 
-    // Parse URL and extract potential tree/branch references like:
-    // https://github.com/owner/repo/tree/branch-name
-    let cleanUrl = rawUrl;
-    let urlBranch: string | undefined;
+    const normalizedUrl = normalizeGitUrl(rawUrl);
+    const repoName = repoNameFromUrl(normalizedUrl);
+    const depth =
+      typeof args.depth === "number" && args.depth >= 0
+        ? args.depth
+        : 50;
+    const requestedBranch =
+      typeof args.branch === "string" ? args.branch.trim() : undefined;
 
-    const treeMatch = rawUrl.match(/^(https?:\/\/github\.com\/[^/]+\/[^/]+)\/tree\/([^/]+(?:\/[^/]+)*)\/?$/);
-    if (treeMatch) {
-      cleanUrl = treeMatch[1];
-      urlBranch = treeMatch[2];
-    } else if (cleanUrl.endsWith(".git")) {
-      // keep clean
-    }
-
-    const branch = typeof args.branch === "string" && args.branch.trim() ? args.branch.trim() : urlBranch;
-    const depth = typeof args.depth === "number" ? args.depth : 50;
-
-    // Derive repo name: https://github.com/owner/repo -> repo
-    const match = cleanUrl.match(/\/([^/]+?)(?:\.git)?$/);
-    const repoName = match ? match[1] : "repo";
-
-    // Determine target destination path
-    const baseCwd = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
+    // Determine target path
     let targetPath: string;
     if (typeof args.dest_dir === "string" && args.dest_dir.trim()) {
-      const customDest = args.dest_dir.trim().replace(/^~/, process.env.HOME || "");
-      targetPath = path.isAbsolute(customDest)
-        ? path.normalize(customDest)
-        : path.normalize(path.join(baseCwd, customDest));
+      const d = args.dest_dir.trim().replace(/^~/, process.env.HOME ?? "/tmp");
+      targetPath = path.isAbsolute(d)
+        ? d
+        : path.join(ctx.workspaceRoot?.fsPath ?? process.cwd(), d);
     } else {
-      targetPath = path.normalize(path.join(baseCwd, repoName));
+      targetPath = path.join(DEFAULT_CLONE_BASE, repoName);
     }
 
-    // Check if target directory already exists and is a git repository
-    const isExistingGit =
-      fs.existsSync(targetPath) &&
-      fs.existsSync(path.join(targetPath, ".git"));
+    const gitDir = path.join(targetPath, ".git");
+    const alreadyCloned = fs.existsSync(gitDir);
 
-    let command: string;
-    if (isExistingGit) {
-      // Fetch latest and optionally switch branch
-      if (branch) {
-        command = `git fetch --all && git checkout ${branch} && git pull origin ${branch}`;
-      } else {
-        command = `git fetch --all && git pull`;
+    let log = "";
+
+    if (alreadyCloned) {
+      // Check if the remote URL matches
+      let existingRemote = "";
+      try {
+        existingRemote = execSync("git remote get-url origin", {
+          cwd: targetPath,
+          stdio: "pipe",
+        })
+          .toString("utf-8")
+          .trim();
+      } catch {
+        // ignore
       }
-    } else {
-      // Clone fresh
-      const branchFlag = branch ? ` --branch ${branch}` : "";
-      const depthFlag = depth > 0 ? ` --depth ${depth}` : "";
-      command = `git clone${depthFlag}${branchFlag} "${cleanUrl}" "${targetPath}"`;
+
+      const normalizedExisting = normalizeGitUrl(existingRemote);
+      if (normalizedExisting === normalizedUrl) {
+        log += `Repository already cloned at ${targetPath}. Fetching latest changes...\n`;
+        log += await runIn("git fetch --all --prune", targetPath);
+        log += "\n";
+        log += await runIn("git pull --ff-only", targetPath);
+      } else {
+        log += `Directory exists but has a different remote (${existingRemote}). Re-cloning...\n`;
+        fs.rmSync(targetPath, { recursive: true, force: true });
+        // fall through to clone — gitDir no longer exists after rmSync
+      }
     }
 
-    // Run git command
-    const { stdout, stderr, code } = await new Promise<{
-      stdout: string;
-      stderr: string;
-      code: number | null;
-    }>((resolve) => {
-      exec(
-        command,
-        { cwd: isExistingGit ? targetPath : baseCwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
-        (err, out, errOut) => {
-          resolve({
-            stdout: out || "",
-            stderr: errOut || "",
-            code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
-          });
-        },
-      );
-    });
+    if (!fs.existsSync(gitDir)) {
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      const depthFlag = depth > 0 ? `--depth ${depth}` : "";
+      const branchFlag = requestedBranch
+        ? `--branch ${requestedBranch}`
+        : "";
+      const cloneCmd = `git clone ${depthFlag} ${branchFlag} ${normalizedUrl} ${targetPath}`.trim();
+      log += `Cloning: ${cloneCmd}\n`;
+      log += await runIn(cloneCmd, path.dirname(targetPath), 120_000);
+    }
 
-    if (code !== 0) {
-      throw new ToolError(
-        `Git command failed (exit code ${code}):\n$ ${command}\n${stderr || stdout}`,
+    if (!fs.existsSync(path.join(targetPath, ".git"))) {
+      return {
+        content: `Error: Clone failed. Output:\n${log}`,
+        isError: true,
+        summary: `Failed to clone ${repoName}`,
+      };
+    }
+
+    // Checkout requested branch if provided
+    if (requestedBranch) {
+      log += "\n";
+      log += await runIn(
+        `git checkout ${requestedBranch}`,
+        targetPath,
       );
     }
 
-    // Switch working directory and update workspace root
+    // Update process working directory
     try {
       process.chdir(targetPath);
-    } catch (err: any) {
-      throw new ToolError(`Failed to chdir into ${targetPath}: ${err.message}`);
+    } catch {
+      // ignore — some envs restrict chdir
     }
 
-    const newRootUri = vscode.Uri.file(targetPath);
-    (ctx as any).workspaceRoot = newRootUri;
-    if ((vscode.workspace as any).workspaceFolders) {
-      (vscode.workspace as any).workspaceFolders = [
-        {
-          uri: newRootUri,
-          name: path.basename(targetPath) || repoName,
-          index: 0,
-        },
-      ];
-    }
+    // Switch workspace context so all tools operate inside repo
+    const newRoot = vscode.Uri.file(targetPath);
+    ctx.workspaceRoot = newRoot;
+    (vscode.workspace as any).workspaceFolders = [
+      { uri: newRoot, name: repoName, index: 0 },
+    ];
+
+    // Fire workspace-changed callback (registered in cli.ts)
     if (typeof (ctx as any).onWorkspaceChanged === "function") {
-      (ctx as any).onWorkspaceChanged(newRootUri);
+      (ctx as any).onWorkspaceChanged(newRoot);
     }
 
-    // Inspect repository to provide helpful starting context
-    let recentCommit = "";
-    try {
-      recentCommit = require("child_process")
-        .execSync("git log -1 --oneline", { cwd: targetPath, encoding: "utf-8" })
-        .trim();
-    } catch {
-      // ignore
-    }
+    // Detect stack for helpful context
+    const stacks = detectStack(targetPath);
+    const branch = detectDefaultBranch(targetPath);
+    const stackInfo =
+      stacks.length > 0
+        ? `\nDetected stack: ${stacks.join(", ")}`
+        : "";
 
-    let currentBranch = "";
-    try {
-      currentBranch = require("child_process")
-        .execSync("git branch --show-current", { cwd: targetPath, encoding: "utf-8" })
-        .trim();
-    } catch {
-      // ignore
-    }
-
-    // Identify project stack
-    const detected: string[] = [];
-    if (fs.existsSync(path.join(targetPath, "package.json"))) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(path.join(targetPath, "package.json"), "utf-8"));
-        detected.push(`Node.js/npm (${pkg.name || "package"}${pkg.version ? `@${pkg.version}` : ""})`);
-      } catch {
-        detected.push("Node.js/npm");
-      }
-    }
-    if (fs.existsSync(path.join(targetPath, "requirements.txt")) || fs.existsSync(path.join(targetPath, "pyproject.toml"))) {
-      detected.push("Python");
-    }
-    if (fs.existsSync(path.join(targetPath, "Cargo.toml"))) {
-      detected.push("Rust (Cargo)");
-    }
-    if (fs.existsSync(path.join(targetPath, "go.mod"))) {
-      detected.push("Go");
-    }
-    if (fs.existsSync(path.join(targetPath, "pom.xml")) || fs.existsSync(path.join(targetPath, "build.gradle"))) {
-      detected.push("Java");
-    }
-
-    const sections = [
-      `Successfully ${isExistingGit ? "updated" : "cloned"} repository: ${cleanUrl}`,
-      `Local path: ${targetPath}`,
-      `Current branch: ${currentBranch || branch || "default"}`,
-      recentCommit ? `Latest commit: ${recentCommit}` : "",
-      detected.length ? `Detected stack: ${detected.join(", ")}` : "",
-      `\n✓ Active workspace has been switched to ${targetPath}. All file operations and terminal commands are now scoped to this repository.`,
-    ].filter(Boolean);
+    const summary =
+      `Repository: ${repoName}\n` +
+      `Location: ${targetPath}\n` +
+      `Branch: ${branch}${stackInfo}\n\n` +
+      `Workspace switched to ${targetPath}.\n` +
+      `All tools now operate inside this repository.`;
 
     return {
-      content: sections.join("\n"),
-      summary: `${isExistingGit ? "Updated" : "Cloned"} ${repoName} (${currentBranch || "ready"})`,
+      content: `${summary}\n\nClone/fetch log:\n${log}`,
+      isError: false,
+      summary: `Cloned ${repoName} → ${targetPath}`,
     };
   },
 };

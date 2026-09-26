@@ -33,7 +33,7 @@ const extensionConfig = {
       {
         test: /\.ts$/,
         include: path.resolve(__dirname, 'src'),
-        exclude: [/node_modules/, /src\/webview/],
+        exclude: [/node_modules/, /src\/webview/, /Website_SAST/],
         use: [
           {
             loader: 'ts-loader'

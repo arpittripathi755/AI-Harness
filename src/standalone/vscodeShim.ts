@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Lightweight, zero-dependency VS Code API shim for running the Axiom agent
+ * Lightweight, zero-dependency VS Code API shim for running the Daxiom agent
  * standalone in the Terminal User Interface (TUI) without launching VS Code.
  */
 

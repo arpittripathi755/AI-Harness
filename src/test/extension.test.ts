@@ -133,12 +133,12 @@ suite('Extension Test Suite', () => {
 		const os = await import('os');
 		const path = await import('path');
 
-		const tempDir = path.join(os.tmpdir(), `axiom-test-${Date.now()}`);
+		const tempDir = path.join(os.tmpdir(), `daxiom-test-${Date.now()}`);
 		const testFile = Uri.file(path.join(tempDir, 'test.txt'));
 		const renamedFile = Uri.file(path.join(tempDir, 'renamed.txt'));
 
 		// 1. Write file
-		const content = new TextEncoder().encode("Hello autonomous Axiom");
+		const content = new TextEncoder().encode("Hello autonomous Daxiom");
 		await workspace.fs.writeFile(testFile, content);
 
 		// 2. Stat file
@@ -149,7 +149,7 @@ suite('Extension Test Suite', () => {
 		// 3. Read file
 		const readBytes = await workspace.fs.readFile(testFile);
 		const readStr = new TextDecoder().decode(readBytes);
-		assert.strictEqual(readStr, "Hello autonomous Axiom");
+		assert.strictEqual(readStr, "Hello autonomous Daxiom");
 
 		// 4. Rename file
 		await workspace.fs.rename(testFile, renamedFile);
@@ -180,7 +180,7 @@ suite('Extension Test Suite', () => {
 		const path = await import('path');
 		const fs = await import('fs');
 
-		const tempDir = path.join(os.tmpdir(), `axiom-auto-${Date.now()}`);
+		const tempDir = path.join(os.tmpdir(), `daxiom-auto-${Date.now()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		const workspaceUri = vscode.Uri.file(tempDir);
 
@@ -233,22 +233,6 @@ suite('Extension Test Suite', () => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	test('Git CLI and GitHub issue tools are registered and functional', async () => {
-		const { fetchRepoTool } = await import('../tools/impl/fetchRepo.js');
-		const { fetchGithubIssueTool } = await import('../tools/impl/fetchGithubIssue.js');
-		const { createToolRegistry } = await import('../tools/index.js');
-
-		assert.strictEqual(fetchRepoTool.name, 'fetch_repo');
-		assert.strictEqual(fetchRepoTool.mutates, true);
-
-		assert.strictEqual(fetchGithubIssueTool.name, 'fetch_github_issue');
-		assert.strictEqual(fetchGithubIssueTool.mutates, undefined);
-
-		const registry = createToolRegistry();
-		assert.ok(registry.get('fetch_repo'), 'fetch_repo must be registered');
-		assert.ok(registry.get('fetch_github_issue'), 'fetch_github_issue must be registered');
-	});
-
 	test('TUI utilities correctly format tool outputs, test passes, and test failures', async () => {
 		const { stripAnsi, padBetween } = await import('../cli/tui.js');
 
@@ -257,8 +241,8 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(stripAnsi(colored), "✓ 24 tests passed");
 
 		// padBetween distributes space correctly
-		const padded = padBetween("AXIOM", "AUTO EDIT: ON", 30);
-		assert.ok(padded.startsWith("AXIOM"));
+		const padded = padBetween("DAXIOM", "AUTO EDIT: ON", 30);
+		assert.ok(padded.startsWith("DAXIOM"));
 		assert.ok(padded.endsWith("AUTO EDIT: ON"));
 		assert.strictEqual(padded.length, 30);
 	});

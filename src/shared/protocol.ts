@@ -37,8 +37,11 @@ export type AgentStatus =
   | "Searching workspace…"
   | "Reading files…"
   | "Editing files…"
+  | "Deleting file…"
   | "Running terminal command…"
   | "Waiting for approval…"
+  | "Fetching GitHub issue…"
+  | "Cloning repository…"
   | "Generating response…"
   | "Rate limited — retrying…"
   | "Finished";
