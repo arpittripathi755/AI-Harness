@@ -7,16 +7,7 @@ setup:
 	npm run compile
 
 run:
-	@if [ -z "$$AI_API_KEY" ]; then \
-		echo "ERROR: AI_API_KEY environment variable is not set."; \
-		echo "Please run: export AI_API_KEY=\"<your-api-key>\""; \
-		exit 1; \
-	fi
-	@if [ ! -f "dist/cli.js" ]; then \
-		echo "Compiling Daxiom TUI..."; \
-		npm run compile; \
-	fi
-	@node dist/cli.js $(TASK)
+	@./scripts/launch-tui.sh $(TASK)
 
 test:
 	npm run lint

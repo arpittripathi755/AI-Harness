@@ -27,18 +27,13 @@ function getCliApiKey(): string | undefined {
   );
 }
 
-function getCliBaseUrl(apiKey?: string): string {
-  const envUrl =
+function getCliBaseUrl(): string {
+  const raw =
     process.env.AI_BASE_URL?.trim() ||
     process.env.DEEPSEEK_BASE_URL?.trim() ||
-    process.env.OPENAI_BASE_URL?.trim();
-  if (envUrl) {
-    return envUrl.replace(/\/+$/, "") + "/";
-  }
-  if (apiKey?.startsWith("nvapi-")) {
-    return "https://integrate.api.nvidia.com/v1/";
-  }
-  return DEFAULT_BASE_URL;
+    process.env.OPENAI_BASE_URL?.trim() ||
+    DEFAULT_BASE_URL;
+  return raw.replace(/\/+$/, "") + "/";
 }
 
 function getCliModelId(): string {
@@ -59,7 +54,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const baseUrl = getCliBaseUrl(apiKey);
+  const baseUrl = getCliBaseUrl();
   let currentModelId = getCliModelId();
   let allowMutations = true; // Auto Edit is enabled by default in evaluation mode!
 
