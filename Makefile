@@ -7,6 +7,7 @@ setup:
 	npm run compile
 
 run:
+	npm run compile
 	@./scripts/launch-tui.sh $(TASK)
 
 test:
