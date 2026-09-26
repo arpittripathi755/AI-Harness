@@ -42,6 +42,11 @@ export interface ToolContext {
   autoEdit?: boolean;
 
   /**
+   * In-memory staging overlay managing virtual changes.
+   */
+  changeManager?: import("./changes").ChangeManager;
+
+  /**
    * Safely resolve a model-supplied path to an absolute Uri inside the workspace.
    * Paths that escape the workspace root trigger a modal approval; denial throws.
    */

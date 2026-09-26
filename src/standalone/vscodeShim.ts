@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
 /**
  * Lightweight, zero-dependency VS Code API shim for running the Daxiom agent
@@ -155,12 +156,14 @@ const DEFAULT_IGNORED_DIRS = new Set([
   ".vscode-test",
 ]);
 
+const defaultWorkspacePath = path.join(os.homedir(), "Desktop");
+
 export class StandaloneWorkspace {
   public readonly fs = new WorkspaceFileSystem();
   public workspaceFolders: WorkspaceFolder[] = [
     {
-      uri: Uri.file(process.cwd()),
-      name: path.basename(process.cwd()),
+      uri: Uri.file(defaultWorkspacePath),
+      name: path.basename(defaultWorkspacePath) || "Desktop",
       index: 0,
     },
   ];
@@ -174,7 +177,7 @@ export class StandaloneWorkspace {
     _exclude?: string | { pattern: string },
     maxResults = 2000,
   ): Promise<Uri[]> {
-    const root = this.workspaceFolders[0]?.uri.fsPath || process.cwd();
+    const root = this.workspaceFolders[0]?.uri.fsPath || defaultWorkspacePath;
     const results: Uri[] = [];
 
     const includeStr =

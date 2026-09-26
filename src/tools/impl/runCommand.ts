@@ -52,6 +52,7 @@ export const runCommandTool: Tool = {
     }
 
     const cwd = ctx.workspaceRoot.fsPath;
+    console.log(`[run_command] command="${command}" cwd="${cwd}"`);
     const { stdout, stderr, code, timedOut } = await new Promise<{
       stdout: string;
       stderr: string;

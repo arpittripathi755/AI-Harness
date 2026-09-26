@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
 import {
   DEFAULT_EXCLUDE_GLOB,
+  SKIP_DIRS,
   decode,
   optionalNumber,
   requireString,
@@ -10,6 +11,31 @@ import { ToolError } from "../types";
 
 const MAX_FILES_SCANNED = 2000;
 const MAX_MATCHES = 200;
+
+function isExcluded(relPath: string): boolean {
+  const parts = relPath.replace(/\\/g, "/").split("/");
+  return parts.some((part) => SKIP_DIRS.has(part));
+}
+
+function matchesGlob(filePath: string, glob: string): boolean {
+  if (!glob || glob === "**/*" || glob === "**") {
+    return true;
+  }
+  const normPath = filePath.replace(/\\/g, "/");
+  let p = glob.replace(/\\/g, "/");
+  let regexStr = "^";
+  if (p.startsWith("**/")) {
+    regexStr += "(?:.*/)?";
+    p = p.slice(3);
+  }
+  regexStr += p
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, ".*")
+    .replace(/(?<!\.)\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]");
+  regexStr += "$";
+  return new RegExp(regexStr).test(normPath);
+}
 
 export const searchWorkspaceTool: Tool = {
   name: "search_workspace",
@@ -68,25 +94,47 @@ export const searchWorkspaceTool: Tool = {
       MAX_FILES_SCANNED,
     );
 
+    let scanList: { rel: string; uri: vscode.Uri }[] = [];
+    if (ctx.changeManager) {
+      const physicalRels = files.map((u) => ctx.toRelative(u));
+      const effectiveRels = ctx.changeManager.getEffectivePaths(physicalRels);
+      scanList = effectiveRels
+        .filter((rel) => !isExcluded(rel) && matchesGlob(rel, include))
+        .map((rel) => ({
+          rel,
+          uri: ctx.workspaceRoot ? vscode.Uri.joinPath(ctx.workspaceRoot, rel) : vscode.Uri.file(rel),
+        }));
+    } else {
+      scanList = files.map((uri) => ({
+        rel: ctx.toRelative(uri),
+        uri,
+      }));
+    }
+
     const results: string[] = [];
     let matchCount = 0;
     let filesWithMatches = 0;
 
-    for (const uri of files) {
+    for (const item of scanList) {
       if (matchCount >= maxMatches) {
         break;
       }
-      let bytes: Uint8Array;
+      const rel = item.rel;
+      const uri = item.uri;
+      let text: string;
       try {
-        bytes = await vscode.workspace.fs.readFile(uri);
+        if (ctx.changeManager) {
+          text = await ctx.changeManager.readEffective(rel);
+        } else {
+          const bytes = await vscode.workspace.fs.readFile(uri);
+          if (bytes.byteLength > 1024 * 1024 || bytes.includes(0)) {
+            continue; // skip huge or binary files
+          }
+          text = decode(bytes);
+        }
       } catch {
         continue;
       }
-      if (bytes.byteLength > 1024 * 1024 || bytes.includes(0)) {
-        continue; // skip huge or binary files
-      }
-      const text = decode(bytes);
-      const rel = ctx.toRelative(uri);
       let fileHadMatch = false;
 
       const lines = text.split("\n");

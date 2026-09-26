@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
 import { ToolDeniedError, ToolError } from "./types";
 
 /** The first open workspace folder, or undefined if none is open. */
@@ -16,9 +17,32 @@ export function toRelative(root: vscode.Uri | undefined, uri: vscode.Uri): strin
   return rel === "" ? "." : rel.split(path.sep).join("/");
 }
 
+/** Resolve symlinks if path exists, or walk ancestors to resolve real root. */
+function resolveRealPath(p: string): string {
+  const abs = path.resolve(p);
+  let cur = abs;
+  const parts: string[] = [];
+  while (!fs.existsSync(cur)) {
+    const parent = path.dirname(cur);
+    if (parent === cur) {
+      break;
+    }
+    parts.unshift(path.basename(cur));
+    cur = parent;
+  }
+  try {
+    const realCur = fs.realpathSync(cur);
+    return parts.length > 0 ? path.join(realCur, ...parts) : realCur;
+  } catch {
+    return abs;
+  }
+}
+
 /** True if `candidate` is the root itself or nested strictly inside it. */
-function isInside(root: string, candidate: string): boolean {
-  const rel = path.relative(root, candidate);
+export function isInside(root: string, candidate: string): boolean {
+  const realRoot = resolveRealPath(root);
+  const realCandidate = resolveRealPath(candidate);
+  const rel = path.relative(realRoot, realCandidate);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
@@ -26,15 +50,14 @@ function isInside(root: string, candidate: string): boolean {
  * Resolve a model-supplied path to an absolute Uri, confined to the workspace.
  *
  * - No workspace open → hard error (nothing is in scope).
- * - Resolves relative paths against the workspace root; absolute paths are honored.
- * - If the result escapes the workspace root, require an explicit modal approval;
- *   denial throws {@link ToolDeniedError}. This is the single choke point that
- *   enforces "never access files outside the workspace unless I approve it".
+ * - Resolves relative paths against the workspace root.
+ * - Enforces strict containment: escaping paths (including via symlinks or ../)
+ *   are rejected with ToolError.
  */
 export async function resolvePathInWorkspace(
   input: string,
   root: vscode.Uri | undefined,
-  confirm: (message: string, detail?: string) => Promise<boolean>,
+  confirm?: (message: string, detail?: string) => Promise<boolean>,
 ): Promise<vscode.Uri> {
   if (!root) {
     throw new ToolError(
@@ -47,20 +70,15 @@ export async function resolvePathInWorkspace(
     throw new ToolError("An empty path is not valid.");
   }
 
-  const absolute = path.isAbsolute(trimmed)
-    ? path.normalize(trimmed)
-    : path.normalize(path.join(root.fsPath, trimmed));
+  const normalized = path.normalize(trimmed);
+  const absolute = path.isAbsolute(normalized)
+    ? normalized
+    : path.normalize(path.join(root.fsPath, normalized));
 
   if (!isInside(root.fsPath, absolute)) {
-    const approved = await confirm(
-      "Allow access outside the workspace?",
-      `The agent wants to access:\n${absolute}\n\nThis is outside the current workspace root:\n${root.fsPath}`,
+    throw new ToolError(
+      `Access denied: "${trimmed}" resolves outside the workspace root (${root.fsPath}).`,
     );
-    if (!approved) {
-      throw new ToolDeniedError(
-        `Access denied: "${trimmed}" is outside the workspace and approval was declined.`,
-      );
-    }
   }
 
   return vscode.Uri.file(absolute);

@@ -15,21 +15,38 @@ export interface RetryOptions {
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_BACKOFF_MS = 30_000;
 
+let globalRequestCount = 0;
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
   { retries = 5, signal, onRetry }: RetryOptions = {},
 ): Promise<Response> {
+  const reqId = ++globalRequestCount;
   let attempt = 0;
   for (;;) {
     if (signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
 
+    const startTime = Date.now();
     let response: Response;
     try {
       response = await fetch(url, { ...init, signal });
+      const durationMs = Date.now() - startTime;
+      if (process.env.DEBUG_LLM === "1") {
+        console.debug(
+          `[LLM Req #${reqId}] ${new Date().toISOString()} attempt=${attempt} status=${response.status} duration=${durationMs}ms`,
+        );
+      }
     } catch (err) {
+      const durationMs = Date.now() - startTime;
+      if (process.env.DEBUG_LLM === "1") {
+        console.debug(
+          `[LLM Req #${reqId} Error] ${new Date().toISOString()} attempt=${attempt} duration=${durationMs}ms:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
       // Network-level error: retry unless aborted or out of attempts.
       if (signal?.aborted || attempt >= retries) {
         throw err;
@@ -42,6 +59,11 @@ export async function fetchWithRetry(
     }
 
     if (!RETRYABLE_STATUS.has(response.status) || attempt >= retries) {
+      if (response.status === 429 && attempt >= retries) {
+        throw new Error(
+          `Persistent rate limit (HTTP 429) exceeded after ${retries} retries. Please check API quota.`,
+        );
+      }
       return response;
     }
 

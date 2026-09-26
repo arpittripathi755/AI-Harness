@@ -11,13 +11,31 @@ import * as path from "path";
  * VERIFYING  – running tests/build/lint after edits
  * DONE       – agent has declared the task complete
  */
-export type TaskPhase = "EXPLORING" | "EDITING" | "VERIFYING" | "DONE";
+export type TaskPhase =
+  | "EXPLORING"
+  | "PLANNING"
+  | "EDITING"
+  | "VERIFYING"
+  | "REVIEWING"
+  | "COMMITTING"
+  | "CREATING_PR"
+  | "COMPLETED"
+  | "DONE"
+  | "BLOCKED"
+  | "FAILED";
 
 export const PHASE_LABELS: Record<TaskPhase, string> = {
   EXPLORING: "Exploring codebase",
+  PLANNING: "Formulating plan",
   EDITING: "Editing files",
   VERIFYING: "Verifying changes",
+  REVIEWING: "Reviewing change set",
+  COMMITTING: "Creating commit",
+  CREATING_PR: "Creating pull request",
+  COMPLETED: "Completed",
   DONE: "Complete",
+  BLOCKED: "Blocked",
+  FAILED: "Failed",
 };
 
 // ─── Budget ───────────────────────────────────────────────────────────────────
@@ -173,6 +191,8 @@ export class Orchestrator {
   private toolCallCount = 0;
   private readonly startMs: number = Date.now();
   private readonly filesEdited = new Set<string>();
+  private readonly filesReadSet = new Set<string>();
+  private lastVerification: { command: string; success: boolean } | null = null;
   private budgetWarnFired = false;
 
   constructor(
@@ -188,6 +208,14 @@ export class Orchestrator {
     return this.filesEdited;
   }
 
+  get readFiles(): ReadonlySet<string> {
+    return this.filesReadSet;
+  }
+
+  get verificationResult(): { command: string; success: boolean } | null {
+    return this.lastVerification;
+  }
+
   get toolCalls(): number {
     return this.toolCallCount;
   }
@@ -196,12 +224,36 @@ export class Orchestrator {
     return Date.now() - this.startMs;
   }
 
+  /** Record a file read. */
+  onRead(filePath: string): void {
+    this.filesReadSet.add(filePath);
+  }
+
+  /** Record verification execution outcome. */
+  onVerificationRun(command: string, success: boolean): void {
+    this.lastVerification = { command, success };
+  }
+
   // ─── Phase transitions ───────────────────────────────────────────────────
 
-  /** Advance phase when the agent begins making edits. */
+  /** Advance phase to PLANNING. */
+  onPlanning(): void {
+    if (this._phase === "EXPLORING") {
+      this._phase = "PLANNING";
+    }
+  }
+
+  /** Advance phase the moment a mutation is attempted (independent of success). */
+  onMutationAttempt(filePath?: string): void {
+    if (this._phase === "EXPLORING" || this._phase === "PLANNING") {
+      this._phase = "EDITING";
+    }
+  }
+
+  /** Record a successful mutation. */
   onMutation(filePath: string): void {
     this.filesEdited.add(filePath);
-    if (this._phase === "EXPLORING") {
+    if (this._phase === "EXPLORING" || this._phase === "PLANNING") {
       this._phase = "EDITING";
     }
   }
@@ -213,9 +265,39 @@ export class Orchestrator {
     }
   }
 
-  /** Mark task as done. Only valid in VERIFYING or EDITING phase. */
+  /** Advance phase to reviewing changes. */
+  onReview(): void {
+    this._phase = "REVIEWING";
+  }
+
+  /** Advance phase to committing changes. */
+  onCommit(): void {
+    this._phase = "COMMITTING";
+  }
+
+  /** Advance phase to creating PR. */
+  onCreatingPR(): void {
+    this._phase = "CREATING_PR";
+  }
+
+  /** Mark task as completed. */
+  markCompleted(): void {
+    this._phase = "COMPLETED";
+  }
+
+  /** Mark task as done. */
   markDone(): void {
     this._phase = "DONE";
+  }
+
+  /** Mark task as blocked. */
+  markBlocked(_reason?: string): void {
+    this._phase = "BLOCKED";
+  }
+
+  /** Mark task as failed. */
+  markFailed(_reason?: string): void {
+    this._phase = "FAILED";
   }
 
   // ─── Budget ──────────────────────────────────────────────────────────────

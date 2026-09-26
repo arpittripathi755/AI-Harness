@@ -32,6 +32,8 @@ const SPECIFIC = new Set<AgentStatus>([
   "Running terminal command…",
   "Waiting for approval…",
   "Rate limited — retrying…",
+  "Searching web…",
+  "Fetching web page…",
 ]);
 
 /** Animated Axiom "A" mark that pulses while working. */

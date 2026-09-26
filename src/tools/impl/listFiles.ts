@@ -43,14 +43,20 @@ export const listFilesTool: Tool = {
       try {
         entries = await vscode.workspace.fs.readDirectory(uri);
       } catch {
-        return;
+        entries = [];
       }
-      entries.sort((a, b) => {
-        // directories first, then alphabetical
-        const dirDiff =
-          (b[1] & vscode.FileType.Directory) - (a[1] & vscode.FileType.Directory);
-        return dirDiff !== 0 ? dirDiff : a[0].localeCompare(b[0]);
-      });
+
+      if (ctx.changeManager) {
+        const dirRel = ctx.toRelative(uri);
+        entries = ctx.changeManager.getEffectiveDirectoryEntries(dirRel, entries);
+      } else {
+        entries.sort((a, b) => {
+          // directories first, then alphabetical
+          const dirDiff =
+            (b[1] & vscode.FileType.Directory) - (a[1] & vscode.FileType.Directory);
+          return dirDiff !== 0 ? dirDiff : a[0].localeCompare(b[0]);
+        });
+      }
       for (const [name, type] of entries) {
         if (SKIP_DIRS.has(name)) {
           continue;

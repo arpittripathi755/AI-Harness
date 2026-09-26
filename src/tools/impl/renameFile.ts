@@ -42,10 +42,17 @@ export const renameFileTool: Tool = {
       throw new ToolError(`Source does not exist: ${ctx.toRelative(from)}`);
     }
 
-    await vscode.workspace.fs.rename(from, to, { overwrite });
+    const fromRelPath = ctx.toRelative(from);
+    const toRelPath = ctx.toRelative(to);
+
+    if (ctx.changeManager) {
+      await ctx.changeManager.stageRename(fromRelPath, toRelPath);
+    } else {
+      await vscode.workspace.fs.rename(from, to, { overwrite });
+    }
     return {
-      content: `Renamed ${ctx.toRelative(from)} → ${ctx.toRelative(to)}.`,
-      summary: `Renamed → ${ctx.toRelative(to)}`,
+      content: `Renamed ${fromRelPath} → ${toRelPath}.`,
+      summary: `Renamed → ${toRelPath}`,
     };
   },
 };

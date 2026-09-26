@@ -41,6 +41,8 @@ export type AgentStatus =
   | "Waiting for approval…"
   | "Generating response…"
   | "Rate limited — retrying…"
+  | "Searching web…"
+  | "Fetching web page…"
   | "Finished";
 
 /** Snapshot of persisted settings sent to the webview on init / after changes. */

@@ -81,11 +81,22 @@ export const multiEditTool: Tool = {
 
       try {
         const uri = await ctx.resolvePath(path);
+        const relPath = ctx.toRelative(uri);
         const ops = rawEdits.map(parseEditOp);
-        const source = await readForEdit(uri);
-        const { content, replacements } = applyEdits(source, ops);
-        await writeText(uri, content);
-        applied.push(`${ctx.toRelative(uri)} (${replacements} change${replacements === 1 ? "" : "s"})`);
+        const source = ctx.changeManager
+          ? await ctx.changeManager.readEffective(relPath)
+          : await readForEdit(uri);
+        const outcome = applyEdits(source, ops, relPath);
+        if (!outcome.ok) {
+          errors.push(`${relPath}: [${outcome.errorType}] ${outcome.message}`);
+          continue;
+        }
+        if (ctx.changeManager) {
+          ctx.changeManager.stageEdit(relPath, outcome.content);
+        } else {
+          await writeText(uri, outcome.content);
+        }
+        applied.push(`${relPath} (${outcome.replacements} change${outcome.replacements === 1 ? "" : "s"})`);
       } catch (err) {
         errors.push(`${path}: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -47,8 +47,12 @@ export const createFileTool: Tool = {
       );
     }
 
-    await vscode.workspace.fs.writeFile(uri, encode(content));
     const relPath = ctx.toRelative(uri);
+    if (ctx.changeManager) {
+      ctx.changeManager.stageCreate(relPath, content);
+    } else {
+      await vscode.workspace.fs.writeFile(uri, encode(content));
+    }
     return {
       content: `${exists ? "Overwrote" : "Created"} ${relPath} (${content.split("\n").length} lines).`,
       summary: `${exists ? "Overwrote" : "Created"} ${relPath}`,

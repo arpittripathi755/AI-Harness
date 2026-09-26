@@ -8,7 +8,7 @@ setup:
 
 run:
 	npm run compile
-	@./scripts/launch-tui.sh $(TASK)
+	@REPO="$(REPO)" ./scripts/launch-tui.sh "$(TASK)"
 
 test:
 	npm run lint

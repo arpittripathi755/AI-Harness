@@ -34,6 +34,9 @@ export class LoopDetector {
   /** Max consecutive edit failures on the same file before forcing a re-read. */
   static readonly EDIT_FAIL_THRESHOLD = 2;
 
+  /** Max consecutive edit failures on the same file before aborting task. */
+  static readonly EDIT_ABORT_THRESHOLD = 5;
+
   /** Max consecutive failed searches before nudging to change strategy. */
   static readonly SEARCH_FAIL_THRESHOLD = 3;
 
@@ -47,15 +50,32 @@ export class LoopDetector {
 
   // ─── Hashing ──────────────────────────────────────────────────────────────
 
+  /** Canonicalize values recursively (trim strings, sort object keys). */
+  static canonicalize(value: unknown): unknown {
+    if (value === null || typeof value !== "object") {
+      if (typeof value === "string") {
+        return value.trim();
+      }
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.map(LoopDetector.canonicalize);
+    }
+    const obj = value as Record<string, unknown>;
+    const sortedKeys = Object.keys(obj).sort();
+    const result: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      result[key] = LoopDetector.canonicalize(obj[key]);
+    }
+    return result;
+  }
+
   /** Hash a value to a short canonical string for comparison. */
   static hash(value: unknown): string {
     let canonical: string;
     try {
-      if (value !== null && typeof value === "object") {
-        canonical = JSON.stringify(value, Object.keys(value as object).sort());
-      } else {
-        canonical = String(value);
-      }
+      const canonicalized = LoopDetector.canonicalize(value);
+      canonical = JSON.stringify(canonicalized);
     } catch {
       canonical = String(value);
     }
@@ -108,6 +128,17 @@ export class LoopDetector {
       };
     }
 
+    const filePath = typeof args.path === "string" ? args.path : undefined;
+    if (filePath && this.isEditAborted(filePath)) {
+      return {
+        type: "abort",
+        message:
+          `The agent has failed to edit "${filePath}" ${this.editFailureCount(filePath)} times in a row. ` +
+          `Aborting recovery loop to prevent infinite retry loops.`,
+        repetitions: this.editFailureCount(filePath),
+      };
+    }
+
     if (consecutive >= LoopDetector.WARN_THRESHOLD) {
       return {
         type: "warn",
@@ -133,6 +164,11 @@ export class LoopDetector {
     const count = (this.editFailures.get(filePath) ?? 0) + 1;
     this.editFailures.set(filePath, count);
     return count >= LoopDetector.EDIT_FAIL_THRESHOLD;
+  }
+
+  /** Whether consecutive edit failures on a file have reached the abort threshold. */
+  isEditAborted(filePath: string): boolean {
+    return (this.editFailures.get(filePath) ?? 0) >= LoopDetector.EDIT_ABORT_THRESHOLD;
   }
 
   /** Clear edit failure counter for a file after a successful edit or explicit re-read. */

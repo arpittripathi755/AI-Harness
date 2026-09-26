@@ -48,10 +48,14 @@ export const deleteFileTool: Tool = {
       }
     }
 
-    await vscode.workspace.fs.delete(uri, {
-      recursive: isDir ? recursive || true : false,
-      useTrash: true,
-    });
+    if (ctx.changeManager) {
+      ctx.changeManager.stageDelete(relPath);
+    } else {
+      await vscode.workspace.fs.delete(uri, {
+        recursive: isDir ? recursive || true : false,
+        useTrash: true,
+      });
+    }
     return {
       content: `Deleted ${relPath}.`,
       summary: `Deleted ${relPath}`,

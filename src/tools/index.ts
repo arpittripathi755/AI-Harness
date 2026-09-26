@@ -10,6 +10,9 @@ import { renameFileTool } from "./impl/renameFile";
 import { deleteFileTool } from "./impl/deleteFile";
 import { multiEditTool } from "./impl/multiEdit";
 import { runCommandTool } from "./impl/runCommand";
+import { fetchGithubIssueTool } from "./impl/fetchGithubIssue";
+import { webSearchTool } from "./impl/webSearch";
+import { webFetchTool } from "./impl/webFetch";
 
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
@@ -19,12 +22,15 @@ import { runCommandTool } from "./impl/runCommand";
 export function createToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   registry
-    // Read-only inspection
+    // Read-only inspection & external documentation
     .register(listFilesTool)
     .register(readFileTool)
     .register(readActiveEditorTool)
     .register(readSelectionTool)
     .register(searchWorkspaceTool)
+    .register(fetchGithubIssueTool)
+    .register(webSearchTool)
+    .register(webFetchTool)
     // Mutating
     .register(createFileTool)
     .register(editFileTool)
@@ -37,4 +43,6 @@ export function createToolRegistry(): ToolRegistry {
 }
 
 export { ToolRegistry } from "./registry";
+export { webSearchTool, createWebSearchTool } from "./impl/webSearch";
+export { webFetchTool, createWebFetchTool } from "./impl/webFetch";
 export * from "./types";

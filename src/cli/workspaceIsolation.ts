@@ -15,6 +15,23 @@ export class WorkspaceIsolation {
   private static readonly DESKTOP = path.join(os.homedir(), "Desktop");
 
   /**
+   * Returns the default workspace directory (~/Desktop).
+   * Ensures the directory exists if possible, falling back to homedir if needed.
+   * Never hardcodes usernames; dynamically resolves using os.homedir().
+   */
+  static getDefaultWorkspace(): string {
+    const desktop = this.DESKTOP;
+    try {
+      if (!fs.existsSync(desktop)) {
+        fs.mkdirSync(desktop, { recursive: true });
+      }
+      return desktop;
+    } catch {
+      return os.homedir();
+    }
+  }
+
+  /**
    * Returns the path to an existing or freshly-cloned repository workspace
    * on the Desktop. Never mutates an existing folder; always picks a clean slot.
    */

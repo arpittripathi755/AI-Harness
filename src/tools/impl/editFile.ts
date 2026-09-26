@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
 import { requireString } from "../fsutil";
 import { applyEdits, parseEditOp, readForEdit, writeText } from "../editCore";
@@ -33,17 +34,110 @@ export const editFileTool: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
-    const rel = requireString(args, "path");
-    const uri = await ctx.resolvePath(rel);
+    let rel: string;
+    try {
+      rel = requireString(args, "path");
+    } catch (err: any) {
+      return {
+        isError: true,
+        content: JSON.stringify(
+          {
+            ok: false,
+            errorType: "INVALID_ARGUMENT",
+            message: err.message || "Missing required string argument 'path'.",
+          },
+          null,
+          2,
+        ),
+        summary: "Invalid path argument",
+      };
+    }
 
-    const op = parseEditOp(args);
-    const source = await readForEdit(uri);
-    const { content, replacements } = applyEdits(source, [op]);
-    await writeText(uri, content);
+    let uri: vscode.Uri;
+    try {
+      uri = await ctx.resolvePath(rel);
+    } catch (err: any) {
+      return {
+        isError: true,
+        content: JSON.stringify(
+          {
+            ok: false,
+            errorType: "INVALID_PATH",
+            filePath: rel,
+            message: err.message || `Cannot resolve path "${rel}".`,
+          },
+          null,
+          2,
+        ),
+        summary: `Invalid path: ${rel}`,
+      };
+    }
 
     const relPath = ctx.toRelative(uri);
+
+    let op;
+    try {
+      if (Array.isArray(args.edits) && args.edits.length > 0) {
+        op = parseEditOp(args.edits[0]);
+      } else {
+        op = parseEditOp(args);
+      }
+    } catch (err: any) {
+      return {
+        isError: true,
+        content: JSON.stringify(
+          {
+            ok: false,
+            errorType: "INVALID_ARGUMENT",
+            filePath: relPath,
+            message: err.message || "Invalid edit operations.",
+          },
+          null,
+          2,
+        ),
+        summary: `Invalid edit arguments for ${relPath}`,
+      };
+    }
+
+    let source: string;
+    try {
+      source = ctx.changeManager
+        ? await ctx.changeManager.readEffective(relPath)
+        : await readForEdit(uri);
+    } catch (err: any) {
+      return {
+        isError: true,
+        content: JSON.stringify(
+          {
+            ok: false,
+            errorType: "FILE_NOT_FOUND",
+            filePath: relPath,
+            message: `File not found or unreadable: ${relPath}`,
+          },
+          null,
+          2,
+        ),
+        summary: `File not found: ${relPath}`,
+      };
+    }
+
+    const outcome = applyEdits(source, [op], relPath);
+    if (!outcome.ok) {
+      return {
+        isError: true,
+        content: JSON.stringify(outcome, null, 2),
+        summary: `Edit failed (${outcome.errorType}): ${relPath}`,
+      };
+    }
+
+    if (ctx.changeManager) {
+      ctx.changeManager.stageEdit(relPath, outcome.content);
+    } else {
+      await writeText(uri, outcome.content);
+    }
+
     return {
-      content: `Edited ${relPath} (${replacements} replacement${replacements === 1 ? "" : "s"}).`,
+      content: `Edited ${relPath} (${outcome.replacements} replacement${outcome.replacements === 1 ? "" : "s"}).`,
       summary: `Edited ${relPath}`,
     };
   },

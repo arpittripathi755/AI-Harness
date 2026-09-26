@@ -172,9 +172,16 @@ export class TerminalUI {
   printPhase(phase: string): void {
     const phaseColor: Record<string, string> = {
       EXPLORING: colors.blue,
+      PLANNING: colors.cyan,
       EDITING: colors.yellow,
       VERIFYING: colors.magenta,
+      REVIEWING: colors.cyan,
+      COMMITTING: colors.green,
+      CREATING_PR: colors.blue,
+      COMPLETED: colors.green,
       DONE: colors.green,
+      BLOCKED: colors.red,
+      FAILED: colors.red,
     };
     const c = phaseColor[phase] ?? colors.dim;
     console.log(`  ${c}\u25B6 Phase: ${phase}${colors.reset}`);
@@ -211,6 +218,14 @@ function formatToolStartLabel(name: string, title: string): string {
     case "run_command": {
       const match = title.match(/→\s*(.+)$/);
       return match ? `Running ${match[1]}` : `Running command...`;
+    }
+    case "web_search": {
+      const match = title.match(/→\s*(.+)$/);
+      return match ? `Searching web: ${match[1]}` : `Searching web...`;
+    }
+    case "web_fetch": {
+      const match = title.match(/→\s*(.+)$/);
+      return match ? `Fetching web page: ${match[1]}` : `Fetching web page...`;
     }
     default:
       return title || `Executing ${name}...`;

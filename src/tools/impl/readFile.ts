@@ -28,7 +28,10 @@ export const readFileTool: Tool = {
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
     const rel = requireString(args, "path");
     const uri = await ctx.resolvePath(rel);
-    const text = await readText(uri);
+    const relPath = ctx.toRelative(uri);
+    const text = ctx.changeManager
+      ? await ctx.changeManager.readEffective(relPath)
+      : await readText(uri);
     const allLines = text.split("\n");
 
     const start = Math.max(1, optionalNumber(args, "start_line", 1));
@@ -39,7 +42,6 @@ export const readFileTool: Tool = {
     const slice = allLines.slice(start - 1, end).join("\n");
     const numbered = numberLines(slice, start);
 
-    const relPath = ctx.toRelative(uri);
     const ranged = start > 1 || end < allLines.length;
     return {
       content: `${relPath} (lines ${start}-${end} of ${allLines.length})\n${numbered}`,
