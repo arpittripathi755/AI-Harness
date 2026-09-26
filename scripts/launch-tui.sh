@@ -10,11 +10,14 @@ fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Always ensure build artifacts are up to date
-(cd "$REPO_DIR" && npm run compile)
+# Verify build artifacts
+if [ ! -f "$REPO_DIR/dist/cli.js" ]; then
+  echo "Compiling Daxiom TUI..."
+  (cd "$REPO_DIR" && npm run compile)
+fi
 
 # Create a self-cleaning runner script for the separate terminal window
-RUNNER=$(mktemp /tmp/axiom-tui-run-XXXXXX)
+RUNNER=$(mktemp /tmp/daxiom-tui-run-XXXXXX)
 cat << 'EOF' > "$RUNNER"
 #!/bin/bash
 trap 'rm -f "$0"' EXIT INT TERM
@@ -83,5 +86,5 @@ else
   exec /bin/bash "$RUNNER"
 fi
 
-echo "Axiom TUI launched in a new terminal window."
+echo "Daxiom TUI launched in a new terminal window."
 exit 0

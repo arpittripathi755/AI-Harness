@@ -14,11 +14,6 @@ import { TaskMemory, type TaskMemoryData } from "./TaskMemory";
 /** Product name shown to the user and used in the agent's self-identity. */
 export const AGENT_NAME = "Axiom";
 
-/** Safety bound on tool round-trips: unlimited by default (runs until done). */
-const MAX_ITERATIONS = process.env.MAX_TOOL_ITERATIONS
-  ? parseInt(process.env.MAX_TOOL_ITERATIONS, 10)
-  : Infinity;
-
 function buildSystemPrompt(
   modelDisplay: string,
   workspaceName: string | undefined,
@@ -289,7 +284,7 @@ export class ChatSession {
       : undefined;
 
     try {
-      for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+      while (!controller.signal.aborted) {
         const id = `a${++this.counter}`;
         let started = false;
         cb.onStatus("Thinking…");
@@ -330,6 +325,7 @@ export class ChatSession {
           tool_calls: turn.toolCalls.length ? turn.toolCalls : undefined,
         });
 
+        // The agent stops ONLY when it responds without requesting more tool calls
         if (turn.toolCalls.length === 0) {
           cb.onStatus("Finished");
           return;
@@ -338,12 +334,8 @@ export class ChatSession {
         for (const call of turn.toolCalls) {
           await this.runToolCall(call, cb);
         }
-        // Loop again so the model can continue with the tool results.
+        // Loop again continuously so the model receives tool results and keeps executing until done
       }
-
-      cb.onError(
-        `Stopped after ${MAX_ITERATIONS} tool iterations without a final answer.`,
-      );
     } catch (err) {
       if (controller.signal.aborted) {
         return; // user cancelled; state already recorded up to this point
