@@ -9,6 +9,8 @@ import {
   modelSupportsVision,
 } from "../shared/models";
 
+import { TaskMemory, type TaskMemoryData } from "./TaskMemory";
+
 /** Product name shown to the user and used in the agent's self-identity. */
 export const AGENT_NAME = "Axiom";
 
@@ -20,6 +22,7 @@ function buildSystemPrompt(
   workspaceName: string | undefined,
   root: string | undefined,
   allowMutations: boolean,
+  workingMemorySection?: string,
 ): string {
   const ws = root
     ? `You are operating inside the user's VS Code workspace.
@@ -42,6 +45,8 @@ disabled and will be refused. Do the following:
 - Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
 
+  const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
+
   return `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
@@ -50,7 +55,7 @@ answer honestly that you are ${AGENT_NAME} running on the "${modelDisplay}" mode
 
 ${ws}
 
-${modeGuidance}
+${modeGuidance}${memoryBlock}
 
 Work by reasoning step by step: think, choose a tool, execute it, observe the result,
 then continue until the task is complete. Inspect real files rather than guessing.
@@ -121,6 +126,8 @@ export class ChatSession {
   private visionSupported: boolean;
   /** Display name of the current model, injected into the system prompt. */
   private modelDisplay: string;
+  /** Active working memory maintaining task context across tool iterations. */
+  private readonly taskMemory: TaskMemory;
 
   constructor(
     private readonly client: LLMClient,
@@ -130,10 +137,12 @@ export class ChatSession {
     private allowMutations: boolean,
     initialModelId: string,
     seedHistory?: ChatMessage[],
+    initialMemory?: TaskMemoryData,
   ) {
     this.toolsSupported = modelSupportsTools(initialModelId);
     this.visionSupported = modelSupportsVision(initialModelId);
     this.modelDisplay = modelDisplayName(initialModelId);
+    this.taskMemory = TaskMemory.fromData(initialMemory, seedHistory);
     this.messages = [{ role: "system", content: this.systemPrompt() }];
     if (seedHistory && seedHistory.length) {
       this.messages.push(...seedHistory);
@@ -147,6 +156,7 @@ export class ChatSession {
     workspaceName: string | undefined,
     allowMutations: boolean,
     seedHistory?: ChatMessage[],
+    initialMemory?: TaskMemoryData,
   ): ChatSession {
     return new ChatSession(
       new LLMClient(opts),
@@ -156,6 +166,7 @@ export class ChatSession {
       allowMutations,
       opts.model,
       seedHistory,
+      initialMemory,
     );
   }
 
@@ -164,16 +175,26 @@ export class ChatSession {
     return this.messages.slice(1);
   }
 
+  /** Export active task memory (for persistence and chat switching). */
+  exportTaskMemory(): TaskMemoryData {
+    return this.taskMemory.exportData();
+  }
+
+  get memory(): TaskMemory {
+    return this.taskMemory;
+  }
+
   private systemPrompt(): string {
     return buildSystemPrompt(
       this.modelDisplay,
       this.workspaceName,
       this.ctx.workspaceRoot?.fsPath,
       this.allowMutations,
+      this.taskMemory.formatForSystemPrompt(),
     );
   }
 
-  /** Refresh the system message in place after a live model/mode change. */
+  /** Refresh the system message in place after a live model/mode change or memory update. */
   private refreshSystemPrompt(): void {
     this.messages[0] = { role: "system", content: this.systemPrompt() };
   }
@@ -222,6 +243,7 @@ export class ChatSession {
 
   reset(): void {
     this.cancel();
+    this.taskMemory.clear();
     this.messages = [{ role: "system", content: this.systemPrompt() }];
   }
 
@@ -244,6 +266,10 @@ export class ChatSession {
       cb.onError("A response is already in progress.");
       return;
     }
+
+    // Retain user request in active task memory and refresh system prompt
+    this.taskMemory.recordUserRequest(userText);
+    this.refreshSystemPrompt();
 
     this.messages.push({ role: "user", content: this.buildUserContent(userText, images) });
 
@@ -284,6 +310,11 @@ export class ChatSession {
 
         if (started) {
           cb.onAssistantDone(id);
+        }
+
+        // Record any plan or reasoning the assistant articulated
+        if (turn.content) {
+          this.taskMemory.recordAssistantTurn(turn.content);
         }
 
         this.messages.push({
@@ -364,6 +395,10 @@ export class ChatSession {
         summary = err instanceof Error ? err.message : "Failed";
       }
     }
+
+    // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
+    this.taskMemory.recordToolExecution(name, args, ok, summary, content);
+    this.refreshSystemPrompt();
 
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
     cb.onToolEnd(call.id, ok, summary);

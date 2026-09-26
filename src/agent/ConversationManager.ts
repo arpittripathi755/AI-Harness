@@ -2,7 +2,9 @@ import type * as vscode from "vscode";
 import type { ChatMessage } from "../llm/types";
 import type { ChatSummary, UiTimelineItem } from "../shared/protocol";
 
-/** A persisted conversation: its UI timeline plus the LLM message history. */
+import type { TaskMemoryData } from "./TaskMemory";
+
+/** A persisted conversation: its UI timeline plus the LLM message history and task memory. */
 export interface ConversationRecord {
   id: string;
   title: string;
@@ -11,6 +13,8 @@ export interface ConversationRecord {
   timeline: UiTimelineItem[];
   /** LLM history excluding the system prompt (used to reseed a ChatSession). */
   history: ChatMessage[];
+  /** Working task memory preserving context across tool calls and reloads. */
+  taskMemory?: TaskMemoryData;
 }
 
 const STORAGE_KEY = "axiom.conversations.v1";

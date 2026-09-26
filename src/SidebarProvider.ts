@@ -36,6 +36,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | undefined;
   private session: ChatSession | undefined;
+  private sessionConversationId: string | undefined;
   private ctx: ToolContext | undefined;
   private readonly chats: ConversationManager;
 
@@ -44,6 +45,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     context.subscriptions.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         this.session = undefined;
+        this.sessionConversationId = undefined;
         this.ctx = undefined;
       }),
     );
@@ -71,6 +73,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   public newChat(): void {
     this.session?.cancel();
     this.session = undefined;
+    this.sessionConversationId = undefined;
     this.chats.create();
     this.post({ type: "restore", items: [] });
     this.postChats();
@@ -130,6 +133,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private switchChat(id: string): void {
     this.session?.cancel();
     this.session = undefined;
+    this.sessionConversationId = undefined;
     this.chats.setActive(id);
     this.post({ type: "restore", items: this.chats.active.timeline });
     this.postChats();
@@ -143,6 +147,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     if (wasActive) {
       this.session?.cancel();
       this.session = undefined;
+      this.sessionConversationId = undefined;
       this.post({ type: "restore", items: this.chats.active.timeline });
     }
     this.postChats();
@@ -245,8 +250,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       onError: (message) => this.post({ type: "error", message }),
     }, images);
 
-    // Persist the LLM history after the turn completes.
+    // Persist the LLM history and active task memory after the turn completes.
     this.chats.active.history = session.exportHistory();
+    this.chats.active.taskMemory = session.exportTaskMemory();
     this.chats.save();
 
     this.post({ type: "busy", value: false });
@@ -284,9 +290,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
    * from the persisted history so switching chats preserves context.
    */
   private async getSession(): Promise<ChatSession> {
-    if (this.session) {
+    if (this.session && this.sessionConversationId === this.chats.activeConversationId) {
       return this.session;
     }
+    this.session?.cancel();
+    this.session = undefined;
+
     const config = await resolveConfig(this.context);
     const registry = createToolRegistry();
     const ctx = this.ensureToolContext();
@@ -299,7 +308,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       folder?.name,
       allowMutations,
       this.chats.active.history,
+      this.chats.active.taskMemory,
     );
+    this.sessionConversationId = this.chats.activeConversationId;
     return this.session;
   }
 

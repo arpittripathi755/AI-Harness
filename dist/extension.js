@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(9);
+const config_1 = __webpack_require__(10);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -61,6 +61,8 @@ function activate(context) {
         vscode.commands.executeCommand("claudeAgent.chat.focus");
         provider.openApiSettings();
     }));
+    // Automatically reveal the Axiom chat view in the sidebar on startup.
+    vscode.commands.executeCommand("claude-agent.open");
 }
 function deactivate() { }
 
@@ -113,21 +115,27 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(8);
-const config_1 = __webpack_require__(9);
-const modes_1 = __webpack_require__(10);
-const tools_1 = __webpack_require__(11);
-const workspace_1 = __webpack_require__(28);
+const ConversationManager_1 = __webpack_require__(9);
+const config_1 = __webpack_require__(10);
+const modes_1 = __webpack_require__(11);
+const tools_1 = __webpack_require__(12);
+const workspace_1 = __webpack_require__(29);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
     view;
     session;
+    sessionConversationId;
     ctx;
     chats;
     constructor(context) {
         this.context = context;
         this.chats = new ConversationManager_1.ConversationManager(context.workspaceState);
+        context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            this.session = undefined;
+            this.sessionConversationId = undefined;
+            this.ctx = undefined;
+        }));
     }
     resolveWebviewView(webviewView) {
         this.view = webviewView;
@@ -145,6 +153,7 @@ class SidebarProvider {
     newChat() {
         this.session?.cancel();
         this.session = undefined;
+        this.sessionConversationId = undefined;
         this.chats.create();
         this.post({ type: "restore", items: [] });
         this.postChats();
@@ -201,6 +210,7 @@ class SidebarProvider {
     switchChat(id) {
         this.session?.cancel();
         this.session = undefined;
+        this.sessionConversationId = undefined;
         this.chats.setActive(id);
         this.post({ type: "restore", items: this.chats.active.timeline });
         this.postChats();
@@ -213,6 +223,7 @@ class SidebarProvider {
         if (wasActive) {
             this.session?.cancel();
             this.session = undefined;
+            this.sessionConversationId = undefined;
             this.post({ type: "restore", items: this.chats.active.timeline });
         }
         this.postChats();
@@ -309,8 +320,9 @@ class SidebarProvider {
             onStatus: (status) => this.post({ type: "status", status }),
             onError: (message) => this.post({ type: "error", message }),
         }, images);
-        // Persist the LLM history after the turn completes.
+        // Persist the LLM history and active task memory after the turn completes.
         this.chats.active.history = session.exportHistory();
+        this.chats.active.taskMemory = session.exportTaskMemory();
         this.chats.save();
         this.post({ type: "busy", value: false });
         this.post({ type: "status", status: "Idle" });
@@ -340,22 +352,21 @@ class SidebarProvider {
      * from the persisted history so switching chats preserves context.
      */
     async getSession() {
-        if (this.session) {
+        if (this.session && this.sessionConversationId === this.chats.activeConversationId) {
             return this.session;
         }
+        this.session?.cancel();
+        this.session = undefined;
         const config = await (0, config_1.resolveConfig)(this.context);
         const registry = (0, tools_1.createToolRegistry)();
         const ctx = this.ensureToolContext();
         const folder = vscode.workspace.workspaceFolders?.[0];
         const allowMutations = (0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations;
-        this.session = ChatSession_1.ChatSession.create(config, registry, ctx, folder?.name, allowMutations, this.chats.active.history);
+        this.session = ChatSession_1.ChatSession.create(config, registry, ctx, folder?.name, allowMutations, this.chats.active.history, this.chats.active.taskMemory);
+        this.sessionConversationId = this.chats.activeConversationId;
         return this.session;
     }
     ensureToolContext() {
-        if (this.ctx) {
-            this.ctx.terminalAutoRun = (0, config_1.getTerminalAutoRun)(this.context);
-            return this.ctx;
-        }
         const root = (0, workspace_1.getWorkspaceRoot)();
         const confirm = async (message, detail) => {
             const pick = await vscode.window.showWarningMessage(message, { modal: true, detail }, "Allow");
@@ -418,11 +429,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChatSession = exports.AGENT_NAME = void 0;
 const LLMClient_1 = __webpack_require__(4);
 const models_1 = __webpack_require__(5);
+const TaskMemory_1 = __webpack_require__(8);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 /** Safety bound on tool round-trips within a single user turn. */
 const MAX_ITERATIONS = 25;
-function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations) {
+function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection) {
     const ws = root
         ? `You are operating inside the user's VS Code workspace.
 Workspace: ${workspaceName ?? "(unnamed)"}
@@ -442,6 +454,7 @@ disabled and will be refused. Do the following:
 - Then explain precisely what changes you would make (which files, what edits, and why).
 - Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
+    const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
     return `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${exports.AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
@@ -450,7 +463,7 @@ answer honestly that you are ${exports.AGENT_NAME} running on the "${modelDispla
 
 ${ws}
 
-${modeGuidance}
+${modeGuidance}${memoryBlock}
 
 Work by reasoning step by step: think, choose a tool, execute it, observe the result,
 then continue until the task is complete. Inspect real files rather than guessing.
@@ -512,7 +525,9 @@ class ChatSession {
     visionSupported;
     /** Display name of the current model, injected into the system prompt. */
     modelDisplay;
-    constructor(client, registry, ctx, workspaceName, allowMutations, initialModelId, seedHistory) {
+    /** Active working memory maintaining task context across tool iterations. */
+    taskMemory;
+    constructor(client, registry, ctx, workspaceName, allowMutations, initialModelId, seedHistory, initialMemory) {
         this.client = client;
         this.registry = registry;
         this.ctx = ctx;
@@ -521,22 +536,30 @@ class ChatSession {
         this.toolsSupported = (0, models_1.modelSupportsTools)(initialModelId);
         this.visionSupported = (0, models_1.modelSupportsVision)(initialModelId);
         this.modelDisplay = modelDisplayName(initialModelId);
+        this.taskMemory = TaskMemory_1.TaskMemory.fromData(initialMemory, seedHistory);
         this.messages = [{ role: "system", content: this.systemPrompt() }];
         if (seedHistory && seedHistory.length) {
             this.messages.push(...seedHistory);
         }
     }
-    static create(opts, registry, ctx, workspaceName, allowMutations, seedHistory) {
-        return new ChatSession(new LLMClient_1.LLMClient(opts), registry, ctx, workspaceName, allowMutations, opts.model, seedHistory);
+    static create(opts, registry, ctx, workspaceName, allowMutations, seedHistory, initialMemory) {
+        return new ChatSession(new LLMClient_1.LLMClient(opts), registry, ctx, workspaceName, allowMutations, opts.model, seedHistory, initialMemory);
     }
     /** Conversation history excluding the system prompt (for persistence). */
     exportHistory() {
         return this.messages.slice(1);
     }
-    systemPrompt() {
-        return buildSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations);
+    /** Export active task memory (for persistence and chat switching). */
+    exportTaskMemory() {
+        return this.taskMemory.exportData();
     }
-    /** Refresh the system message in place after a live model/mode change. */
+    get memory() {
+        return this.taskMemory;
+    }
+    systemPrompt() {
+        return buildSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations, this.taskMemory.formatForSystemPrompt());
+    }
+    /** Refresh the system message in place after a live model/mode change or memory update. */
     refreshSystemPrompt() {
         this.messages[0] = { role: "system", content: this.systemPrompt() };
     }
@@ -576,6 +599,7 @@ class ChatSession {
     }
     reset() {
         this.cancel();
+        this.taskMemory.clear();
         this.messages = [{ role: "system", content: this.systemPrompt() }];
     }
     cancel() {
@@ -592,6 +616,9 @@ class ChatSession {
             cb.onError("A response is already in progress.");
             return;
         }
+        // Retain user request in active task memory and refresh system prompt
+        this.taskMemory.recordUserRequest(userText);
+        this.refreshSystemPrompt();
         this.messages.push({ role: "user", content: this.buildUserContent(userText, images) });
         const controller = new AbortController();
         this.abortController = controller;
@@ -626,6 +653,10 @@ class ChatSession {
                 const turn = next.value;
                 if (started) {
                     cb.onAssistantDone(id);
+                }
+                // Record any plan or reasoning the assistant articulated
+                if (turn.content) {
+                    this.taskMemory.recordAssistantTurn(turn.content);
                 }
                 this.messages.push({
                     role: "assistant",
@@ -702,6 +733,9 @@ class ChatSession {
                 summary = err instanceof Error ? err.message : "Failed";
             }
         }
+        // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
+        this.taskMemory.recordToolExecution(name, args, ok, summary, content);
+        this.refreshSystemPrompt();
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
         cb.onToolEnd(call.id, ok, summary);
     }
@@ -764,6 +798,34 @@ class LLMClient {
         this.opts.apiKey = apiKey;
     }
     /**
+     * Translate the model ID if required by the target provider to prevent errors.
+     * - DeepSeek official API (api.deepseek.com) requires 'deepseek-chat' / 'deepseek-reasoner'.
+     * - Lightning AI (lightning.ai) uses its hosted catalog IDs.
+     */
+    resolveModelForEndpoint(model, baseUrl) {
+        const isDeepSeekEndpoint = baseUrl.includes("api.deepseek.com");
+        if (isDeepSeekEndpoint) {
+            if (model === "deepseek-v4-pro" ||
+                model === "deepseek-flash" ||
+                model === "deepseek-ai/deepseek-v4.1-flash" ||
+                model === "nvidia/nemotron-3-ultra-550b-a55b" ||
+                model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+                model === "ultra") {
+                return "deepseek-chat";
+            }
+        }
+        const isLightningEndpoint = baseUrl.includes("lightning.ai");
+        if (isLightningEndpoint) {
+            if (model === "deepseek-flash" || model === "deepseek-v4-pro") {
+                return "deepseek-ai/deepseek-v4.1-flash";
+            }
+            if (model === "ultra" || model === "nvidia/nemotron-3-ultra-550b-a55b") {
+                return "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
+            }
+        }
+        return model;
+    }
+    /**
      * Stream one assistant turn. Yields `{type:'text'}` deltas as text arrives and
      * accumulates any streamed tool-call fragments. When the stream ends, the
      * generator RETURNS the assembled {@link AssistantTurn} (content + tool calls).
@@ -782,8 +844,9 @@ class LLMClient {
                 onRetry,
             });
         }
+        const effectiveModel = this.resolveModelForEndpoint(this.model, this.opts.baseUrl);
         const body = {
-            model: this.model,
+            model: effectiveModel,
             messages,
             stream: true,
         };
@@ -942,48 +1005,27 @@ exports.modelApi = modelApi;
 exports.resolveModelId = resolveModelId;
 exports.MODELS = [
     {
-        displayName: "Nemotron 550B",
-        apiModelId: "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b",
+        displayName: "ultra",
+        apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
         // Text-only model; omit images rather than risk a 400.
         supportsVision: false,
     },
-    { displayName: "Claude Fable 5", apiModelId: "anthropic/claude-fable-5" },
-    { displayName: "Claude Opus 4.8", apiModelId: "anthropic/claude-opus-4-8" },
-    { displayName: "Gemini 3.5 Flash", apiModelId: "google/gemini-3.5-flash" },
-    { displayName: "5.3 codex", apiModelId: "gpt-5.3-codex" },
     {
-        displayName: "GPT-5.5",
-        apiModelId: "openai/gpt-5.5-2026-04-23",
-        // GPT-5.5 rejects function tools on chat/completions, so it uses the
-        // /v1/responses API (which supports tools) instead.
-        api: "responses",
-    },
-    { displayName: "Claude Opus 4.7", apiModelId: "anthropic/claude-opus-4-7" },
-    {
-        displayName: "Claude Sonnet 4.6",
-        apiModelId: "anthropic/claude-sonnet-4-6",
+        displayName: "deepseek-v4-pro",
+        apiModelId: "deepseek-v4-pro",
+        supportsVision: false,
     },
     {
-        displayName: "Claude Sonnet 4.5",
-        apiModelId: "anthropic/claude-sonnet-4-5-20250929",
-    },
-    {
-        displayName: "ultra",
-        apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
-    },
-    {
-        displayName: "deepseek v4",
-        apiModelId: "deepseek-ai/deepseek-v4.1-flash",
-    },
-    {
-        displayName: "kimi",
-        apiModelId: "moonshotai/kimi-k3",
+        displayName: "deepseek-flash",
+        apiModelId: "deepseek-flash",
+        supportsVision: false,
     },
 ];
 /** Default evaluation model (text-only, supportsVision: false). */
-exports.DEFAULT_MODEL_ID = "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
+exports.DEFAULT_MODEL_ID = "nvidia/nemotron-3-ultra-550b-a55b";
 function getModelByApiId(apiModelId) {
-    return exports.MODELS.find((m) => m.apiModelId === apiModelId);
+    const resolved = resolveModelId(apiModelId);
+    return exports.MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === apiModelId);
 }
 /** Whether a model supports function/tool calling on this endpoint (default true). */
 function modelSupportsTools(apiModelId) {
@@ -999,8 +1041,24 @@ function modelApi(apiModelId) {
 }
 /** Resolve a stored/selected api id to a valid one, falling back to the default. */
 function resolveModelId(apiModelId) {
-    if (apiModelId && exports.MODELS.some((m) => m.apiModelId === apiModelId)) {
+    if (!apiModelId) {
+        return exports.DEFAULT_MODEL_ID;
+    }
+    if (exports.MODELS.some((m) => m.apiModelId === apiModelId)) {
         return apiModelId;
+    }
+    if (apiModelId === "ultra" ||
+        apiModelId === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
+        return "nvidia/nemotron-3-ultra-550b-a55b";
+    }
+    if (apiModelId === "deepseek-v4-pro" ||
+        apiModelId === "deepseek-ai/deepseek-v4-pro") {
+        return "deepseek-v4-pro";
+    }
+    if (apiModelId === "deepseek-flash" ||
+        apiModelId === "deepseek-ai/deepseek-v4.1-flash" ||
+        apiModelId === "deepseek v4") {
+        return "deepseek-flash";
     }
     return exports.DEFAULT_MODEL_ID;
 }
@@ -1308,6 +1366,303 @@ function sleep(ms, signal) {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TaskMemory = void 0;
+/**
+ * Maintains active task working memory and context across multiple reasoning
+ * cycles, tool calls, and turns within a conversation.
+ *
+ * Prevents the agent from losing context of the user's original goal, files read,
+ * files modified, test results, or errors encountered during complex multi-step tasks.
+ */
+class TaskMemory {
+    userRequests = [];
+    planSteps = [];
+    filesRead = new Set();
+    filesModified = new Map(); // path -> action summary
+    keyFindings = [];
+    commandResults = [];
+    errorsEncountered = [];
+    actionsTaken = [];
+    constructor(data) {
+        if (data) {
+            this.userRequests = Array.isArray(data.userRequests) ? [...data.userRequests] : [];
+            this.planSteps = Array.isArray(data.planSteps) ? [...data.planSteps] : [];
+            if (Array.isArray(data.filesRead)) {
+                for (const f of data.filesRead) {
+                    this.filesRead.add(f);
+                }
+            }
+            if (Array.isArray(data.filesModified)) {
+                for (const item of data.filesModified) {
+                    if (item && item.path) {
+                        this.filesModified.set(item.path, item.action);
+                    }
+                }
+            }
+            this.keyFindings = Array.isArray(data.keyFindings) ? [...data.keyFindings] : [];
+            this.commandResults = Array.isArray(data.commandResults) ? [...data.commandResults] : [];
+            this.errorsEncountered = Array.isArray(data.errorsEncountered) ? [...data.errorsEncountered] : [];
+            this.actionsTaken = Array.isArray(data.actionsTaken) ? [...data.actionsTaken] : [];
+        }
+    }
+    /**
+     * Reconstitute TaskMemory from serialized data or rehydrate from seed message history.
+     */
+    static fromData(data, seedHistory) {
+        const memory = new TaskMemory(data);
+        if ((!data || memory.isEmpty()) && seedHistory && seedHistory.length > 0) {
+            memory.rehydrateFromHistory(seedHistory);
+        }
+        return memory;
+    }
+    isEmpty() {
+        return (this.userRequests.length === 0 &&
+            this.filesRead.size === 0 &&
+            this.filesModified.size === 0 &&
+            this.actionsTaken.length === 0);
+    }
+    clear() {
+        this.userRequests = [];
+        this.planSteps = [];
+        this.filesRead.clear();
+        this.filesModified.clear();
+        this.keyFindings = [];
+        this.commandResults = [];
+        this.errorsEncountered = [];
+        this.actionsTaken = [];
+    }
+    /** Record a user request or follow-up prompt. */
+    recordUserRequest(text) {
+        const trimmed = text.trim();
+        if (!trimmed) {
+            return;
+        }
+        if (!this.userRequests.includes(trimmed)) {
+            this.userRequests.push(trimmed);
+        }
+    }
+    /**
+     * Scan assistant text for potential plans or numbered steps.
+     */
+    recordAssistantTurn(turnContent) {
+        if (!turnContent) {
+            return;
+        }
+        const lines = turnContent.split("\n");
+        const planLines = [];
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            // Match numbered lists like "1. inspect...", "Step 1: ..." or "- [ ] ..."
+            if (/^(?:\d+[\.\)]|step\s+\d+:?|[-*]\s*\[\s*[ xX]?\s*\])\s+/i.test(line) &&
+                line.length > 5) {
+                planLines.push(line);
+            }
+        }
+        if (planLines.length >= 2) {
+            this.planSteps = planLines;
+        }
+    }
+    /**
+     * Record a tool execution and update relevant context buckets.
+     */
+    recordToolExecution(name, args, ok, summary, rawContent) {
+        const pathArg = typeof args.path === "string" ? args.path : "";
+        const commandArg = typeof args.command === "string" ? args.command : "";
+        // 1. Files Read
+        if (name === "read_file" && pathArg) {
+            const range = typeof args.start_line === "number" || typeof args.end_line === "number"
+                ? ` (lines ${args.start_line ?? 1}-${args.end_line ?? "end"})`
+                : "";
+            this.filesRead.add(`${pathArg}${range}`);
+        }
+        else if (name === "read_active_editor") {
+            this.filesRead.add("(active editor)");
+        }
+        else if (name === "read_selection") {
+            this.filesRead.add("(active editor selection)");
+        }
+        // 2. Files Modified
+        if (ok) {
+            if (name === "create_file" && pathArg) {
+                this.filesModified.set(pathArg, "Created");
+            }
+            else if ((name === "edit_file" || name === "multi_edit") && pathArg) {
+                this.filesModified.set(pathArg, "Modified");
+            }
+            else if (name === "delete_file" && pathArg) {
+                this.filesModified.set(pathArg, "Deleted");
+            }
+            else if (name === "rename_file" && typeof args.old_path === "string" && typeof args.new_path === "string") {
+                this.filesModified.delete(args.old_path);
+                this.filesModified.set(args.new_path, `Renamed from ${args.old_path}`);
+            }
+        }
+        // 3. Repository Findings
+        if (ok) {
+            if (name === "search_workspace") {
+                const query = typeof args.query === "string" ? args.query : "";
+                const entry = `Search "${query}": ${summary}`;
+                this.appendBounded(this.keyFindings, entry, 8);
+            }
+            else if (name === "list_files") {
+                const dir = pathArg || ".";
+                const entry = `Directory "${dir}": ${summary}`;
+                this.appendBounded(this.keyFindings, entry, 8);
+            }
+        }
+        // 4. Command & Test Results
+        if (name === "run_command" && commandArg) {
+            const entry = `$ ${commandArg} → ${summary}`;
+            this.appendBounded(this.commandResults, entry, 10);
+            if (!ok) {
+                this.appendBounded(this.errorsEncountered, `Command failed: \`${commandArg}\` (${summary})`, 8);
+            }
+        }
+        // 5. Tool Errors
+        if (!ok && name !== "run_command") {
+            this.appendBounded(this.errorsEncountered, `Tool ${name} failed: ${summary}`, 8);
+        }
+        // 6. Action History
+        const actionDesc = `${name}${pathArg ? ` -> ${pathArg}` : commandArg ? ` -> ${commandArg}` : ""}`;
+        const actionItem = `${this.actionsTaken.length + 1}. [${actionDesc}] ${ok ? "OK" : "FAILED"}: ${summary}`;
+        this.appendBounded(this.actionsTaken, actionItem, 20);
+    }
+    /**
+     * Reconstruct context from historical messages when opening an existing chat.
+     */
+    rehydrateFromHistory(history) {
+        const toolCallNames = new Map();
+        for (const msg of history) {
+            if (msg.role === "user") {
+                if (typeof msg.content === "string") {
+                    this.recordUserRequest(msg.content);
+                }
+                else if (Array.isArray(msg.content)) {
+                    const textPart = msg.content.find((p) => p.type === "text");
+                    if (textPart && "text" in textPart) {
+                        this.recordUserRequest(textPart.text);
+                    }
+                }
+            }
+            else if (msg.role === "assistant") {
+                if (typeof msg.content === "string") {
+                    this.recordAssistantTurn(msg.content);
+                }
+                if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+                    for (const tc of msg.tool_calls) {
+                        try {
+                            const parsedArgs = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+                            toolCallNames.set(tc.id, { name: tc.function.name, args: parsedArgs });
+                        }
+                        catch {
+                            toolCallNames.set(tc.id, { name: tc.function.name, args: {} });
+                        }
+                    }
+                }
+            }
+            else if (msg.role === "tool" && msg.tool_call_id) {
+                const meta = toolCallNames.get(msg.tool_call_id);
+                if (meta) {
+                    const content = typeof msg.content === "string" ? msg.content : "";
+                    const isErr = content.startsWith("Error:") || content.startsWith("Refused:");
+                    this.recordToolExecution(meta.name, meta.args, !isErr, isErr ? content.slice(0, 100) : "Done", content);
+                }
+            }
+        }
+    }
+    appendBounded(list, item, maxItems) {
+        // Avoid exact duplicate consecutive lines
+        if (list.length > 0 && list[list.length - 1] === item) {
+            return;
+        }
+        list.push(item);
+        if (list.length > maxItems) {
+            list.splice(0, list.length - maxItems);
+        }
+    }
+    /**
+     * Format the current working memory into a prompt section for the LLM.
+     */
+    formatForSystemPrompt() {
+        const sections = [];
+        // 1. Task Goal & Context
+        if (this.userRequests.length > 0) {
+            const primary = this.userRequests[0];
+            const additional = this.userRequests.slice(1);
+            let goalText = `• Original User Request: "${primary}"`;
+            if (additional.length > 0) {
+                goalText += `\n• Follow-up Instructions:\n  - ${additional.join("\n  - ")}`;
+            }
+            sections.push(goalText);
+        }
+        // 2. Active Plan
+        if (this.planSteps.length > 0) {
+            sections.push(`• Current Plan / Next Steps:\n  ${this.planSteps.join("\n  ")}`);
+        }
+        // 3. Files Read
+        if (this.filesRead.size > 0) {
+            sections.push(`• Files Inspected / Read:\n  - ${Array.from(this.filesRead).join("\n  - ")}`);
+        }
+        // 4. Files Modified
+        if (this.filesModified.size > 0) {
+            const modItems = [];
+            for (const [path, action] of this.filesModified.entries()) {
+                modItems.push(`${action}: ${path}`);
+            }
+            sections.push(`• Files Modified During Task:\n  - ${modItems.join("\n  - ")}`);
+        }
+        // 5. Exploration & Findings
+        if (this.keyFindings.length > 0) {
+            sections.push(`• Key Repository Findings:\n  - ${this.keyFindings.join("\n  - ")}`);
+        }
+        // 6. Command & Test Results
+        if (this.commandResults.length > 0) {
+            sections.push(`• Command / Test Results:\n  - ${this.commandResults.join("\n  - ")}`);
+        }
+        // 7. Errors Encountered (if any)
+        if (this.errorsEncountered.length > 0) {
+            sections.push(`• Errors / Issues Encountered (address these if still unresolved):\n  - ${this.errorsEncountered.join("\n  - ")}`);
+        }
+        // 8. Recent Actions Taken
+        if (this.actionsTaken.length > 0) {
+            const recent = this.actionsTaken.slice(-6);
+            sections.push(`• Recent Actions Taken in Current Task:\n  ${recent.join("\n  ")}`);
+        }
+        if (sections.length === 0) {
+            return "";
+        }
+        return (`=== CURRENT TASK WORKING MEMORY & CONTEXT ===\n` +
+            `The following memory reflects your actions, findings, file modifications, and test results so far.\n` +
+            `Use this context to stay aligned with the user's goal, avoid redundant reads, build on your edits, and fix any failed tests:\n\n` +
+            sections.join("\n\n") +
+            `\n==============================================`);
+    }
+    /** Export data for persistence. */
+    exportData() {
+        return {
+            userRequests: [...this.userRequests],
+            planSteps: [...this.planSteps],
+            filesRead: Array.from(this.filesRead),
+            filesModified: Array.from(this.filesModified.entries()).map(([path, action]) => ({
+                path,
+                action,
+            })),
+            keyFindings: [...this.keyFindings],
+            commandResults: [...this.commandResults],
+            errorsEncountered: [...this.errorsEncountered],
+            actionsTaken: [...this.actionsTaken],
+        };
+    }
+}
+exports.TaskMemory = TaskMemory;
+
+
+/***/ }),
+/* 9 */
+/***/ ((__unused_webpack_module, exports) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ConversationManager = void 0;
 const STORAGE_KEY = "axiom.conversations.v1";
 const ACTIVE_KEY = "axiom.activeConversation.v1";
@@ -1421,7 +1776,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 9 */
+/* 10 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1475,7 +1830,7 @@ exports.resolveConfig = resolveConfig;
 exports.promptAndStoreApiKey = promptAndStoreApiKey;
 const vscode = __importStar(__webpack_require__(1));
 const models_1 = __webpack_require__(5);
-const modes_1 = __webpack_require__(10);
+const modes_1 = __webpack_require__(11);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -1586,7 +1941,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 10 */
+/* 11 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1623,7 +1978,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 11 */
+/* 12 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1644,18 +1999,18 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(12);
-const listFiles_1 = __webpack_require__(13);
-const readFile_1 = __webpack_require__(16);
-const readActiveEditor_1 = __webpack_require__(17);
-const readSelection_1 = __webpack_require__(18);
-const searchWorkspace_1 = __webpack_require__(19);
-const createFile_1 = __webpack_require__(20);
-const editFile_1 = __webpack_require__(21);
-const renameFile_1 = __webpack_require__(23);
-const deleteFile_1 = __webpack_require__(24);
-const multiEdit_1 = __webpack_require__(25);
-const runCommand_1 = __webpack_require__(26);
+const registry_1 = __webpack_require__(13);
+const listFiles_1 = __webpack_require__(14);
+const readFile_1 = __webpack_require__(17);
+const readActiveEditor_1 = __webpack_require__(18);
+const readSelection_1 = __webpack_require__(19);
+const searchWorkspace_1 = __webpack_require__(20);
+const createFile_1 = __webpack_require__(21);
+const editFile_1 = __webpack_require__(22);
+const renameFile_1 = __webpack_require__(24);
+const deleteFile_1 = __webpack_require__(25);
+const multiEdit_1 = __webpack_require__(26);
+const runCommand_1 = __webpack_require__(27);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -1680,13 +2035,13 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(12);
+var registry_2 = __webpack_require__(13);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-__exportStar(__webpack_require__(15), exports);
+__exportStar(__webpack_require__(16), exports);
 
 
 /***/ }),
-/* 12 */
+/* 13 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1738,7 +2093,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 13 */
+/* 14 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1778,8 +2133,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(14);
-const fsutil_2 = __webpack_require__(14);
+const fsutil_1 = __webpack_require__(15);
+const fsutil_2 = __webpack_require__(15);
 const MAX_ENTRIES = 1000;
 exports.listFilesTool = {
     name: "list_files",
@@ -1851,7 +2206,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 14 */
+/* 15 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1897,7 +2252,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(16);
 /** Glob of paths tools skip by default (noise / large dirs). */
 exports.DEFAULT_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.next/**,**/build/**}";
 /** Directory names skipped during recursive listing. */
@@ -1965,7 +2320,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 15 */
+/* 16 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1986,13 +2341,13 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 16 */
+/* 17 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(14);
+const fsutil_1 = __webpack_require__(15);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -2035,7 +2390,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2075,7 +2430,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(14);
+const fsutil_1 = __webpack_require__(15);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -2102,7 +2457,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2173,7 +2528,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 19 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2213,8 +2568,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(14);
-const types_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(16);
 const MAX_FILES_SCANNED = 2000;
 const MAX_MATCHES = 200;
 exports.searchWorkspaceTool = {
@@ -2308,7 +2663,7 @@ function escapeRegExp(s) {
 
 
 /***/ }),
-/* 20 */
+/* 21 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2348,8 +2703,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(15);
-const fsutil_1 = __webpack_require__(14);
+const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(15);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -2400,14 +2755,14 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 21 */
+/* 22 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const fsutil_1 = __webpack_require__(14);
-const editCore_1 = __webpack_require__(22);
+const fsutil_1 = __webpack_require__(15);
+const editCore_1 = __webpack_require__(23);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -2453,7 +2808,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 22 */
+/* 23 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2496,8 +2851,8 @@ exports.applyEdits = applyEdits;
 exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(14);
-const types_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(16);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -2571,7 +2926,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 23 */
+/* 24 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2611,8 +2966,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(15);
-const fsutil_1 = __webpack_require__(14);
+const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(15);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -2658,7 +3013,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 24 */
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2698,8 +3053,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(15);
-const fsutil_1 = __webpack_require__(14);
+const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(15);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -2749,14 +3104,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 25 */
+/* 26 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(15);
-const editCore_1 = __webpack_require__(22);
+const types_1 = __webpack_require__(16);
+const editCore_1 = __webpack_require__(23);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -2859,15 +3214,15 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 26 */
+/* 27 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(27);
-const types_1 = __webpack_require__(15);
-const fsutil_1 = __webpack_require__(14);
+const child_process_1 = __webpack_require__(28);
+const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(15);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 exports.runCommandTool = {
@@ -2941,13 +3296,13 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 27 */
+/* 28 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 28 */
+/* 29 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2989,8 +3344,8 @@ exports.getWorkspaceRoot = getWorkspaceRoot;
 exports.toRelative = toRelative;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(29));
-const types_1 = __webpack_require__(15);
+const path = __importStar(__webpack_require__(30));
+const types_1 = __webpack_require__(16);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -3039,7 +3394,7 @@ async function resolvePathInWorkspace(input, root, confirm) {
 
 
 /***/ }),
-/* 29 */
+/* 30 */
 /***/ ((module) => {
 
 module.exports = require("path");

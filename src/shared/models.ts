@@ -30,50 +30,29 @@ export interface ModelInfo {
 
 export const MODELS: ModelInfo[] = [
   {
-    displayName: "Nemotron 550B",
-    apiModelId: "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b",
+    displayName: "ultra",
+    apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
     // Text-only model; omit images rather than risk a 400.
     supportsVision: false,
   },
-  { displayName: "Claude Fable 5", apiModelId: "anthropic/claude-fable-5" },
-  { displayName: "Claude Opus 4.8", apiModelId: "anthropic/claude-opus-4-8" },
-  { displayName: "Gemini 3.5 Flash", apiModelId: "google/gemini-3.5-flash" },
-  { displayName: "5.3 codex", apiModelId: "gpt-5.3-codex" },
   {
-    displayName: "GPT-5.5",
-    apiModelId: "openai/gpt-5.5-2026-04-23",
-    // GPT-5.5 rejects function tools on chat/completions, so it uses the
-    // /v1/responses API (which supports tools) instead.
-    api: "responses",
-  },
-  { displayName: "Claude Opus 4.7", apiModelId: "anthropic/claude-opus-4-7" },
-  {
-    displayName: "Claude Sonnet 4.6",
-    apiModelId: "anthropic/claude-sonnet-4-6",
+    displayName: "deepseek-v4-pro",
+    apiModelId: "deepseek-v4-pro",
+    supportsVision: false,
   },
   {
-    displayName: "Claude Sonnet 4.5",
-    apiModelId: "anthropic/claude-sonnet-4-5-20250929",
-  },
-  {
-    displayName: "ultra",
-    apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
-  },
-  {
-    displayName: "deepseek v4",
-    apiModelId: "deepseek-ai/deepseek-v4.1-flash",
-  },
-  {
-    displayName: "kimi",
-    apiModelId: "moonshotai/kimi-k3",
+    displayName: "deepseek-flash",
+    apiModelId: "deepseek-flash",
+    supportsVision: false,
   },
 ];
 
 /** Default evaluation model (text-only, supportsVision: false). */
-export const DEFAULT_MODEL_ID = "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
+export const DEFAULT_MODEL_ID = "nvidia/nemotron-3-ultra-550b-a55b";
 
 export function getModelByApiId(apiModelId: string): ModelInfo | undefined {
-  return MODELS.find((m) => m.apiModelId === apiModelId);
+  const resolved = resolveModelId(apiModelId);
+  return MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === apiModelId);
 }
 
 /** Whether a model supports function/tool calling on this endpoint (default true). */
@@ -93,8 +72,30 @@ export function modelApi(apiModelId: string): "chat" | "responses" {
 
 /** Resolve a stored/selected api id to a valid one, falling back to the default. */
 export function resolveModelId(apiModelId: string | undefined): string {
-  if (apiModelId && MODELS.some((m) => m.apiModelId === apiModelId)) {
+  if (!apiModelId) {
+    return DEFAULT_MODEL_ID;
+  }
+  if (MODELS.some((m) => m.apiModelId === apiModelId)) {
     return apiModelId;
+  }
+  if (
+    apiModelId === "ultra" ||
+    apiModelId === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b"
+  ) {
+    return "nvidia/nemotron-3-ultra-550b-a55b";
+  }
+  if (
+    apiModelId === "deepseek-v4-pro" ||
+    apiModelId === "deepseek-ai/deepseek-v4-pro"
+  ) {
+    return "deepseek-v4-pro";
+  }
+  if (
+    apiModelId === "deepseek-flash" ||
+    apiModelId === "deepseek-ai/deepseek-v4.1-flash" ||
+    apiModelId === "deepseek v4"
+  ) {
+    return "deepseek-flash";
   }
   return DEFAULT_MODEL_ID;
 }

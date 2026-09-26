@@ -48,6 +48,39 @@ export class LLMClient {
   }
 
   /**
+   * Translate the model ID if required by the target provider to prevent errors.
+   * - DeepSeek official API (api.deepseek.com) requires 'deepseek-chat' / 'deepseek-reasoner'.
+   * - Lightning AI (lightning.ai) uses its hosted catalog IDs.
+   */
+  private resolveModelForEndpoint(model: string, baseUrl: string): string {
+    const isDeepSeekEndpoint = baseUrl.includes("api.deepseek.com");
+    if (isDeepSeekEndpoint) {
+      if (
+        model === "deepseek-v4-pro" ||
+        model === "deepseek-flash" ||
+        model === "deepseek-ai/deepseek-v4.1-flash" ||
+        model === "nvidia/nemotron-3-ultra-550b-a55b" ||
+        model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+        model === "ultra"
+      ) {
+        return "deepseek-chat";
+      }
+    }
+
+    const isLightningEndpoint = baseUrl.includes("lightning.ai");
+    if (isLightningEndpoint) {
+      if (model === "deepseek-flash" || model === "deepseek-v4-pro") {
+        return "deepseek-ai/deepseek-v4.1-flash";
+      }
+      if (model === "ultra" || model === "nvidia/nemotron-3-ultra-550b-a55b") {
+        return "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
+      }
+    }
+
+    return model;
+  }
+
+  /**
    * Stream one assistant turn. Yields `{type:'text'}` deltas as text arrives and
    * accumulates any streamed tool-call fragments. When the stream ends, the
    * generator RETURNS the assembled {@link AssistantTurn} (content + tool calls).
@@ -70,8 +103,13 @@ export class LLMClient {
       });
     }
 
+    const effectiveModel = this.resolveModelForEndpoint(
+      this.model,
+      this.opts.baseUrl,
+    );
+
     const body: ChatCompletionRequest = {
-      model: this.model,
+      model: effectiveModel,
       messages,
       stream: true,
     };
