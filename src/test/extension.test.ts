@@ -21,4 +21,8 @@ suite('Extension Test Suite', () => {
 		const commands = await vscode.commands.getCommands(true);
 		assert.ok(commands.includes('claude-agent.open'), 'claude-agent.open should be registered');
 	});
+
+	test('claude-agent.open command executes successfully', async () => {
+		await vscode.commands.executeCommand('claude-agent.open');
+	});
 });

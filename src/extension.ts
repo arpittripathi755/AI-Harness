@@ -30,6 +30,9 @@ export function activate(context: vscode.ExtensionContext) {
       provider.openApiSettings();
     }),
   );
+
+  // Automatically reveal the Axiom chat view in the sidebar on startup.
+  vscode.commands.executeCommand("claude-agent.open");
 } 
 
 export function deactivate() {}

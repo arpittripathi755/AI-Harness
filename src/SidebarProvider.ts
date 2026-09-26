@@ -41,6 +41,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.chats = new ConversationManager(context.workspaceState);
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        this.session = undefined;
+        this.ctx = undefined;
+      }),
+    );
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -298,10 +304,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   private ensureToolContext(): ToolContext {
-    if (this.ctx) {
-      this.ctx.terminalAutoRun = getTerminalAutoRun(this.context);
-      return this.ctx;
-    }
     const root = getWorkspaceRoot();
     const confirm = async (message: string, detail?: string) => {
       const pick = await vscode.window.showWarningMessage(
