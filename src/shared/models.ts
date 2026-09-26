@@ -29,13 +29,13 @@ export interface ModelInfo {
 }
 
 export const MODELS: ModelInfo[] = [
-  { displayName: "Claude Fable 5", apiModelId: "anthropic/claude-fable-5" },
   {
     displayName: "Nemotron 550B",
     apiModelId: "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b",
     // Text-only model; omit images rather than risk a 400.
     supportsVision: false,
   },
+  { displayName: "Claude Fable 5", apiModelId: "anthropic/claude-fable-5" },
   { displayName: "Claude Opus 4.8", apiModelId: "anthropic/claude-opus-4-8" },
   { displayName: "Gemini 3.5 Flash", apiModelId: "google/gemini-3.5-flash" },
   { displayName: "5.3 codex", apiModelId: "gpt-5.3-codex" },
@@ -69,8 +69,8 @@ export const MODELS: ModelInfo[] = [
   },
 ];
 
-/** Default selection (matches the prior hardcoded model). */
-export const DEFAULT_MODEL_ID = "anthropic/claude-opus-4-8";
+/** Default evaluation model (text-only, supportsVision: false). */
+export const DEFAULT_MODEL_ID = "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
 
 export function getModelByApiId(apiModelId: string): ModelInfo | undefined {
   return MODELS.find((m) => m.apiModelId === apiModelId);

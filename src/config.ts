@@ -86,17 +86,25 @@ export async function setTerminalAutoRun(
   await context.globalState.update(KEY_TERMINAL_AUTO, value);
 }
 
-// ---- API key (SecretStorage) ----
+// ---- API key (Environment or SecretStorage) ----
 
 export async function getApiKey(
   context: vscode.ExtensionContext,
 ): Promise<string | undefined> {
+  const envKey = process.env.AI_API_KEY?.trim();
+  if (envKey) {
+    return envKey;
+  }
   return context.secrets.get(API_KEY_SECRET);
 }
 
 export async function hasApiKey(
   context: vscode.ExtensionContext,
 ): Promise<boolean> {
+  const envKey = process.env.AI_API_KEY?.trim();
+  if (envKey) {
+    return true;
+  }
   return !!(await context.secrets.get(API_KEY_SECRET));
 }
 
