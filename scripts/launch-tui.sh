@@ -33,9 +33,9 @@ echo "export AI_API_KEY=\"$AI_API_KEY\"" >> "$RUNNER"
 [ -n "$OPENAI_API_KEY" ] && echo "export OPENAI_API_KEY=\"$OPENAI_API_KEY\"" >> "$RUNNER"
 [ -n "$REPO" ] && echo "export REPO=\"$REPO\"" >> "$RUNNER"
 [ -n "$AXIOM_FRESH_SESSION" ] && echo "export AXIOM_FRESH_SESSION=\"$AXIOM_FRESH_SESSION\"" >> "$RUNNER"
-[ -n "$AXIOM_AUTONOMOUS" ] && echo "export AXIOM_AUTONOMOUS=\"$AXIOM_AUTONOMOUS\"" >> "$RUNNER"
+echo "export AXIOM_AUTONOMOUS=\"${AXIOM_AUTONOMOUS:-1}\"" >> "$RUNNER"
 [ -n "$AXIOM_HEADLESS" ] && echo "export AXIOM_HEADLESS=\"$AXIOM_HEADLESS\"" >> "$RUNNER"
-[ -n "$AXIOM_SKIP_PR" ] && echo "export AXIOM_SKIP_PR=\"$AXIOM_SKIP_PR\"" >> "$RUNNER"
+echo "export AXIOM_SKIP_PR=\"${AXIOM_SKIP_PR:-1}\"" >> "$RUNNER"
 [ -n "$AXIOM_MOCK_PR" ] && echo "export AXIOM_MOCK_PR=\"$AXIOM_MOCK_PR\"" >> "$RUNNER"
 
 HAS_ARGS=0

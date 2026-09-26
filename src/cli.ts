@@ -96,9 +96,9 @@ async function main(): Promise<void> {
       autoEdit: true,
       changeManager: currentChangeManager,
       resolvePath: async (input: string) =>
-        resolvePathInWorkspace(input, root, async () => false),
+        resolvePathInWorkspace(input, root, async () => true),
       toRelative: (uri: vscode.Uri) => toRelative(root, uri),
-      confirm: async () => false,
+      confirm: async () => true,
     };
   }
 
@@ -251,19 +251,6 @@ async function main(): Promise<void> {
     }
   }
 
-  /**
-   * Helper to prompt the user during ChangeSet review.
-   */
-  function askReviewChoice(r: readline.Interface): Promise<string> {
-    return new Promise((resolve) => {
-      r.question(
-        `\n${colors.bold}${colors.green}Select an option [1-3, default 2]: ${colors.reset}`,
-        (answer) => {
-          resolve(answer.trim() || "2");
-        },
-      );
-    });
-  }
 
   /**
    * Detect if a user message begins with a GitHub URL and auto-switch workspace.
@@ -498,50 +485,19 @@ async function main(): Promise<void> {
       chats.active.taskMemory = session.exportTaskMemory();
       chats.save();
 
-      // ChangeSet review boundary
+      // Fully autonomous execution: automatically apply all staged changes immediately to disk
+      // Zero confirmation dialogs, zero review questions, zero manual approval blockers
       if (currentChangeManager.hasStaged()) {
         const changeSet = currentChangeManager.getChangeSet();
-        console.log(`\n${colors.bold}${colors.cyan}=== ChangeSet Review (${changeSet.length} file${changeSet.length === 1 ? "" : "s"}) ===${colors.reset}`);
-        for (const entry of changeSet) {
-          console.log(`  ${colors.yellow}[${entry.type.toUpperCase()}]${colors.reset} ${entry.path}`);
-        }
+        await currentChangeManager.applyChangeSet();
+        tui.printNotice(`✓ Changes applied immediately to disk (${changeSet.length} file${changeSet.length === 1 ? "" : "s"}).`);
 
-        const isAutonomous =
-          process.env.AXIOM_AUTONOMOUS === "1" ||
-          !process.stdin.isTTY;
-
-        if (isAutonomous) {
-          tui.printNotice("Autonomous mode: Auto-applying staged changes...");
-          await currentChangeManager.applyChangeSet();
-          tui.printNotice("✓ Changes applied to disk.");
-
+        // Only run PR workflow if explicitly requested via environment variable AXIOM_AUTO_PR=1
+        if (process.env.AXIOM_AUTO_PR === "1" && !process.env.AXIOM_SKIP_PR) {
           const repoDetails = GitHubManager.getRepoDetails(currentWorkspacePath);
           if (repoDetails && changeSet.length > 0) {
             await runPrWorkflow(trimmed);
           }
-        } else if (rl) {
-          console.log(`\n${colors.bold}Options:${colors.reset}`);
-          console.log("  [1] Accept & Create PR");
-          console.log("  [2] Accept Only");
-          console.log("  [3] Reject All");
-
-          const choice = await askReviewChoice(rl);
-          if (choice === "1") {
-            await currentChangeManager.applyChangeSet();
-            tui.printNotice("✓ Changes applied to disk.");
-            await runPrWorkflow(trimmed);
-          } else if (choice === "3") {
-            currentChangeManager.rejectAll();
-            tui.printNotice("Staged changes discarded. Zero disk modifications made.");
-          } else {
-            // Default: Accept Only
-            await currentChangeManager.applyChangeSet();
-            tui.printNotice("✓ Changes applied to disk.");
-          }
-        } else {
-          // Non-interactive fallback
-          await currentChangeManager.applyChangeSet();
-          tui.printNotice("✓ Changes applied to disk.");
         }
       }
     } catch (err: any) {

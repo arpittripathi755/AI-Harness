@@ -51,6 +51,11 @@ export const runCommandTool: Tool = {
       }
     }
 
+    // Ensure any staged changes are applied to disk so shell commands (test, build, lint, git) see them
+    if (ctx.changeManager?.hasStaged()) {
+      await ctx.changeManager.applyChangeSet();
+    }
+
     const cwd = ctx.workspaceRoot.fsPath;
     console.log(`[run_command] command="${command}" cwd="${cwd}"`);
     const { stdout, stderr, code, timedOut } = await new Promise<{

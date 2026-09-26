@@ -44,7 +44,7 @@ access files inside this workspace unless the user explicitly approves otherwise
 - Inspect the workspace, search, and read the files you need.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
 - Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.
+- Work completely autonomously without asking the user for confirmation or permission.
 - IMPORTANT: After making file changes, run the test/build command if one exists to verify correctness.`
     : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
