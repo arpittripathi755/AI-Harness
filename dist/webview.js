@@ -17326,12 +17326,12 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _shared_modes__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(13);
 /* harmony import */ var _vscodeApi__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(14);
 /* harmony import */ var _components_MessageList__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(15);
-/* harmony import */ var _components_Composer__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(155);
-/* harmony import */ var _components_Header__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(156);
-/* harmony import */ var _components_Toolbar__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(157);
-/* harmony import */ var _components_ApiModal__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(159);
-/* harmony import */ var _components_ChatList__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(160);
-/* harmony import */ var _components_StatusBar__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(161);
+/* harmony import */ var _components_Composer__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(154);
+/* harmony import */ var _components_Header__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(155);
+/* harmony import */ var _components_Toolbar__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(156);
+/* harmony import */ var _components_ApiModal__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(158);
+/* harmony import */ var _components_ChatList__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(159);
+/* harmony import */ var _components_StatusBar__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(160);
 
 
 
@@ -17420,22 +17420,6 @@ function App() {
                         ? { ...it, status: msg.ok ? "ok" : "error", summary: msg.summary }
                         : it));
                     break;
-                case "changeSetStart":
-                    setItems((prev) => {
-                        const exists = prev.some((it) => it.kind === "changeset" && it.id === msg.changeSet.id);
-                        if (exists) {
-                            return prev.map((it) => it.kind === "changeset" && it.id === msg.changeSet.id
-                                ? msg.changeSet
-                                : it);
-                        }
-                        return [...prev, msg.changeSet];
-                    });
-                    break;
-                case "changeSetUpdate":
-                    setItems((prev) => prev.map((it) => it.kind === "changeset" && it.id === msg.changeSetId
-                        ? { ...it, status: msg.status }
-                        : it));
-                    break;
                 case "busy":
                     setBusy(msg.value);
                     break;
@@ -17461,18 +17445,6 @@ function App() {
         ]);
         (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "sendMessage", text, images: images.length ? images : undefined });
     };
-    const handleAcceptChanges = (changeSetId) => {
-        setItems((prev) => prev.map((it) => it.kind === "changeset" && it.id === changeSetId
-            ? { ...it, status: "accepted" }
-            : it));
-        (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "acceptChanges", changeSetId });
-    };
-    const handleRejectChanges = (changeSetId) => {
-        setItems((prev) => prev.map((it) => it.kind === "changeset" && it.id === changeSetId
-            ? { ...it, status: "rejected" }
-            : it));
-        (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "rejectChanges", changeSetId });
-    };
     const handleModelChange = (modelId) => {
         setSettings((s) => ({ ...s, modelId }));
         (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "setModel", modelId });
@@ -17488,7 +17460,7 @@ function App() {
         setSettings((s) => ({ ...s, terminalAutoRun: value }));
         (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "setTerminalAutoRun", value });
     };
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "app", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Header__WEBPACK_IMPORTED_MODULE_7__.Header, { busy: busy, onChats: () => setChatsOpen(true), onNewChat: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "newChat" }), onOpenApi: () => setApiOpen(true) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_MessageList__WEBPACK_IMPORTED_MODULE_5__.MessageList, { items: items, streamingId: streamingId, onSuggestion: handleSend, onAcceptChanges: handleAcceptChanges, onRejectChanges: handleRejectChanges }), error && (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "error-banner", children: error }), !(0,_shared_models__WEBPACK_IMPORTED_MODULE_2__.modelSupportsTools)(settings.modelId) ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mode-notice warn", children: "\u26A0 This model can\u2019t use tools on this endpoint \u2014 chat only, no file access. Pick a Claude model to read & edit files." })) : settings.modeId === "plan" ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mode-notice", children: ["\uD83D\uDD0D ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Plan Mode" }), " \u2014 read-only. The agent can inspect and explain, but won\u2019t edit files. Switch to ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Manual Mode" }), " or ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Auto Edit" }), " below to make changes."] })) : settings.modeId === "manual" ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mode-notice", children: ["\uD83D\uDC41 ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Manual Mode" }), " \u2014 proposed file edits will appear with a readable diff for your review (Accept / Reject) before being written."] })) : null, (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_StatusBar__WEBPACK_IMPORTED_MODULE_11__.StatusBar, { status: status, busy: busy }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "footer", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Toolbar__WEBPACK_IMPORTED_MODULE_8__.Toolbar, { modelId: settings.modelId, modeId: settings.modeId, onModelChange: handleModelChange, onModeChange: handleModeChange }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Composer__WEBPACK_IMPORTED_MODULE_6__.Composer, { busy: busy, onSend: handleSend, onStop: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "cancel" }) })] }), chatsOpen && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_ChatList__WEBPACK_IMPORTED_MODULE_10__.ChatList, { chats: chats, activeId: activeChat, onSelect: (id) => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "switchChat", id }), onDelete: (id) => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "deleteChat", id }), onNew: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "newChat" }), onClose: () => setChatsOpen(false) })), apiOpen && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_ApiModal__WEBPACK_IMPORTED_MODULE_9__.ApiModal, { baseUrl: settings.baseUrl, hasApiKey: settings.hasApiKey, terminalAutoRun: settings.terminalAutoRun, onSave: handleSaveApi, onTerminalAutoRunChange: handleTerminalMode, onClose: () => setApiOpen(false) }))] }));
+    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "app", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Header__WEBPACK_IMPORTED_MODULE_7__.Header, { busy: busy, onChats: () => setChatsOpen(true), onNewChat: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "newChat" }), onOpenApi: () => setApiOpen(true) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_MessageList__WEBPACK_IMPORTED_MODULE_5__.MessageList, { items: items, streamingId: streamingId, onSuggestion: handleSend }), error && (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "error-banner", children: error }), !(0,_shared_models__WEBPACK_IMPORTED_MODULE_2__.modelSupportsTools)(settings.modelId) ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mode-notice warn", children: "\u26A0 This model can\u2019t use tools on this endpoint \u2014 chat only, no file access. Pick a Claude model to read & edit files." })) : settings.modeId === "plan" ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mode-notice", children: ["\uD83D\uDD0D ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Plan Mode" }), " \u2014 read-only. The agent can inspect and explain, but won\u2019t edit files. Switch to ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("strong", { children: "Auto Edit" }), " below to make changes."] })) : null, (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_StatusBar__WEBPACK_IMPORTED_MODULE_11__.StatusBar, { status: status, busy: busy }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "footer", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Toolbar__WEBPACK_IMPORTED_MODULE_8__.Toolbar, { modelId: settings.modelId, modeId: settings.modeId, onModelChange: handleModelChange, onModeChange: handleModeChange }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_Composer__WEBPACK_IMPORTED_MODULE_6__.Composer, { busy: busy, onSend: handleSend, onStop: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "cancel" }) })] }), chatsOpen && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_ChatList__WEBPACK_IMPORTED_MODULE_10__.ChatList, { chats: chats, activeId: activeChat, onSelect: (id) => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "switchChat", id }), onDelete: (id) => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "deleteChat", id }), onNew: () => (0,_vscodeApi__WEBPACK_IMPORTED_MODULE_4__.postMessage)({ type: "newChat" }), onClose: () => setChatsOpen(false) })), apiOpen && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_components_ApiModal__WEBPACK_IMPORTED_MODULE_9__.ApiModal, { baseUrl: settings.baseUrl, hasApiKey: settings.hasApiKey, terminalAutoRun: settings.terminalAutoRun, onSave: handleSaveApi, onTerminalAutoRunChange: handleTerminalMode, onClose: () => setApiOpen(false) }))] }));
 }
 
 
@@ -17595,36 +17567,24 @@ __webpack_require__.r(__webpack_exports__);
  */
 const MODES = [
     {
-        id: "manual",
-        label: "Manual Mode",
-        description: "Inspect, read, search, and propose file changes for your review before applying them.",
-        allowMutations: true,
-        requireApproval: true,
+        id: "plan",
+        label: "Plan Mode",
+        description: "Analyze, inspect, read, and search — then explain the changes to make. Does not modify files.",
+        allowMutations: false,
     },
     {
         id: "auto",
         label: "Auto Edit Mode",
         description: "Inspect, read, search, create, edit, and rename files autonomously until the task is done.",
         allowMutations: true,
-        requireApproval: false,
-    },
-    {
-        id: "plan",
-        label: "Plan Mode",
-        description: "Analyze, inspect, read, and search — then explain the changes to make. Does not modify files.",
-        allowMutations: false,
-        requireApproval: false,
     },
 ];
-const DEFAULT_MODE = "manual";
+const DEFAULT_MODE = "auto";
 function resolveModeId(id) {
-    if (id === "manual" || id === "normal") {
-        return "manual";
-    }
     return MODES.some((m) => m.id === id) ? id : DEFAULT_MODE;
 }
 function getMode(id) {
-    return MODES.find((m) => m.id === id) ?? MODES[0];
+    return MODES.find((m) => m.id === id) ?? MODES[1];
 }
 
 
@@ -17663,9 +17623,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(7);
 /* harmony import */ var _MessageItem__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(16);
 /* harmony import */ var _ToolCard__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(152);
-/* harmony import */ var _ChangeReviewCard__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(153);
-/* harmony import */ var _Logo__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(154);
-
+/* harmony import */ var _Logo__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(153);
 
 
 
@@ -17677,23 +17635,15 @@ const SUGGESTIONS = [
     "Explain the file I have open",
     "Add tests for the main module",
 ];
-function MessageList({ items, streamingId, onSuggestion, onAcceptChanges, onRejectChanges, }) {
+function MessageList({ items, streamingId, onSuggestion, }) {
     const endRef = react__WEBPACK_IMPORTED_MODULE_1__.useRef(null);
     react__WEBPACK_IMPORTED_MODULE_1__.useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }, [items, streamingId]);
     if (items.length === 0) {
-        return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "message-list", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "empty-state", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_Logo__WEBPACK_IMPORTED_MODULE_5__.Logo, { className: "empty-logo-img" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("p", { className: "empty-sub", children: "Ask about your project, or tell me what to build or fix. I can read, search, and edit files in your workspace." }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "suggestions", children: SUGGESTIONS.map((s) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { className: "suggestion", onClick: () => onSuggestion(s), children: s }, s))) })] }) }));
+        return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "message-list", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "empty-state", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_Logo__WEBPACK_IMPORTED_MODULE_4__.Logo, { className: "empty-logo-img" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("p", { className: "empty-sub", children: "Ask about your project, or tell me what to build or fix. I can read, search, and edit files in your workspace." }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "suggestions", children: SUGGESTIONS.map((s) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { className: "suggestion", onClick: () => onSuggestion(s), children: s }, s))) })] }) }));
     }
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "message-list", children: [items.map((item) => {
-                if (item.kind === "tool") {
-                    return (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_ToolCard__WEBPACK_IMPORTED_MODULE_3__.ToolCard, { tool: item }, item.callId);
-                }
-                if (item.kind === "changeset") {
-                    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_ChangeReviewCard__WEBPACK_IMPORTED_MODULE_4__.ChangeReviewCard, { changeSet: item, onAccept: onAcceptChanges, onReject: onRejectChanges }, item.id));
-                }
-                return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_MessageItem__WEBPACK_IMPORTED_MODULE_2__.MessageItem, { message: item, streaming: item.id === streamingId }, item.id));
-            }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { ref: endRef })] }));
+    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "message-list", children: [items.map((item) => item.kind === "tool" ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_ToolCard__WEBPACK_IMPORTED_MODULE_3__.ToolCard, { tool: item }, item.callId)) : ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_MessageItem__WEBPACK_IMPORTED_MODULE_2__.MessageItem, { message: item, streaming: item.id === streamingId }, item.id))), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { ref: endRef })] }));
 }
 
 
@@ -39522,64 +39472,6 @@ function ToolCard({ tool }) {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
-/* harmony export */   ChangeReviewCard: () => (/* binding */ ChangeReviewCard)
-/* harmony export */ });
-/* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
-/* harmony import */ var react__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(7);
-
-
-const TYPE_LABEL = {
-    modified: "M",
-    created: "A",
-    deleted: "D",
-    renamed: "R",
-};
-const TYPE_TITLE = {
-    modified: "Modified",
-    created: "Added",
-    deleted: "Deleted",
-    renamed: "Renamed",
-};
-function DiffViewer({ diff }) {
-    const lines = diff.split("\n");
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "diff-container", children: lines.map((line, idx) => {
-            let lineClass = "diff-line diff-ctx";
-            if (line.startsWith("+") && !line.startsWith("+++")) {
-                lineClass = "diff-line diff-add";
-            }
-            else if (line.startsWith("-") && !line.startsWith("---")) {
-                lineClass = "diff-line diff-del";
-            }
-            else if (line.startsWith("@@")) {
-                lineClass = "diff-line diff-hunk";
-            }
-            else if (line.startsWith("---") || line.startsWith("+++")) {
-                lineClass = "diff-line diff-header";
-            }
-            return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: lineClass, children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "diff-line-content", children: line }) }, idx));
-        }) }));
-}
-function FileChangeItem({ file }) {
-    const [expanded, setExpanded] = react__WEBPACK_IMPORTED_MODULE_1__.useState(true);
-    const badgeClass = `file-badge file-badge-${file.type}`;
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-file-item", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-file-header", onClick: () => setExpanded(!expanded), title: "Click to toggle diff", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: badgeClass, title: TYPE_TITLE[file.type], children: TYPE_LABEL[file.type] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "change-file-path", children: file.oldPath && file.oldPath !== file.path
-                            ? `${file.oldPath} → ${file.path}`
-                            : file.path }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { className: "change-file-stats", children: [file.additions > 0 && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { className: "stat-add", children: ["+", file.additions] })), file.deletions > 0 && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { className: "stat-del", children: ["-", file.deletions] }))] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "change-file-chevron", children: expanded ? "▾" : "▸" })] }), expanded && file.diff && (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(DiffViewer, { diff: file.diff })] }));
-}
-function ChangeReviewCard({ changeSet, onAccept, onReject, }) {
-    const isPending = changeSet.status === "pending";
-    const fileCount = changeSet.files.length;
-    const countText = `${fileCount} file${fileCount === 1 ? "" : "s"} changed`;
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: `change-review-card status-${changeSet.status}`, children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-card-header", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-card-title-group", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "change-card-title", children: "Changes" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-card-summary", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { children: countText }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "summary-dot", children: "\u00B7" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { className: "stat-add", children: ["+", changeSet.totalAdditions] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { className: "stat-del", children: ["-", changeSet.totalDeletions] })] })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-card-status-badge", children: [changeSet.status === "accepted" && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "badge-accepted", children: "\u2713 Accepted" })), changeSet.status === "rejected" && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "badge-rejected", children: "\u2717 Rejected" })), changeSet.status === "pending" && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "badge-pending", children: "Review Required" }))] })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "change-file-list", children: changeSet.files.map((file, idx) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(FileChangeItem, { file: file }, `${file.path}-${idx}`))) }), isPending && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "change-card-actions", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { type: "button", className: "btn btn-reject", onClick: () => onReject(changeSet.id), children: "Reject Changes" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { type: "button", className: "btn btn-accept", onClick: () => onAccept(changeSet.id), children: "Accept Changes" })] }))] }));
-}
-
-
-/***/ }),
-/* 154 */
-/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
-
-__webpack_require__.r(__webpack_exports__);
-/* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   Logo: () => (/* binding */ Logo)
 /* harmony export */ });
 /* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
@@ -39592,7 +39484,7 @@ function Logo({ className }) {
 
 
 /***/ }),
-/* 155 */
+/* 154 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39709,7 +39601,7 @@ function Composer({ busy, onSend, onStop }) {
 
 
 /***/ }),
-/* 156 */
+/* 155 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39717,7 +39609,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export */   Header: () => (/* binding */ Header)
 /* harmony export */ });
 /* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
-/* harmony import */ var _Logo__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(154);
+/* harmony import */ var _Logo__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(153);
 
 
 /** Minimal top bar: chats + brand on the left, actions on the right. */
@@ -39727,7 +39619,7 @@ function Header({ busy, onChats, onNewChat, onOpenApi }) {
 
 
 /***/ }),
-/* 157 */
+/* 156 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39737,7 +39629,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var _shared_models__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(12);
 /* harmony import */ var _shared_modes__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(13);
-/* harmony import */ var _Dropdown__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(158);
+/* harmony import */ var _Dropdown__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(157);
 
 
 
@@ -39752,7 +39644,7 @@ function Toolbar({ modelId, modeId, onModelChange, onModeChange, }) {
 
 
 /***/ }),
-/* 158 */
+/* 157 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39771,7 +39663,7 @@ function Dropdown({ label, value, options, onChange, disabled, title, }) {
 
 
 /***/ }),
-/* 159 */
+/* 158 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39801,7 +39693,7 @@ function ApiModal({ baseUrl, hasApiKey, terminalAutoRun, onSave, onTerminalAutoR
 
 
 /***/ }),
-/* 160 */
+/* 159 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39820,7 +39712,7 @@ function ChatList({ chats, activeId, onSelect, onDelete, onNew, onClose, }) {
 
 
 /***/ }),
-/* 161 */
+/* 160 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
@@ -39903,26 +39795,26 @@ function StatusBar({ status, busy }) {
 
 
 /***/ }),
-/* 162 */
+/* 161 */
 /***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   "default": () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
-/* harmony import */ var _node_modules_style_loader_dist_runtime_injectStylesIntoStyleTag_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(163);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_injectStylesIntoStyleTag_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(162);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_injectStylesIntoStyleTag_js__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_injectStylesIntoStyleTag_js__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _node_modules_style_loader_dist_runtime_styleDomAPI_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(164);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_styleDomAPI_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(163);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_styleDomAPI_js__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_styleDomAPI_js__WEBPACK_IMPORTED_MODULE_1__);
-/* harmony import */ var _node_modules_style_loader_dist_runtime_insertBySelector_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(165);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_insertBySelector_js__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(164);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_insertBySelector_js__WEBPACK_IMPORTED_MODULE_2___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_insertBySelector_js__WEBPACK_IMPORTED_MODULE_2__);
-/* harmony import */ var _node_modules_style_loader_dist_runtime_setAttributesWithoutAttributes_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(166);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_setAttributesWithoutAttributes_js__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(165);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_setAttributesWithoutAttributes_js__WEBPACK_IMPORTED_MODULE_3___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_setAttributesWithoutAttributes_js__WEBPACK_IMPORTED_MODULE_3__);
-/* harmony import */ var _node_modules_style_loader_dist_runtime_insertStyleElement_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(167);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_insertStyleElement_js__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(166);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_insertStyleElement_js__WEBPACK_IMPORTED_MODULE_4___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_insertStyleElement_js__WEBPACK_IMPORTED_MODULE_4__);
-/* harmony import */ var _node_modules_style_loader_dist_runtime_styleTagTransform_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(168);
+/* harmony import */ var _node_modules_style_loader_dist_runtime_styleTagTransform_js__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(167);
 /* harmony import */ var _node_modules_style_loader_dist_runtime_styleTagTransform_js__WEBPACK_IMPORTED_MODULE_5___default = /*#__PURE__*/__webpack_require__.n(_node_modules_style_loader_dist_runtime_styleTagTransform_js__WEBPACK_IMPORTED_MODULE_5__);
-/* harmony import */ var _node_modules_css_loader_dist_cjs_js_styles_css__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(169);
+/* harmony import */ var _node_modules_css_loader_dist_cjs_js_styles_css__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(168);
 
       
       
@@ -39951,7 +39843,7 @@ var update = _node_modules_style_loader_dist_runtime_injectStylesIntoStyleTag_js
 
 
 /***/ }),
-/* 163 */
+/* 162 */
 /***/ ((module) => {
 
 
@@ -40040,7 +39932,7 @@ module.exports = function (list, options) {
 };
 
 /***/ }),
-/* 164 */
+/* 163 */
 /***/ ((module) => {
 
 
@@ -40106,7 +39998,7 @@ function domAPI(options) {
 module.exports = domAPI;
 
 /***/ }),
-/* 165 */
+/* 164 */
 /***/ ((module) => {
 
 
@@ -40145,7 +40037,7 @@ function insertBySelector(insert, style) {
 module.exports = insertBySelector;
 
 /***/ }),
-/* 166 */
+/* 165 */
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
 
@@ -40160,7 +40052,7 @@ function setAttributesWithoutAttributes(styleElement) {
 module.exports = setAttributesWithoutAttributes;
 
 /***/ }),
-/* 167 */
+/* 166 */
 /***/ ((module) => {
 
 
@@ -40175,7 +40067,7 @@ function insertStyleElement(options) {
 module.exports = insertStyleElement;
 
 /***/ }),
-/* 168 */
+/* 167 */
 /***/ ((module) => {
 
 
@@ -40194,16 +40086,16 @@ function styleTagTransform(css, styleElement) {
 module.exports = styleTagTransform;
 
 /***/ }),
-/* 169 */
+/* 168 */
 /***/ ((module, __webpack_exports__, __webpack_require__) => {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
 /* harmony export */   "default": () => (__WEBPACK_DEFAULT_EXPORT__)
 /* harmony export */ });
-/* harmony import */ var _node_modules_css_loader_dist_runtime_sourceMaps_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(170);
+/* harmony import */ var _node_modules_css_loader_dist_runtime_sourceMaps_js__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(169);
 /* harmony import */ var _node_modules_css_loader_dist_runtime_sourceMaps_js__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(_node_modules_css_loader_dist_runtime_sourceMaps_js__WEBPACK_IMPORTED_MODULE_0__);
-/* harmony import */ var _node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(171);
+/* harmony import */ var _node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(170);
 /* harmony import */ var _node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(_node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1__);
 // Imports
 
@@ -41005,287 +40897,13 @@ body {
   border: 1px solid var(--ca-border);
   object-fit: contain;
 }
-
-/* ---------- Change Review Card ---------- */
-
-.change-review-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border-radius: var(--ca-radius);
-  border: 1px solid var(--ca-border);
-  background: var(--vscode-editor-background);
-  font-size: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  transition: border-color 0.15s ease;
-}
-
-.change-review-card.status-pending {
-  border-color: var(--ca-accent);
-}
-
-.change-review-card.status-accepted {
-  border-color: var(--vscode-charts-green, #3fb950);
-}
-
-.change-review-card.status-rejected {
-  border-color: var(--ca-border);
-  opacity: 0.85;
-}
-
-.change-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--ca-border);
-}
-
-.change-card-title-group {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.change-card-title {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.change-card-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ca-muted);
-  font-size: 11.5px;
-}
-
-.summary-dot {
-  opacity: 0.6;
-}
-
-.stat-add {
-  color: var(--vscode-charts-green, #3fb950);
-  font-weight: 600;
-  font-family: var(--vscode-editor-font-family, monospace);
-}
-
-.stat-del {
-  color: var(--vscode-errorForeground, #f85149);
-  font-weight: 600;
-  font-family: var(--vscode-editor-font-family, monospace);
-}
-
-.change-card-status-badge {
-  font-size: 11px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-}
-
-.badge-accepted {
-  color: var(--vscode-charts-green, #3fb950);
-  background: rgba(63, 185, 80, 0.12);
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(63, 185, 80, 0.25);
-}
-
-.badge-rejected {
-  color: var(--vscode-errorForeground, #f85149);
-  background: rgba(248, 81, 73, 0.12);
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(248, 81, 73, 0.25);
-}
-
-.badge-pending {
-  color: var(--vscode-charts-orange, #e3b341);
-  background: rgba(227, 179, 65, 0.12);
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid rgba(227, 179, 65, 0.25);
-}
-
-.change-file-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.change-file-item {
-  border: 1px solid var(--ca-border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--vscode-sideBar-background, rgba(128, 128, 128, 0.05));
-}
-
-.change-file-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  cursor: pointer;
-  user-select: none;
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11.5px;
-}
-
-.change-file-header:hover {
-  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08));
-}
-
-.file-badge {
-  font-weight: 700;
-  font-size: 10px;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  flex: none;
-}
-
-.file-badge-modified {
-  background: rgba(227, 179, 65, 0.18);
-  color: var(--vscode-charts-orange, #e3b341);
-  border: 1px solid rgba(227, 179, 65, 0.4);
-}
-
-.file-badge-created {
-  background: rgba(63, 185, 80, 0.18);
-  color: var(--vscode-charts-green, #3fb950);
-  border: 1px solid rgba(63, 185, 80, 0.4);
-}
-
-.file-badge-deleted {
-  background: rgba(248, 81, 73, 0.18);
-  color: var(--vscode-errorForeground, #f85149);
-  border: 1px solid rgba(248, 81, 73, 0.4);
-}
-
-.file-badge-renamed {
-  background: rgba(163, 113, 247, 0.18);
-  color: #a371f7;
-  border: 1px solid rgba(163, 113, 247, 0.4);
-}
-
-.change-file-path {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-}
-
-.change-file-stats {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-
-.change-file-chevron {
-  color: var(--ca-muted);
-  font-size: 11px;
-  margin-left: 2px;
-}
-
-.diff-container {
-  border-top: 1px solid var(--ca-border);
-  background: var(--vscode-editor-background);
-  font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11.5px;
-  line-height: 1.45;
-  max-height: 240px;
-  overflow-y: auto;
-  overflow-x: auto;
-  padding: 4px 0;
-}
-
-.diff-line {
-  padding: 1px 10px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.diff-add {
-  background: rgba(63, 185, 80, 0.14);
-  color: var(--vscode-charts-green, #3fb950);
-}
-
-.diff-del {
-  background: rgba(248, 81, 73, 0.14);
-  color: var(--vscode-errorForeground, #f85149);
-}
-
-.diff-hunk {
-  background: rgba(88, 166, 255, 0.1);
-  color: var(--ca-accent, #58a6ff);
-  font-size: 10.5px;
-}
-
-.diff-header {
-  color: var(--ca-muted);
-  font-weight: 600;
-}
-
-.diff-ctx {
-  color: var(--vscode-foreground);
-}
-
-.change-card-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--ca-border);
-}
-
-.btn-reject {
-  background: transparent;
-  color: var(--vscode-foreground);
-  border: 1px solid var(--ca-border);
-  padding: 6px 14px;
-  font-weight: 500;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.12s ease;
-}
-
-.btn-reject:hover {
-  background: rgba(248, 81, 73, 0.12);
-  border-color: var(--vscode-errorForeground, #f85149);
-  color: var(--vscode-errorForeground, #f85149);
-}
-
-.btn-accept {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-  border: 1px solid transparent;
-  padding: 6px 16px;
-  font-weight: 600;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-
-.btn-accept:hover {
-  background: var(--vscode-button-hoverBackground);
-}
-`, "",{"version":3,"sources":["webpack://./src/webview/styles.css"],"names":[],"mappings":"AAAA;EACE,wBAAwB;EACxB,iBAAiB;EACjB,cAAc;EACd,+CAA+C;EAC/C,kEAAkE;EAClE,+CAA+C;AACjD;;AAEA;EACE,sBAAsB;AACxB;;AAEA;;;EAGE,YAAY;EACZ,SAAS;AACX;;AAEA;EACE,sCAAsC;EACtC,wCAAwC;EACxC,+BAA+B;EAC/B,6EAA6E;AAC/E;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,YAAY;AACd;;AAEA,iCAAiC;;AAEjC;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;EAC9B,SAAS;EACT,iBAAiB;EACjB,yCAAyC;EACzC,sEAAsE;AACxE;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;AACV;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,gBAAgB;EAChB,eAAe;EACf,mBAAmB;AACrB;;AAEA;EACE,YAAY;EACZ,WAAW;EACX,cAAc;AAChB;;AAEA;EACE,YAAY;EACZ,WAAW;EACX,kBAAkB;AACpB;;AAEA;EACE,aAAa;EACb,QAAQ;AACV;;AAEA;EACE,WAAW;EACX,YAAY;EACZ,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,kBAAkB;EAClB,6BAA6B;EAC7B,uBAAuB;EACvB,+BAA+B;EAC/B,eAAe;EACf,cAAc;EACd,eAAe;AACjB;AACA;EACE,4EAA4E;AAC9E;AACA,qBAAqB,YAAY,EAAE,eAAe,EAAE;;AAEpD,iEAAiE;;AAEjE;EACE,aAAa;EACb,SAAS;EACT,eAAe;EACf,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;AACpB;;AAEA;EACE,oBAAoB;EACpB,mBAAmB;EACnB,QAAQ;EACR,eAAe;EACf,YAAY;AACd;;AAEA;EACE,sBAAsB;EACtB,yBAAyB;EACzB,sBAAsB;EACtB,eAAe;AACjB;;AAEA;EACE,oBAAoB;EACpB,eAAe;EACf,kEAAkE;EAClE,6EAA6E;EAC7E,iEAAiE;EACjE,kBAAkB;EAClB,gBAAgB;EAChB,gBAAgB;EAChB,eAAe;AACjB;AACA;EACE,mCAAmC;EACnC,oBAAoB;AACtB;;AAEA,uCAAuC;;AAEvC;EACE,OAAO;EACP,gBAAgB;EAChB,sBAAsB;EACtB,aAAa;EACb,sBAAsB;EACtB,SAAS;AACX;;AAEA,4DAA4D;AAC5D;EACE,WAAW;EACX,gBAAgB;EAChB,kBAAkB;AACpB;;AAEA,sCAAsC;;AAEtC;EACE,OAAO;EACP,aAAa;EACb,sBAAsB;EACtB,mBAAmB;EACnB,uBAAuB;EACvB,kBAAkB;EAClB,aAAa;EACb,QAAQ;AACV;AACA;EACE,eAAe;EACf,uBAAuB;EACvB,cAAc;AAChB;AACA;EACE,eAAe;EACf,eAAe;EACf,gBAAgB;AAClB;AACA;EACE,SAAS;EACT,gBAAgB;EAChB,sBAAsB;EACtB,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,aAAa;EACb,2DAA2D;EAC3D,QAAQ;EACR,WAAW;EACX,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,kBAAkB;EAClB,+BAA+B;EAC/B,kCAAkC;EAClC,2CAA2C;EAC3C,+BAA+B;EAC/B,aAAa;EACb,iBAAiB;EACjB,eAAe;EACf,0DAA0D;AAC5D;AACA;EACE,8BAA8B;EAC9B,wEAAwE;AAC1E;;AAEA,mCAAmC;;AAEnC;EACE,aAAa;EACb,SAAS;EACT,uBAAuB;AACzB;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,eAAe;EACf,gBAAgB;EAChB,iBAAiB;AACnB;AACA;EACE,0CAA0C;EAC1C,kCAAkC;EAClC,sBAAsB;EACtB,cAAc;EACd,yBAAyB;EACzB,sBAAsB;AACxB;AACA;EACE,iEAAiE;EACjE,uBAAuB;EACvB,eAAe;AACjB;;AAEA;EACE,YAAY;EACZ,OAAO;EACP,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,qBAAqB;EACrB,uBAAuB;AACzB;AACA;EACE,qBAAqB;AACvB;;AAEA,0BAA0B,aAAa,EAAE;AACzC,yBAAyB,gBAAgB,EAAE;AAC3C,cAAc,gBAAgB,EAAE;;AAEhC;EACE,6EAA6E;EAC7E,kCAAkC;EAClC,aAAa;EACb,kBAAkB;EAClB,gBAAgB;EAChB,cAAc;AAChB;AACA;EACE,6EAA6E;EAC7E,gBAAgB;EAChB,kBAAkB;AACpB;AACA;EACE,wDAAwD;EACxD,gBAAgB;AAClB;AACA;EACE,kBAAkB;EAClB,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,kBAAkB;AACpB;AACA,eAAe,aAAa,EAAE;AAC9B,cAAc,wCAAwC,EAAE;;AAExD;EACE,uCAAuC;EACvC,sBAAsB;AACxB;AACA,mBAAmB,MAAM,UAAU,EAAE,EAAE;;AAEvC,qCAAqC;;AAErC;EACE,aAAa;EACb,SAAS;EACT,uBAAuB;EACvB,iBAAiB;EACjB,kBAAkB;EAClB,kCAAkC;EAClC,2CAA2C;EAC3C,eAAe;AACjB;AACA;EACE,wDAAwD;EACxD,gBAAgB;EAChB,UAAU;AACZ;AACA,aAAa,YAAY,EAAE,OAAO,EAAE;AACpC;EACE,wDAAwD;EACxD,qBAAqB;AACvB;AACA;EACE,eAAe;EACf,sBAAsB;EACtB,qBAAqB;EACrB,sBAAsB;AACxB;AACA;EACE,sBAAsB;EACtB,oCAAoC;EACpC,qBAAqB;AACvB;AACA,sBAAsB,0CAA0C,EAAE;AAClE,yBAAyB,6CAA6C,EAAE;AACxE,kBAAkB,KAAK,yBAAyB,EAAE,EAAE;;AAEpD,uCAAuC;;AAEvC;EACE,kBAAkB;EAClB,iBAAiB;EACjB,kBAAkB;EAClB,gBAAgB;EAChB,kBAAkB;EAClB,wBAAwB;EACxB,0DAA0D;EAC1D,kEAAkE;EAClE,oEAAoE;EACpE,eAAe;EACf,gBAAgB;EAChB,qBAAqB;AACvB;;AAEA,8CAA8C;;AAE9C;EACE,gBAAgB;EAChB,wBAAwB;EACxB,kBAAkB;EAClB,kBAAkB;EAClB,iBAAiB;EACjB,kBAAkB;EAClB,iBAAiB;EACjB,iBAAiB;EACjB,+BAA+B;EAC/B,6EAA6E;EAC7E,kCAAkC;AACpC;AACA;EACE,+DAA+D;EAC/D,oFAAoF;EACpF,iFAAiF;AACnF;;AAEA,qCAAqC;;AAErC;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,iBAAiB;EACjB,eAAe;EACf,sBAAsB;EACtB,gBAAgB;EAChB,WAAW;EACX,kBAAkB;AACpB;AACA;EACE,WAAW;EACX,YAAY;EACZ,UAAU;EACV,+CAA+C;AACjD;AACA;EACE,WAAW,YAAY,EAAE,qBAAqB,EAAE;EAChD,MAAM,UAAU,EAAE,sBAAsB,EAAE;AAC5C;AACA;EACE,wDAAwD;EACxD,uBAAuB;AACzB;AACA;EACE,gBAAgB;EAChB,kEAAkE;EAClE;;;;;GAKC;EACD,0BAA0B;EAC1B,6BAA6B;EAC7B,qBAAqB;EACrB,oCAAoC;EACpC,qCAAqC;AACvC;AACA;EACE,KAAK,4BAA4B,EAAE;AACrC;AACA;EACE,iBAAiB;EACjB,kCAAkC;EAClC,YAAY;AACd;;AAEA,sDAAsD;;AAEtD;EACE,sCAAsC;EACtC,uBAAuB;EACvB,aAAa;EACb,sBAAsB;EACtB,QAAQ;AACV;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,QAAQ;AACV;AACA;EACE,aAAa;EACb,sBAAsB;EACtB,QAAQ;EACR,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,0CAA0C;EAC1C,kCAAkC;EAClC,mBAAmB;EACnB,sBAAsB;EACtB,0DAA0D;AAC5D;AACA;EACE,8BAA8B;EAC9B,sCAAsC;AACxC;AACA;EACE,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,aAAa;EACb,uBAAuB;EACvB,qCAAqC;EACrC,oBAAoB;EACpB,eAAe;EACf,iBAAiB;EACjB,iBAAiB;EACjB,kBAAkB;AACpB;AACA,+BAA+B,sBAAsB,EAAE;;AAEvD;EACE,aAAa;EACb,mBAAmB;EACnB,SAAS;AACX;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,YAAY;EACZ,eAAe;EACf,eAAe;EACf,cAAc;EACd,aAAa;EACb,mBAAmB;EACnB,uBAAuB;AACzB;AACA;EACE,2CAA2C;EAC3C,sCAAsC;AACxC;AACA;EACE,gDAAgD;AAClD;AACA;EACE,YAAY;EACZ,eAAe;AACjB;AACA;EACE,kDAAkD;EAClD,WAAW;EACX,eAAe;AACjB;AACA;EACE,iBAAiB;EACjB,sBAAsB;EACtB,mBAAmB;EACnB,gBAAgB;EAChB,uBAAuB;AACzB;AACA;EACE,wDAAwD;EACxD,+EAA+E;EAC/E,mEAAmE;EACnE,kBAAkB;EAClB,cAAc;AAChB;;AAEA,kCAAkC;;AAElC;EACE,oBAAoB;EACpB,eAAe;EACf,iBAAiB;EACjB,kBAAkB;EAClB,6BAA6B;EAC7B,eAAe;AACjB;AACA,gBAAgB,YAAY,EAAE,eAAe,EAAE;AAC/C;EACE,sCAAsC;EACtC,2CAA2C;AAC7C;AACA,iCAAiC,gDAAgD,EAAE;AACnF;EACE,+BAA+B;EAC/B,uBAAuB;EACvB,8BAA8B;AAChC;AACA;EACE,4EAA4E;AAC9E;;AAEA,gCAAgC;;AAEhC;EACE,eAAe;EACf,QAAQ;EACR,8BAA8B;EAC9B,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,aAAa;EACb,YAAY;EACZ,0BAA0B;AAC5B;AACA;EACE,WAAW;EACX,gBAAgB;EAChB,2CAA2C;EAC3C,kCAAkC;EAClC,mBAAmB;EACnB,aAAa;EACb,2CAA2C;EAC3C,aAAa;EACb,sBAAsB;EACtB,SAAS;AACX;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;AAChC;AACA,mBAAmB,SAAS,EAAE,eAAe,EAAE;AAC/C,eAAe,gBAAgB,EAAE;AACjC,SAAS,aAAa,EAAE,sBAAsB,EAAE,QAAQ,EAAE;AAC1D,eAAe,eAAe,EAAE,gBAAgB,EAAE;AAClD,cAAc,gBAAgB,EAAE,sBAAsB,EAAE;AACxD;EACE,oBAAoB;EACpB,eAAe;EACf,qCAAqC;EACrC,0CAA0C;EAC1C,8DAA8D;EAC9D,kBAAkB;EAClB,iBAAiB;AACnB;AACA;EACE,mCAAmC;EACnC,oBAAoB;AACtB;AACA;EACE,SAAS;EACT,eAAe;EACf,sBAAsB;EACtB,gBAAgB;AAClB;AACA;EACE,aAAa;EACb,yBAAyB;EACzB,QAAQ;EACR,eAAe;AACjB;;AAEA,0CAA0C;;AAE1C;EACE,eAAe;EACf,QAAQ;EACR,+BAA+B;EAC/B,WAAW;EACX,aAAa;EACb,2BAA2B;AAC7B;AACA;EACE,WAAW;EACX,gBAAgB;EAChB,YAAY;EACZ,6EAA6E;EAC7E,wCAAwC;EACxC,aAAa;EACb,sBAAsB;EACtB,0CAA0C;AAC5C;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;EAC9B,kBAAkB;EAClB,yCAAyC;EACzC,gBAAgB;AAClB;AACA;EACE,eAAe;EACf,iBAAiB;AACnB;AACA;EACE,OAAO;EACP,gBAAgB;EAChB,YAAY;AACd;AACA;EACE,aAAa;EACb,sBAAsB;EACtB,kBAAkB;EAClB,eAAe;AACjB;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,iBAAiB;EACjB,kBAAkB;EAClB,eAAe;AACjB;AACA;EACE,yEAAyE;AAC3E;AACA;EACE,kFAAkF;EAClF,4DAA4D;AAC9D;AACA;EACE,OAAO;EACP,YAAY;EACZ,gBAAgB;EAChB,uBAAuB;EACvB,mBAAmB;EACnB,iBAAiB;AACnB;AACA;EACE,UAAU;EACV,YAAY;EACZ,uBAAuB;EACvB,sBAAsB;EACtB,eAAe;EACf,kBAAkB;EAClB,gBAAgB;EAChB,UAAU;AACZ;AACA,wCAAwC,UAAU,EAAE;AACpD,yBAAyB,6CAA6C,EAAE;;AAExE,sDAAsD;;AAEtD;EACE,oBAAoB;EACpB,kCAAkC;EAClC,kBAAkB;EAClB,gBAAgB;EAChB,kBAAkB;AACpB;AACA;EACE,YAAY;EACZ,uBAAuB;EACvB,+BAA+B;EAC/B,aAAa;EACb,eAAe;EACf,iBAAiB;EACjB,eAAe;AACjB;AACA;EACE,2CAA2C;EAC3C,sCAAsC;AACxC;;AAEA,uDAAuD;;AAEvD;EACE,aAAa;EACb,eAAe;EACf,QAAQ;EACR,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;AACpB;AACA;EACE,kBAAkB;EAClB,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,gBAAgB;EAChB,kCAAkC;AACpC;AACA;EACE,WAAW;EACX,YAAY;EACZ,iBAAiB;EACjB,cAAc;AAChB;AACA;EACE,kBAAkB;EAClB,QAAQ;EACR,UAAU;EACV,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,kBAAkB;EAClB,8BAA8B;EAC9B,WAAW;EACX,eAAe;EACf,cAAc;EACd,eAAe;EACf,aAAa;EACb,mBAAmB;EACnB,uBAAuB;AACzB;AACA;EACE,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;EAClB,eAAe;EACf,6CAA6C;AAC/C;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,uBAAuB;EACvB,sBAAsB;EACtB,eAAe;EACf,eAAe;EACf,kBAAkB;AACpB;AACA;EACE,4EAA4E;AAC9E;AACA,gFAAgF;AAChF;EACE,OAAO;EACP,gBAAgB;AAClB;AACA;EACE,8BAA8B;EAC9B,oBAAoB;EACpB,mFAAmF;AACrF;;AAEA,sDAAsD;;AAEtD;EACE,aAAa;EACb,eAAe;EACf,QAAQ;EACR,kBAAkB;AACpB;AACA;EACE,gBAAgB;EAChB,iBAAiB;EACjB,kBAAkB;EAClB,kCAAkC;EAClC,mBAAmB;AACrB;;AAEA,6CAA6C;;AAE7C;EACE,aAAa;EACb,sBAAsB;EACtB,SAAS;EACT,kBAAkB;EAClB,+BAA+B;EAC/B,kCAAkC;EAClC,2CAA2C;EAC3C,eAAe;EACf,yCAAyC;EACzC,mCAAmC;AACrC;;AAEA;EACE,8BAA8B;AAChC;;AAEA;EACE,iDAAiD;AACnD;;AAEA;EACE,8BAA8B;EAC9B,aAAa;AACf;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;EAC9B,SAAS;EACT,mBAAmB;EACnB,yCAAyC;AAC3C;;AAEA;EACE,aAAa;EACb,qBAAqB;EACrB,SAAS;EACT,eAAe;AACjB;;AAEA;EACE,eAAe;EACf,gBAAgB;EAChB,uBAAuB;AACzB;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,sBAAsB;EACtB,iBAAiB;AACnB;;AAEA;EACE,YAAY;AACd;;AAEA;EACE,0CAA0C;EAC1C,gBAAgB;EAChB,wDAAwD;AAC1D;;AAEA;EACE,6CAA6C;EAC7C,gBAAgB;EAChB,wDAAwD;AAC1D;;AAEA;EACE,eAAe;EACf,gBAAgB;EAChB,aAAa;EACb,mBAAmB;AACrB;;AAEA;EACE,0CAA0C;EAC1C,mCAAmC;EACnC,gBAAgB;EAChB,mBAAmB;EACnB,yCAAyC;AAC3C;;AAEA;EACE,6CAA6C;EAC7C,mCAAmC;EACnC,gBAAgB;EAChB,mBAAmB;EACnB,yCAAyC;AAC3C;;AAEA;EACE,2CAA2C;EAC3C,oCAAoC;EACpC,gBAAgB;EAChB,mBAAmB;EACnB,0CAA0C;AAC5C;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,QAAQ;AACV;;AAEA;EACE,kCAAkC;EAClC,kBAAkB;EAClB,gBAAgB;EAChB,uEAAuE;AACzE;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,iBAAiB;EACjB,eAAe;EACf,iBAAiB;EACjB,wDAAwD;EACxD,iBAAiB;AACnB;;AAEA;EACE,yEAAyE;AAC3E;;AAEA;EACE,gBAAgB;EAChB,eAAe;EACf,WAAW;EACX,YAAY;EACZ,oBAAoB;EACpB,mBAAmB;EACnB,uBAAuB;EACvB,kBAAkB;EAClB,UAAU;AACZ;;AAEA;EACE,oCAAoC;EACpC,2CAA2C;EAC3C,yCAAyC;AAC3C;;AAEA;EACE,mCAAmC;EACnC,0CAA0C;EAC1C,wCAAwC;AAC1C;;AAEA;EACE,mCAAmC;EACnC,6CAA6C;EAC7C,wCAAwC;AAC1C;;AAEA;EACE,qCAAqC;EACrC,cAAc;EACd,0CAA0C;AAC5C;;AAEA;EACE,OAAO;EACP,gBAAgB;EAChB,uBAAuB;EACvB,mBAAmB;EACnB,gBAAgB;AAClB;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,eAAe;AACjB;;AAEA;EACE,sBAAsB;EACtB,eAAe;EACf,gBAAgB;AAClB;;AAEA;EACE,sCAAsC;EACtC,2CAA2C;EAC3C,wDAAwD;EACxD,iBAAiB;EACjB,iBAAiB;EACjB,iBAAiB;EACjB,gBAAgB;EAChB,gBAAgB;EAChB,cAAc;AAChB;;AAEA;EACE,iBAAiB;EACjB,qBAAqB;EACrB,qBAAqB;AACvB;;AAEA;EACE,mCAAmC;EACnC,0CAA0C;AAC5C;;AAEA;EACE,mCAAmC;EACnC,6CAA6C;AAC/C;;AAEA;EACE,mCAAmC;EACnC,gCAAgC;EAChC,iBAAiB;AACnB;;AAEA;EACE,sBAAsB;EACtB,gBAAgB;AAClB;;AAEA;EACE,+BAA+B;AACjC;;AAEA;EACE,aAAa;EACb,yBAAyB;EACzB,SAAS;EACT,eAAe;EACf,gBAAgB;EAChB,sCAAsC;AACxC;;AAEA;EACE,uBAAuB;EACvB,+BAA+B;EAC/B,kCAAkC;EAClC,iBAAiB;EACjB,gBAAgB;EAChB,kBAAkB;EAClB,eAAe;EACf,0BAA0B;AAC5B;;AAEA;EACE,mCAAmC;EACnC,oDAAoD;EACpD,6CAA6C;AAC/C;;AAEA;EACE,2CAA2C;EAC3C,sCAAsC;EACtC,6BAA6B;EAC7B,iBAAiB;EACjB,gBAAgB;EAChB,kBAAkB;EAClB,eAAe;EACf,iCAAiC;AACnC;;AAEA;EACE,gDAAgD;AAClD","sourceRoot":""}]);
+`, "",{"version":3,"sources":["webpack://./src/webview/styles.css"],"names":[],"mappings":"AAAA;EACE,wBAAwB;EACxB,iBAAiB;EACjB,cAAc;EACd,+CAA+C;EAC/C,kEAAkE;EAClE,+CAA+C;AACjD;;AAEA;EACE,sBAAsB;AACxB;;AAEA;;;EAGE,YAAY;EACZ,SAAS;AACX;;AAEA;EACE,sCAAsC;EACtC,wCAAwC;EACxC,+BAA+B;EAC/B,6EAA6E;AAC/E;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,YAAY;AACd;;AAEA,iCAAiC;;AAEjC;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;EAC9B,SAAS;EACT,iBAAiB;EACjB,yCAAyC;EACzC,sEAAsE;AACxE;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;AACV;;AAEA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,gBAAgB;EAChB,eAAe;EACf,mBAAmB;AACrB;;AAEA;EACE,YAAY;EACZ,WAAW;EACX,cAAc;AAChB;;AAEA;EACE,YAAY;EACZ,WAAW;EACX,kBAAkB;AACpB;;AAEA;EACE,aAAa;EACb,QAAQ;AACV;;AAEA;EACE,WAAW;EACX,YAAY;EACZ,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,kBAAkB;EAClB,6BAA6B;EAC7B,uBAAuB;EACvB,+BAA+B;EAC/B,eAAe;EACf,cAAc;EACd,eAAe;AACjB;AACA;EACE,4EAA4E;AAC9E;AACA,qBAAqB,YAAY,EAAE,eAAe,EAAE;;AAEpD,iEAAiE;;AAEjE;EACE,aAAa;EACb,SAAS;EACT,eAAe;EACf,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;AACpB;;AAEA;EACE,oBAAoB;EACpB,mBAAmB;EACnB,QAAQ;EACR,eAAe;EACf,YAAY;AACd;;AAEA;EACE,sBAAsB;EACtB,yBAAyB;EACzB,sBAAsB;EACtB,eAAe;AACjB;;AAEA;EACE,oBAAoB;EACpB,eAAe;EACf,kEAAkE;EAClE,6EAA6E;EAC7E,iEAAiE;EACjE,kBAAkB;EAClB,gBAAgB;EAChB,gBAAgB;EAChB,eAAe;AACjB;AACA;EACE,mCAAmC;EACnC,oBAAoB;AACtB;;AAEA,uCAAuC;;AAEvC;EACE,OAAO;EACP,gBAAgB;EAChB,sBAAsB;EACtB,aAAa;EACb,sBAAsB;EACtB,SAAS;AACX;;AAEA,4DAA4D;AAC5D;EACE,WAAW;EACX,gBAAgB;EAChB,kBAAkB;AACpB;;AAEA,sCAAsC;;AAEtC;EACE,OAAO;EACP,aAAa;EACb,sBAAsB;EACtB,mBAAmB;EACnB,uBAAuB;EACvB,kBAAkB;EAClB,aAAa;EACb,QAAQ;AACV;AACA;EACE,eAAe;EACf,uBAAuB;EACvB,cAAc;AAChB;AACA;EACE,eAAe;EACf,eAAe;EACf,gBAAgB;AAClB;AACA;EACE,SAAS;EACT,gBAAgB;EAChB,sBAAsB;EACtB,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,aAAa;EACb,2DAA2D;EAC3D,QAAQ;EACR,WAAW;EACX,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,kBAAkB;EAClB,+BAA+B;EAC/B,kCAAkC;EAClC,2CAA2C;EAC3C,+BAA+B;EAC/B,aAAa;EACb,iBAAiB;EACjB,eAAe;EACf,0DAA0D;AAC5D;AACA;EACE,8BAA8B;EAC9B,wEAAwE;AAC1E;;AAEA,mCAAmC;;AAEnC;EACE,aAAa;EACb,SAAS;EACT,uBAAuB;AACzB;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,eAAe;EACf,gBAAgB;EAChB,iBAAiB;AACnB;AACA;EACE,0CAA0C;EAC1C,kCAAkC;EAClC,sBAAsB;EACtB,cAAc;EACd,yBAAyB;EACzB,sBAAsB;AACxB;AACA;EACE,iEAAiE;EACjE,uBAAuB;EACvB,eAAe;AACjB;;AAEA;EACE,YAAY;EACZ,OAAO;EACP,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,qBAAqB;EACrB,uBAAuB;AACzB;AACA;EACE,qBAAqB;AACvB;;AAEA,0BAA0B,aAAa,EAAE;AACzC,yBAAyB,gBAAgB,EAAE;AAC3C,cAAc,gBAAgB,EAAE;;AAEhC;EACE,6EAA6E;EAC7E,kCAAkC;EAClC,aAAa;EACb,kBAAkB;EAClB,gBAAgB;EAChB,cAAc;AAChB;AACA;EACE,6EAA6E;EAC7E,gBAAgB;EAChB,kBAAkB;AACpB;AACA;EACE,wDAAwD;EACxD,gBAAgB;AAClB;AACA;EACE,kBAAkB;EAClB,gBAAgB;AAClB;AACA;EACE,gBAAgB;EAChB,kBAAkB;AACpB;AACA,eAAe,aAAa,EAAE;AAC9B,cAAc,wCAAwC,EAAE;;AAExD;EACE,uCAAuC;EACvC,sBAAsB;AACxB;AACA,mBAAmB,MAAM,UAAU,EAAE,EAAE;;AAEvC,qCAAqC;;AAErC;EACE,aAAa;EACb,SAAS;EACT,uBAAuB;EACvB,iBAAiB;EACjB,kBAAkB;EAClB,kCAAkC;EAClC,2CAA2C;EAC3C,eAAe;AACjB;AACA;EACE,wDAAwD;EACxD,gBAAgB;EAChB,UAAU;AACZ;AACA,aAAa,YAAY,EAAE,OAAO,EAAE;AACpC;EACE,wDAAwD;EACxD,qBAAqB;AACvB;AACA;EACE,eAAe;EACf,sBAAsB;EACtB,qBAAqB;EACrB,sBAAsB;AACxB;AACA;EACE,sBAAsB;EACtB,oCAAoC;EACpC,qBAAqB;AACvB;AACA,sBAAsB,0CAA0C,EAAE;AAClE,yBAAyB,6CAA6C,EAAE;AACxE,kBAAkB,KAAK,yBAAyB,EAAE,EAAE;;AAEpD,uCAAuC;;AAEvC;EACE,kBAAkB;EAClB,iBAAiB;EACjB,kBAAkB;EAClB,gBAAgB;EAChB,kBAAkB;EAClB,wBAAwB;EACxB,0DAA0D;EAC1D,kEAAkE;EAClE,oEAAoE;EACpE,eAAe;EACf,gBAAgB;EAChB,qBAAqB;AACvB;;AAEA,8CAA8C;;AAE9C;EACE,gBAAgB;EAChB,wBAAwB;EACxB,kBAAkB;EAClB,kBAAkB;EAClB,iBAAiB;EACjB,kBAAkB;EAClB,iBAAiB;EACjB,iBAAiB;EACjB,+BAA+B;EAC/B,6EAA6E;EAC7E,kCAAkC;AACpC;AACA;EACE,+DAA+D;EAC/D,oFAAoF;EACpF,iFAAiF;AACnF;;AAEA,qCAAqC;;AAErC;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,iBAAiB;EACjB,eAAe;EACf,sBAAsB;EACtB,gBAAgB;EAChB,WAAW;EACX,kBAAkB;AACpB;AACA;EACE,WAAW;EACX,YAAY;EACZ,UAAU;EACV,+CAA+C;AACjD;AACA;EACE,WAAW,YAAY,EAAE,qBAAqB,EAAE;EAChD,MAAM,UAAU,EAAE,sBAAsB,EAAE;AAC5C;AACA;EACE,wDAAwD;EACxD,uBAAuB;AACzB;AACA;EACE,gBAAgB;EAChB,kEAAkE;EAClE;;;;;GAKC;EACD,0BAA0B;EAC1B,6BAA6B;EAC7B,qBAAqB;EACrB,oCAAoC;EACpC,qCAAqC;AACvC;AACA;EACE,KAAK,4BAA4B,EAAE;AACrC;AACA;EACE,iBAAiB;EACjB,kCAAkC;EAClC,YAAY;AACd;;AAEA,sDAAsD;;AAEtD;EACE,sCAAsC;EACtC,uBAAuB;EACvB,aAAa;EACb,sBAAsB;EACtB,QAAQ;AACV;;AAEA;EACE,aAAa;EACb,sBAAsB;EACtB,QAAQ;AACV;AACA;EACE,aAAa;EACb,sBAAsB;EACtB,QAAQ;EACR,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,0CAA0C;EAC1C,kCAAkC;EAClC,mBAAmB;EACnB,sBAAsB;EACtB,0DAA0D;AAC5D;AACA;EACE,8BAA8B;EAC9B,sCAAsC;AACxC;AACA;EACE,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,aAAa;EACb,uBAAuB;EACvB,qCAAqC;EACrC,oBAAoB;EACpB,eAAe;EACf,iBAAiB;EACjB,iBAAiB;EACjB,kBAAkB;AACpB;AACA,+BAA+B,sBAAsB,EAAE;;AAEvD;EACE,aAAa;EACb,mBAAmB;EACnB,SAAS;AACX;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,YAAY;EACZ,eAAe;EACf,eAAe;EACf,cAAc;EACd,aAAa;EACb,mBAAmB;EACnB,uBAAuB;AACzB;AACA;EACE,2CAA2C;EAC3C,sCAAsC;AACxC;AACA;EACE,gDAAgD;AAClD;AACA;EACE,YAAY;EACZ,eAAe;AACjB;AACA;EACE,kDAAkD;EAClD,WAAW;EACX,eAAe;AACjB;AACA;EACE,iBAAiB;EACjB,sBAAsB;EACtB,mBAAmB;EACnB,gBAAgB;EAChB,uBAAuB;AACzB;AACA;EACE,wDAAwD;EACxD,+EAA+E;EAC/E,mEAAmE;EACnE,kBAAkB;EAClB,cAAc;AAChB;;AAEA,kCAAkC;;AAElC;EACE,oBAAoB;EACpB,eAAe;EACf,iBAAiB;EACjB,kBAAkB;EAClB,6BAA6B;EAC7B,eAAe;AACjB;AACA,gBAAgB,YAAY,EAAE,eAAe,EAAE;AAC/C;EACE,sCAAsC;EACtC,2CAA2C;AAC7C;AACA,iCAAiC,gDAAgD,EAAE;AACnF;EACE,+BAA+B;EAC/B,uBAAuB;EACvB,8BAA8B;AAChC;AACA;EACE,4EAA4E;AAC9E;;AAEA,gCAAgC;;AAEhC;EACE,eAAe;EACf,QAAQ;EACR,8BAA8B;EAC9B,aAAa;EACb,mBAAmB;EACnB,uBAAuB;EACvB,aAAa;EACb,YAAY;EACZ,0BAA0B;AAC5B;AACA;EACE,WAAW;EACX,gBAAgB;EAChB,2CAA2C;EAC3C,kCAAkC;EAClC,mBAAmB;EACnB,aAAa;EACb,2CAA2C;EAC3C,aAAa;EACb,sBAAsB;EACtB,SAAS;AACX;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;AAChC;AACA,mBAAmB,SAAS,EAAE,eAAe,EAAE;AAC/C,eAAe,gBAAgB,EAAE;AACjC,SAAS,aAAa,EAAE,sBAAsB,EAAE,QAAQ,EAAE;AAC1D,eAAe,eAAe,EAAE,gBAAgB,EAAE;AAClD,cAAc,gBAAgB,EAAE,sBAAsB,EAAE;AACxD;EACE,oBAAoB;EACpB,eAAe;EACf,qCAAqC;EACrC,0CAA0C;EAC1C,8DAA8D;EAC9D,kBAAkB;EAClB,iBAAiB;AACnB;AACA;EACE,mCAAmC;EACnC,oBAAoB;AACtB;AACA;EACE,SAAS;EACT,eAAe;EACf,sBAAsB;EACtB,gBAAgB;AAClB;AACA;EACE,aAAa;EACb,yBAAyB;EACzB,QAAQ;EACR,eAAe;AACjB;;AAEA,0CAA0C;;AAE1C;EACE,eAAe;EACf,QAAQ;EACR,+BAA+B;EAC/B,WAAW;EACX,aAAa;EACb,2BAA2B;AAC7B;AACA;EACE,WAAW;EACX,gBAAgB;EAChB,YAAY;EACZ,6EAA6E;EAC7E,wCAAwC;EACxC,aAAa;EACb,sBAAsB;EACtB,0CAA0C;AAC5C;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,8BAA8B;EAC9B,kBAAkB;EAClB,yCAAyC;EACzC,gBAAgB;AAClB;AACA;EACE,eAAe;EACf,iBAAiB;AACnB;AACA;EACE,OAAO;EACP,gBAAgB;EAChB,YAAY;AACd;AACA;EACE,aAAa;EACb,sBAAsB;EACtB,kBAAkB;EAClB,eAAe;AACjB;AACA;EACE,aAAa;EACb,mBAAmB;EACnB,QAAQ;EACR,iBAAiB;EACjB,kBAAkB;EAClB,eAAe;AACjB;AACA;EACE,yEAAyE;AAC3E;AACA;EACE,kFAAkF;EAClF,4DAA4D;AAC9D;AACA;EACE,OAAO;EACP,YAAY;EACZ,gBAAgB;EAChB,uBAAuB;EACvB,mBAAmB;EACnB,iBAAiB;AACnB;AACA;EACE,UAAU;EACV,YAAY;EACZ,uBAAuB;EACvB,sBAAsB;EACtB,eAAe;EACf,kBAAkB;EAClB,gBAAgB;EAChB,UAAU;AACZ;AACA,wCAAwC,UAAU,EAAE;AACpD,yBAAyB,6CAA6C,EAAE;;AAExE,sDAAsD;;AAEtD;EACE,oBAAoB;EACpB,kCAAkC;EAClC,kBAAkB;EAClB,gBAAgB;EAChB,kBAAkB;AACpB;AACA;EACE,YAAY;EACZ,uBAAuB;EACvB,+BAA+B;EAC/B,aAAa;EACb,eAAe;EACf,iBAAiB;EACjB,eAAe;AACjB;AACA;EACE,2CAA2C;EAC3C,sCAAsC;AACxC;;AAEA,uDAAuD;;AAEvD;EACE,aAAa;EACb,eAAe;EACf,QAAQ;EACR,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;AACpB;AACA;EACE,kBAAkB;EAClB,WAAW;EACX,YAAY;EACZ,kBAAkB;EAClB,gBAAgB;EAChB,kCAAkC;AACpC;AACA;EACE,WAAW;EACX,YAAY;EACZ,iBAAiB;EACjB,cAAc;AAChB;AACA;EACE,kBAAkB;EAClB,QAAQ;EACR,UAAU;EACV,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,kBAAkB;EAClB,8BAA8B;EAC9B,WAAW;EACX,eAAe;EACf,cAAc;EACd,eAAe;EACf,aAAa;EACb,mBAAmB;EACnB,uBAAuB;AACzB;AACA;EACE,gBAAgB;EAChB,WAAW;EACX,kBAAkB;EAClB,kBAAkB;EAClB,eAAe;EACf,6CAA6C;AAC/C;AACA;EACE,UAAU;EACV,WAAW;EACX,YAAY;EACZ,YAAY;EACZ,uBAAuB;EACvB,sBAAsB;EACtB,eAAe;EACf,eAAe;EACf,kBAAkB;AACpB;AACA;EACE,4EAA4E;AAC9E;AACA,gFAAgF;AAChF;EACE,OAAO;EACP,gBAAgB;AAClB;AACA;EACE,8BAA8B;EAC9B,oBAAoB;EACpB,mFAAmF;AACrF;;AAEA,sDAAsD;;AAEtD;EACE,aAAa;EACb,eAAe;EACf,QAAQ;EACR,kBAAkB;AACpB;AACA;EACE,gBAAgB;EAChB,iBAAiB;EACjB,kBAAkB;EAClB,kCAAkC;EAClC,mBAAmB;AACrB","sourceRoot":""}]);
 // Exports
 /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (___CSS_LOADER_EXPORT___);
 
 
 /***/ }),
-/* 170 */
+/* 169 */
 /***/ ((module) => {
 
 
@@ -41306,7 +40924,7 @@ module.exports = function (item) {
 };
 
 /***/ }),
-/* 171 */
+/* 170 */
 /***/ ((module) => {
 
 
@@ -41491,7 +41109,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(1);
 /* harmony import */ var react_dom_client__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(3);
 /* harmony import */ var _App__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(11);
-/* harmony import */ var _styles_css__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(162);
+/* harmony import */ var _styles_css__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(161);
 
 
 
