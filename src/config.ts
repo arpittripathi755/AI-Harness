@@ -61,7 +61,18 @@ export async function setModeId(
   await context.globalState.update(KEY_MODE, resolveModeId(mode));
 }
 
-export function getBaseUrl(context: vscode.ExtensionContext): string {
+export function getBaseUrl(context: vscode.ExtensionContext, apiKey?: string): string {
+  const envUrl =
+    process.env.AI_BASE_URL?.trim() ||
+    process.env.DEEPSEEK_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim();
+  if (envUrl) {
+    return normalizeBaseUrl(envUrl);
+  }
+  const key = apiKey || process.env.AI_API_KEY?.trim() || "";
+  if (key.startsWith("nvapi-")) {
+    return "https://integrate.api.nvidia.com/v1/";
+  }
   return normalizeBaseUrl(
     context.globalState.get<string>(KEY_BASE_URL) ?? DEFAULT_BASE_URL,
   );
@@ -133,7 +144,7 @@ export async function resolveConfig(
     throw new MissingApiKeyError();
   }
   return {
-    baseUrl: getBaseUrl(context),
+    baseUrl: getBaseUrl(context, apiKey),
     model: getModelId(context),
     apiKey,
   };

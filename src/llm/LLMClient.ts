@@ -34,6 +34,15 @@ export class LLMClient {
 
   constructor(private readonly opts: LLMClientOptions) {
     this.model = opts.model;
+    this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+  }
+
+  private normalizeEndpoint(baseUrl: string, apiKey: string): string {
+    const trimmed = (baseUrl || "").trim();
+    if (apiKey?.startsWith("nvapi-") && (trimmed.includes("lightning.ai") || !trimmed)) {
+      return "https://integrate.api.nvidia.com/v1/";
+    }
+    return trimmed;
   }
 
   /** Change the model used for subsequent requests (live, no restart). */
@@ -43,7 +52,7 @@ export class LLMClient {
 
   /** Update the base URL / API key for subsequent requests. */
   setEndpoint(baseUrl: string, apiKey: string): void {
-    this.opts.baseUrl = baseUrl;
+    this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
     this.opts.apiKey = apiKey;
   }
 
@@ -51,8 +60,27 @@ export class LLMClient {
    * Translate the model ID if required by the target provider to prevent errors.
    * - DeepSeek official API (api.deepseek.com) requires 'deepseek-chat' / 'deepseek-reasoner'.
    * - Lightning AI (lightning.ai) uses its hosted catalog IDs.
+   * - NVIDIA NIM (api.nvidia.com) uses its hosted catalog IDs.
    */
   private resolveModelForEndpoint(model: string, baseUrl: string): string {
+    const isNvidiaEndpoint = baseUrl.includes("api.nvidia.com");
+    if (isNvidiaEndpoint) {
+      if (
+        model === "ultra" ||
+        model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+        model === "nvidia/nemotron-3-ultra-550b-a55b"
+      ) {
+        return "nvidia/nemotron-3-ultra-550b-a55b";
+      }
+      if (
+        model === "deepseek-flash" ||
+        model === "deepseek-v4-pro" ||
+        model === "deepseek-ai/deepseek-v4.1-flash"
+      ) {
+        return "deepseek-ai/deepseek-v4.1-flash";
+      }
+    }
+
     const isDeepSeekEndpoint = baseUrl.includes("api.deepseek.com");
     if (isDeepSeekEndpoint) {
       if (

@@ -788,6 +788,14 @@ class LLMClient {
     constructor(opts) {
         this.opts = opts;
         this.model = opts.model;
+        this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+    }
+    normalizeEndpoint(baseUrl, apiKey) {
+        const trimmed = (baseUrl || "").trim();
+        if (apiKey?.startsWith("nvapi-") && (trimmed.includes("lightning.ai") || !trimmed)) {
+            return "https://integrate.api.nvidia.com/v1/";
+        }
+        return trimmed;
     }
     /** Change the model used for subsequent requests (live, no restart). */
     setModel(model) {
@@ -795,15 +803,29 @@ class LLMClient {
     }
     /** Update the base URL / API key for subsequent requests. */
     setEndpoint(baseUrl, apiKey) {
-        this.opts.baseUrl = baseUrl;
+        this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
         this.opts.apiKey = apiKey;
     }
     /**
      * Translate the model ID if required by the target provider to prevent errors.
      * - DeepSeek official API (api.deepseek.com) requires 'deepseek-chat' / 'deepseek-reasoner'.
      * - Lightning AI (lightning.ai) uses its hosted catalog IDs.
+     * - NVIDIA NIM (api.nvidia.com) uses its hosted catalog IDs.
      */
     resolveModelForEndpoint(model, baseUrl) {
+        const isNvidiaEndpoint = baseUrl.includes("api.nvidia.com");
+        if (isNvidiaEndpoint) {
+            if (model === "ultra" ||
+                model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+                model === "nvidia/nemotron-3-ultra-550b-a55b") {
+                return "nvidia/nemotron-3-ultra-550b-a55b";
+            }
+            if (model === "deepseek-flash" ||
+                model === "deepseek-v4-pro" ||
+                model === "deepseek-ai/deepseek-v4.1-flash") {
+                return "deepseek-ai/deepseek-v4.1-flash";
+            }
+        }
         const isDeepSeekEndpoint = baseUrl.includes("api.deepseek.com");
         if (isDeepSeekEndpoint) {
             if (model === "deepseek-v4-pro" ||
@@ -1869,7 +1891,17 @@ function getModeId(context) {
 async function setModeId(context, mode) {
     await context.globalState.update(KEY_MODE, (0, modes_1.resolveModeId)(mode));
 }
-function getBaseUrl(context) {
+function getBaseUrl(context, apiKey) {
+    const envUrl = process.env.AI_BASE_URL?.trim() ||
+        process.env.DEEPSEEK_BASE_URL?.trim() ||
+        process.env.OPENAI_BASE_URL?.trim();
+    if (envUrl) {
+        return normalizeBaseUrl(envUrl);
+    }
+    const key = apiKey || process.env.AI_API_KEY?.trim() || "";
+    if (key.startsWith("nvapi-")) {
+        return "https://integrate.api.nvidia.com/v1/";
+    }
     return normalizeBaseUrl(context.globalState.get(KEY_BASE_URL) ?? exports.DEFAULT_BASE_URL);
 }
 async function setBaseUrl(context, baseUrl) {
@@ -1917,7 +1949,7 @@ async function resolveConfig(context) {
         throw new MissingApiKeyError();
     }
     return {
-        baseUrl: getBaseUrl(context),
+        baseUrl: getBaseUrl(context, apiKey),
         model: getModelId(context),
         apiKey,
     };
