@@ -327,6 +327,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.ctx = {
       workspaceRoot: root,
       terminalAutoRun: getTerminalAutoRun(this.context),
+      autoEdit: getMode(getModeId(this.context)).allowMutations,
       resolvePath: (input) => resolvePathInWorkspace(input, root, confirm),
       toRelative: (uri) => toRelative(root, uri),
       confirm,

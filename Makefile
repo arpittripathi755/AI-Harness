@@ -12,22 +12,11 @@ run:
 		echo "Please run: export AI_API_KEY=\"<your-api-key>\""; \
 		exit 1; \
 	fi
-	@if [ ! -f "dist/extension.js" ] || [ ! -f "dist/webview.js" ]; then \
-		echo "Build artifacts missing. Compiling extension..."; \
+	@if [ ! -f "dist/cli.js" ]; then \
+		echo "Compiling Daxiom TUI..."; \
 		npm run compile; \
 	fi
-	@CODE_CMD=$$(command -v code 2>/dev/null || command -v cursor 2>/dev/null || command -v codium 2>/dev/null || true); \
-	if [ -z "$$CODE_CMD" ] && [ -x "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" ]; then \
-		CODE_CMD="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"; \
-	fi; \
-	if [ -z "$$CODE_CMD" ]; then \
-		echo "ERROR: VS Code CLI ('code', 'cursor', or 'codium') not found on PATH."; \
-		echo "To make 'code' available, open VS Code, open the Command Palette (Cmd+Shift+P / Ctrl+Shift+P),"; \
-		echo "and run: Shell Command: Install 'code' command in PATH."; \
-		exit 1; \
-	fi; \
-	echo "Launching Axiom in Extension Development Host via $$CODE_CMD..."; \
-	"$$CODE_CMD" --extensionDevelopmentPath="$(CURDIR)"
+	@node dist/cli.js $(TASK)
 
 test:
 	npm run lint

@@ -95,4 +95,44 @@ const webviewConfig = {
   },
 };
 
-module.exports = [ extensionConfig, webviewConfig ];
+/** @type WebpackConfig */
+const cliConfig = {
+  target: 'node',
+  mode: 'none',
+  entry: './src/cli.ts',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'cli.js',
+  },
+  resolve: {
+    alias: {
+      vscode: path.resolve(__dirname, 'src/standalone/vscodeShim.ts'),
+    },
+    extensions: ['.ts', '.js'],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.ts$/,
+        exclude: /node_modules/,
+        use: [
+          {
+            loader: 'ts-loader',
+            options: {
+              transpileOnly: true,
+            },
+          },
+        ],
+      },
+    ],
+  },
+  plugins: [
+    new webpack.BannerPlugin({ banner: '#!/usr/bin/env node', raw: true }),
+  ],
+  devtool: 'nosources-source-map',
+  infrastructureLogging: {
+    level: 'log',
+  },
+};
+
+module.exports = [ extensionConfig, webviewConfig, cliConfig ];

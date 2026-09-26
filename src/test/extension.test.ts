@@ -127,4 +127,124 @@ suite('Extension Test Suite', () => {
 		assert.ok(chat2Prompt.includes("styles.css"), "Chat 2 should have styles.css");
 		assert.ok(!chat2Prompt.includes("db.ts"), "Chat 2 must not contain Chat 1 files");
 	});
+
+	test('Standalone vscodeShim filesystem operations work correctly without VS Code', async () => {
+		const { workspace, Uri, FileType } = await import('../standalone/vscodeShim.js');
+		const os = await import('os');
+		const path = await import('path');
+
+		const tempDir = path.join(os.tmpdir(), `daxiom-test-${Date.now()}`);
+		const testFile = Uri.file(path.join(tempDir, 'test.txt'));
+		const renamedFile = Uri.file(path.join(tempDir, 'renamed.txt'));
+
+		// 1. Write file
+		const content = new TextEncoder().encode("Hello autonomous Daxiom");
+		await workspace.fs.writeFile(testFile, content);
+
+		// 2. Stat file
+		const stat = await workspace.fs.stat(testFile);
+		assert.strictEqual(stat.type, FileType.File);
+		assert.strictEqual(stat.size, content.length);
+
+		// 3. Read file
+		const readBytes = await workspace.fs.readFile(testFile);
+		const readStr = new TextDecoder().decode(readBytes);
+		assert.strictEqual(readStr, "Hello autonomous Daxiom");
+
+		// 4. Rename file
+		await workspace.fs.rename(testFile, renamedFile);
+		const renamedStat = await workspace.fs.stat(renamedFile);
+		assert.strictEqual(renamedStat.type, FileType.File);
+
+		// 5. Delete file
+		await workspace.fs.delete(renamedFile);
+		let exists = true;
+		try {
+			await workspace.fs.stat(renamedFile);
+		} catch {
+			exists = false;
+		}
+		assert.strictEqual(exists, false, "Deleted file should no longer exist");
+
+		// Clean up tempDir
+		await workspace.fs.delete(Uri.file(tempDir), { recursive: true });
+	});
+
+	test('Autonomous tool execution runs file modifications and commands without manual approval', async () => {
+		const { deleteFileTool } = await import('../tools/impl/deleteFile.js');
+		const { runCommandTool } = await import('../tools/impl/runCommand.js');
+		const { createFileTool } = await import('../tools/impl/createFile.js');
+		const { editFileTool } = await import('../tools/impl/editFile.js');
+		const { readFileTool } = await import('../tools/impl/readFile.js');
+		const os = await import('os');
+		const path = await import('path');
+		const fs = await import('fs');
+
+		const tempDir = path.join(os.tmpdir(), `daxiom-auto-${Date.now()}`);
+		fs.mkdirSync(tempDir, { recursive: true });
+		const workspaceUri = vscode.Uri.file(tempDir);
+
+		let confirmCalled = false;
+		const autonomousContext = {
+			workspaceRoot: workspaceUri,
+			terminalAutoRun: true,
+			autoEdit: true,
+			resolvePath: async (input: string) => {
+				const resolved = path.isAbsolute(input) ? input : path.join(tempDir, input);
+				return vscode.Uri.file(resolved);
+			},
+			toRelative: (uri: vscode.Uri) => path.relative(tempDir, uri.fsPath),
+			confirm: async () => {
+				confirmCalled = true;
+				return true;
+			},
+		};
+
+		// 1. Create file autonomously
+		const createRes = await createFileTool.execute({ path: "app.ts", content: "console.log('original');" }, autonomousContext);
+		assert.ok(createRes.summary?.includes("Created app.ts"));
+		assert.strictEqual(confirmCalled, false, "Creating files should not ask confirmation");
+
+		// 2. Read file autonomously
+		const readRes = await readFileTool.execute({ path: "app.ts" }, autonomousContext);
+		assert.ok(readRes.content.includes("console.log('original');"));
+
+		// 3. Edit file autonomously
+		const editRes = await editFileTool.execute({
+			path: "app.ts",
+			old_string: "original",
+			new_string: "updated",
+		}, autonomousContext);
+		assert.ok(editRes.summary?.includes("Edited app.ts"));
+		assert.strictEqual(confirmCalled, false, "Editing files should not ask confirmation");
+
+		// 4. Run command autonomously
+		const cmdRes = await runCommandTool.execute({ command: "node -e \"console.log('Autonomous execution works')\"" }, autonomousContext);
+		assert.strictEqual(cmdRes.isError, false);
+		assert.ok(cmdRes.content.includes("Autonomous execution works"));
+		assert.strictEqual(confirmCalled, false, "Running commands in terminalAutoRun should not ask confirmation");
+
+		// 5. Delete file autonomously (autoEdit: true must bypass confirm)
+		const deleteRes = await deleteFileTool.execute({ path: "app.ts" }, autonomousContext);
+		assert.ok(deleteRes.summary?.includes("Deleted app.ts"));
+		assert.strictEqual(confirmCalled, false, "Deleting files in autoEdit mode should not ask confirmation");
+
+		// Clean up
+		fs.rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	test('TUI utilities correctly format tool outputs, test passes, and test failures', async () => {
+		const { stripAnsi, padBetween } = await import('../cli/tui.js');
+
+		// stripAnsi removes color codes
+		const colored = "\x1b[32m✓ 24 tests passed\x1b[0m";
+		assert.strictEqual(stripAnsi(colored), "✓ 24 tests passed");
+
+		// padBetween distributes space correctly
+		const padded = padBetween("DAXIOM", "AUTO EDIT: ON", 30);
+		assert.ok(padded.startsWith("DAXIOM"));
+		assert.ok(padded.endsWith("AUTO EDIT: ON"));
+		assert.strictEqual(padded.length, 30);
+	});
 });
+

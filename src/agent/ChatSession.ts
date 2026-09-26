@@ -104,7 +104,12 @@ export interface TurnCallbacks {
   onAssistantDelta: (id: string, delta: string) => void;
   onAssistantDone: (id: string) => void;
   onToolStart: (callId: string, name: string, title: string) => void;
-  onToolEnd: (callId: string, ok: boolean, summary: string) => void;
+  onToolEnd: (
+    callId: string,
+    ok: boolean,
+    summary: string,
+    content?: string,
+  ) => void;
   /** Live status of what the agent is currently doing. */
   onStatus: (status: AgentStatus) => void;
   onError: (message: string) => void;
@@ -401,7 +406,7 @@ export class ChatSession {
     this.refreshSystemPrompt();
 
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
-    cb.onToolEnd(call.id, ok, summary);
+    cb.onToolEnd(call.id, ok, summary, content);
   }
 }
 

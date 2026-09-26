@@ -375,6 +375,7 @@ class SidebarProvider {
         this.ctx = {
             workspaceRoot: root,
             terminalAutoRun: (0, config_1.getTerminalAutoRun)(this.context),
+            autoEdit: (0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations,
             resolvePath: (input) => (0, workspace_1.resolvePathInWorkspace)(input, root, confirm),
             toRelative: (uri) => (0, workspace_1.toRelative)(root, uri),
             confirm,
@@ -737,7 +738,7 @@ class ChatSession {
         this.taskMemory.recordToolExecution(name, args, ok, summary, content);
         this.refreshSystemPrompt();
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
-        cb.onToolEnd(call.id, ok, summary);
+        cb.onToolEnd(call.id, ok, summary, content);
     }
 }
 exports.ChatSession = ChatSession;
@@ -3087,9 +3088,11 @@ exports.deleteFileTool = {
         }
         const isDir = (stat.type & vscode.FileType.Directory) !== 0;
         const relPath = ctx.toRelative(uri);
-        const approved = await ctx.confirm(`Delete ${isDir ? "directory" : "file"} "${relPath}"?`, "This action cannot be easily undone.");
-        if (!approved) {
-            throw new types_1.ToolDeniedError(`Deletion of "${relPath}" was declined by the user.`);
+        if (!ctx.autoEdit) {
+            const approved = await ctx.confirm(`Delete ${isDir ? "directory" : "file"} "${relPath}"?`, "This action cannot be easily undone.");
+            if (!approved) {
+                throw new types_1.ToolDeniedError(`Deletion of "${relPath}" was declined by the user.`);
+            }
         }
         await vscode.workspace.fs.delete(uri, {
             recursive: isDir ? recursive || true : false,

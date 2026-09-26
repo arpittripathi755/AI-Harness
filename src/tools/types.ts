@@ -36,6 +36,12 @@ export interface ToolContext {
   terminalAutoRun: boolean;
 
   /**
+   * When true, file modifications (including deletions) are applied immediately
+   * without modal confirmation dialogs. Enabled by default in autonomous mode.
+   */
+  autoEdit?: boolean;
+
+  /**
    * Safely resolve a model-supplied path to an absolute Uri inside the workspace.
    * Paths that escape the workspace root trigger a modal approval; denial throws.
    */

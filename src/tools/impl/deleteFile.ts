@@ -38,12 +38,14 @@ export const deleteFileTool: Tool = {
     const isDir = (stat.type & vscode.FileType.Directory) !== 0;
 
     const relPath = ctx.toRelative(uri);
-    const approved = await ctx.confirm(
-      `Delete ${isDir ? "directory" : "file"} "${relPath}"?`,
-      "This action cannot be easily undone.",
-    );
-    if (!approved) {
-      throw new ToolDeniedError(`Deletion of "${relPath}" was declined by the user.`);
+    if (!ctx.autoEdit) {
+      const approved = await ctx.confirm(
+        `Delete ${isDir ? "directory" : "file"} "${relPath}"?`,
+        "This action cannot be easily undone.",
+      );
+      if (!approved) {
+        throw new ToolDeniedError(`Deletion of "${relPath}" was declined by the user.`);
+      }
     }
 
     await vscode.workspace.fs.delete(uri, {
