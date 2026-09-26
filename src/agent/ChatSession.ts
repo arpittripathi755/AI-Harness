@@ -3,6 +3,7 @@ import type { ChatMessage, ContentPart, ToolCall } from "../llm/types";
 import type { ToolContext } from "../tools/types";
 import { ToolRegistry } from "../tools/registry";
 import type { AgentStatus } from "../shared/protocol";
+import { LoopDetector } from "./LoopDetector";
 import {
   getModelByApiId,
   modelSupportsTools,
@@ -130,12 +131,14 @@ export class ChatSession {
   private modelDisplay: string;
   /** Active working memory maintaining task context across tool iterations. */
   private readonly taskMemory: TaskMemory;
+  /** Detects when the agent loops on identical tool calls without progress. */
+  private readonly loopDetector = new LoopDetector();
 
   constructor(
     private readonly client: LLMClient,
     private readonly registry: ToolRegistry,
-    private readonly ctx: ToolContext,
-    private readonly workspaceName: string | undefined,
+    private ctx: ToolContext,
+    private workspaceName: string | undefined,
     private allowMutations: boolean,
     initialModelId: string,
     seedHistory?: ChatMessage[],
@@ -243,9 +246,17 @@ export class ChatSession {
     this.client.setEndpoint(baseUrl, apiKey);
   }
 
+  /** Switch the active workspace root (used when the agent clones a new repo). */
+  setWorkspace(ctx: ToolContext, workspaceName?: string): void {
+    this.ctx = ctx;
+    this.workspaceName = workspaceName;
+    this.refreshSystemPrompt();
+  }
+
   reset(): void {
     this.cancel();
     this.taskMemory.clear();
+    this.loopDetector.reset();
     this.messages = [{ role: "system", content: this.systemPrompt() }];
   }
 
@@ -389,6 +400,10 @@ export class ChatSession {
         content = result.content;
         ok = !result.isError;
         summary = result.summary ?? (ok ? "Done" : "Failed");
+        // Successful mutations signal progress — reset the loop detector
+        if (ok && tool.mutates) {
+          this.loopDetector.recordSuccess();
+        }
       } catch (err) {
         content = `Error: ${err instanceof Error ? err.message : String(err)}`;
         summary = err instanceof Error ? err.message : "Failed";
@@ -398,6 +413,20 @@ export class ChatSession {
     // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
     this.taskMemory.recordToolExecution(name, args, ok, summary, content);
     this.refreshSystemPrompt();
+
+    // Check for looping after recording the execution
+    const loopWarning = this.loopDetector.record(name, args, content);
+    if (loopWarning) {
+      if (loopWarning.type === "abort") {
+        // Inject the warning as a tool result so the model sees it, then throw to exit the loop
+        this.messages.push({ role: "tool", tool_call_id: call.id, content });
+        cb.onToolEnd(call.id, ok, summary, content);
+        throw new Error(loopWarning.message);
+      } else {
+        // Soft warn: inject a system note the model will read on the next turn
+        content += `\n\n[SYSTEM WARNING] ${loopWarning.message}`;
+      }
+    }
 
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
     cb.onToolEnd(call.id, ok, summary, content);

@@ -18,6 +18,7 @@ import {
   resolveModelId,
 } from "./shared/models";
 import { TerminalUI, colors } from "./cli/tui";
+import { WorkspaceIsolation } from "./cli/workspaceIsolation";
 
 function getCliApiKey(): string | undefined {
   return (
@@ -70,19 +71,26 @@ async function main(): Promise<void> {
 
   const tui = new TerminalUI();
 
+  let currentWorkspaceRoot = workspaceRoot;
+  let currentWorkspacePath = cwd;
+
+  /**
+   * Rebuild the ToolContext for a new workspace root.
+   */
+  function buildToolContext(root: vscode.Uri): ToolContext {
+    return {
+      workspaceRoot: root,
+      terminalAutoRun: true,
+      autoEdit: true,
+      resolvePath: async (input: string) =>
+        resolvePathInWorkspace(input, root, async () => true),
+      toRelative: (uri: vscode.Uri) => toRelative(root, uri),
+      confirm: async () => true,
+    };
+  }
+
   // Create autonomous tool context: zero confirmation blockers
-  const toolContext: ToolContext = {
-    workspaceRoot,
-    terminalAutoRun: true,
-    autoEdit: true,
-    resolvePath: async (input: string) => {
-      return resolvePathInWorkspace(input, workspaceRoot, async () => true);
-    },
-    toRelative: (uri: vscode.Uri) => {
-      return toRelative(workspaceRoot, uri);
-    },
-    confirm: async () => true,
-  };
+  const toolContext: ToolContext = buildToolContext(workspaceRoot);
 
   const registry = createToolRegistry();
   const memento = new InMemoryMemento();
@@ -99,6 +107,62 @@ async function main(): Promise<void> {
     allowMutations,
     chats.active.history,
   );
+
+  /**
+   * Clone a GitHub repository to the Desktop and switch the session workspace.
+   * Returns the new workspace path, or undefined on failure.
+   */
+  async function switchToRepo(repoUrl: string): Promise<string | undefined> {
+    tui.printNotice(`Resolving workspace for: ${repoUrl}`);
+    try {
+      const { workspacePath, existed } = WorkspaceIsolation.resolveWorkspace(repoUrl);
+
+      if (!existed) {
+        tui.printNotice(`Cloning into ${workspacePath} …`);
+        WorkspaceIsolation.cloneRepository(repoUrl, workspacePath);
+        tui.printNotice(`Cloned successfully.`);
+      } else {
+        tui.printNotice(`Using existing workspace: ${workspacePath}`);
+      }
+
+      // Switch VS Code workspace shim
+      const newRoot = vscode.Uri.file(workspacePath);
+      const repoName = path.basename(workspacePath);
+      (vscode.workspace as any).workspaceFolders = [
+        { uri: newRoot, name: repoName, index: 0 },
+      ];
+
+      const newCtx = buildToolContext(newRoot);
+      session.setWorkspace(newCtx, repoName);
+      currentWorkspaceRoot = newRoot;
+      currentWorkspacePath = workspacePath;
+
+      tui.printNotice(`Workspace: ${workspacePath}`);
+      return workspacePath;
+    } catch (err: any) {
+      tui.printError(`Failed to switch workspace: ${err.message || String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Detect if a user message begins with a GitHub URL and auto-switch workspace.
+   * Returns the remaining task text (URL stripped from prefix).
+   */
+  function extractRepoUrl(text: string): { repoUrl: string | undefined; taskText: string } {
+    const match = text.match(
+      /^(https?:\/\/(?:www\.)?github\.com\/[^\s]+(?:\.git)?)(?:\s+(.*))?$/si,
+    );
+    if (match) {
+      return { repoUrl: match[1], taskText: (match[2] ?? "").trim() };
+    }
+    // Also handle git@github.com:user/repo.git at start
+    const sshMatch = text.match(/^(git@github\.com:[^\s]+(?:\.git)?)(?:\s+(.*))?$/si);
+    if (sshMatch) {
+      return { repoUrl: sshMatch[1], taskText: (sshMatch[2] ?? "").trim() };
+    }
+    return { repoUrl: undefined, taskText: text };
+  }
 
   async function executeTurn(userText: string): Promise<boolean> {
     const trimmed = userText.trim();
@@ -159,14 +223,39 @@ async function main(): Promise<void> {
           "  /plan        - Enable Plan mode (read-only inspection)\n" +
           "  /model <id>  - Switch model (ultra, deepseek-v4-pro, deepseek-flash)\n" +
           "  /models      - List available models\n" +
+          "  /repo <url>  - Clone a GitHub repo and switch workspace\n" +
           "  /new         - Start fresh conversation\n" +
           "  /exit, /quit - Exit Daxiom TUI\n" +
           "  /help        - Show this help message"
         );
         return true;
       }
+      if (cmd === "/repo") {
+        if (!arg) {
+          tui.printError("Usage: /repo <github-url>");
+          return true;
+        }
+        await switchToRepo(arg);
+        return true;
+      }
       tui.printError(`Unknown command: ${cmd}. Type /help for available commands.`);
       return true;
+    }
+
+    // Auto-detect GitHub URL at the start of the task and switch workspace
+    const { repoUrl, taskText } = extractRepoUrl(trimmed);
+    if (repoUrl) {
+      const switched = await switchToRepo(repoUrl);
+      if (!switched) {
+        return true; // workspace switch failed; don't proceed
+      }
+      if (!taskText) {
+        tui.printNotice(
+          `Workspace switched. Describe your task for this repository.`,
+        );
+        return true;
+      }
+      return executeTurn(taskText);
     }
 
     // Normal task execution

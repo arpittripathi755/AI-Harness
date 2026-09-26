@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(10);
+const config_1 = __webpack_require__(12);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(9);
-const config_1 = __webpack_require__(10);
-const modes_1 = __webpack_require__(11);
-const tools_1 = __webpack_require__(12);
-const workspace_1 = __webpack_require__(29);
+const ConversationManager_1 = __webpack_require__(11);
+const config_1 = __webpack_require__(12);
+const modes_1 = __webpack_require__(13);
+const tools_1 = __webpack_require__(14);
+const workspace_1 = __webpack_require__(31);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -429,8 +429,9 @@ function getNonce() {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChatSession = exports.AGENT_NAME = void 0;
 const LLMClient_1 = __webpack_require__(4);
+const LoopDetector_1 = __webpack_require__(8);
 const models_1 = __webpack_require__(5);
-const TaskMemory_1 = __webpack_require__(8);
+const TaskMemory_1 = __webpack_require__(10);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection) {
@@ -526,6 +527,8 @@ class ChatSession {
     modelDisplay;
     /** Active working memory maintaining task context across tool iterations. */
     taskMemory;
+    /** Detects when the agent loops on identical tool calls without progress. */
+    loopDetector = new LoopDetector_1.LoopDetector();
     constructor(client, registry, ctx, workspaceName, allowMutations, initialModelId, seedHistory, initialMemory) {
         this.client = client;
         this.registry = registry;
@@ -596,9 +599,16 @@ class ChatSession {
     setEndpoint(baseUrl, apiKey) {
         this.client.setEndpoint(baseUrl, apiKey);
     }
+    /** Switch the active workspace root (used when the agent clones a new repo). */
+    setWorkspace(ctx, workspaceName) {
+        this.ctx = ctx;
+        this.workspaceName = workspaceName;
+        this.refreshSystemPrompt();
+    }
     reset() {
         this.cancel();
         this.taskMemory.clear();
+        this.loopDetector.reset();
         this.messages = [{ role: "system", content: this.systemPrompt() }];
     }
     cancel() {
@@ -726,6 +736,10 @@ class ChatSession {
                 content = result.content;
                 ok = !result.isError;
                 summary = result.summary ?? (ok ? "Done" : "Failed");
+                // Successful mutations signal progress — reset the loop detector
+                if (ok && tool.mutates) {
+                    this.loopDetector.recordSuccess();
+                }
             }
             catch (err) {
                 content = `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -735,6 +749,20 @@ class ChatSession {
         // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
         this.taskMemory.recordToolExecution(name, args, ok, summary, content);
         this.refreshSystemPrompt();
+        // Check for looping after recording the execution
+        const loopWarning = this.loopDetector.record(name, args, content);
+        if (loopWarning) {
+            if (loopWarning.type === "abort") {
+                // Inject the warning as a tool result so the model sees it, then throw to exit the loop
+                this.messages.push({ role: "tool", tool_call_id: call.id, content });
+                cb.onToolEnd(call.id, ok, summary, content);
+                throw new Error(loopWarning.message);
+            }
+            else {
+                // Soft warn: inject a system note the model will read on the next turn
+                content += `\n\n[SYSTEM WARNING] ${loopWarning.message}`;
+            }
+        }
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
         cb.onToolEnd(call.id, ok, summary, content);
     }
@@ -1383,6 +1411,131 @@ function sleep(ms, signal) {
 
 /***/ }),
 /* 8 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.LoopDetector = void 0;
+const crypto = __importStar(__webpack_require__(9));
+/**
+ * Detects when the agent is stuck in an ineffective tool execution loop
+ * by tracking canonical signatures of (tool name, args, result) triples.
+ *
+ * - After WARN_THRESHOLD identical consecutive signatures → emit a warn
+ * - After ABORT_THRESHOLD identical consecutive signatures → emit an abort
+ *
+ * Calling `recordSuccess()` clears the history (progress was made).
+ */
+class LoopDetector {
+    static WARN_THRESHOLD = 3;
+    static ABORT_THRESHOLD = 6;
+    history = [];
+    /** Hash a value to a short canonical string for comparison. */
+    static hash(value) {
+        const canonical = JSON.stringify(value, Object.keys(value ?? {}).sort());
+        return crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+    }
+    /**
+     * Record one tool execution. Returns a LoopWarning if the agent appears stuck,
+     * or undefined if everything looks fine.
+     */
+    record(name, args, result) {
+        const sig = {
+            name,
+            argsHash: LoopDetector.hash(args),
+            resultHash: LoopDetector.hash(result),
+        };
+        this.history.push(sig);
+        // Count consecutive identical signatures from the end
+        const last = this.history[this.history.length - 1];
+        let consecutive = 0;
+        for (let i = this.history.length - 1; i >= 0; i--) {
+            const h = this.history[i];
+            if (h.name === last.name && h.argsHash === last.argsHash && h.resultHash === last.resultHash) {
+                consecutive++;
+            }
+            else {
+                break;
+            }
+        }
+        if (consecutive >= LoopDetector.ABORT_THRESHOLD) {
+            return {
+                type: "abort",
+                message: `The agent has called \`${name}\` with identical arguments and received ` +
+                    `the same result ${consecutive} times in a row. This indicates an unrecoverable loop. ` +
+                    `Aborting to prevent wasted API calls.`,
+                repetitions: consecutive,
+            };
+        }
+        if (consecutive >= LoopDetector.WARN_THRESHOLD) {
+            return {
+                type: "warn",
+                message: `Warning: \`${name}\` has been called ${consecutive} times with the same arguments ` +
+                    `and result. If this continues, the agent will be aborted.`,
+                repetitions: consecutive,
+            };
+        }
+        return undefined;
+    }
+    /**
+     * Call this after a successful mutation (file edit, create, delete) to signal
+     * that progress was made. Clears the signature history.
+     */
+    recordSuccess() {
+        this.history.length = 0;
+    }
+    /** Reset all state (e.g., after a new conversation turn begins). */
+    reset() {
+        this.history.length = 0;
+    }
+    get size() {
+        return this.history.length;
+    }
+}
+exports.LoopDetector = LoopDetector;
+
+
+/***/ }),
+/* 9 */
+/***/ ((module) => {
+
+module.exports = require("crypto");
+
+/***/ }),
+/* 10 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1679,7 +1832,7 @@ exports.TaskMemory = TaskMemory;
 
 
 /***/ }),
-/* 9 */
+/* 11 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1797,7 +1950,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 10 */
+/* 12 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1851,7 +2004,7 @@ exports.resolveConfig = resolveConfig;
 exports.promptAndStoreApiKey = promptAndStoreApiKey;
 const vscode = __importStar(__webpack_require__(1));
 const models_1 = __webpack_require__(5);
-const modes_1 = __webpack_require__(11);
+const modes_1 = __webpack_require__(13);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -1972,7 +2125,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 11 */
+/* 13 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2009,7 +2162,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 12 */
+/* 14 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2030,18 +2183,18 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(13);
-const listFiles_1 = __webpack_require__(14);
-const readFile_1 = __webpack_require__(17);
-const readActiveEditor_1 = __webpack_require__(18);
-const readSelection_1 = __webpack_require__(19);
-const searchWorkspace_1 = __webpack_require__(20);
-const createFile_1 = __webpack_require__(21);
-const editFile_1 = __webpack_require__(22);
-const renameFile_1 = __webpack_require__(24);
-const deleteFile_1 = __webpack_require__(25);
-const multiEdit_1 = __webpack_require__(26);
-const runCommand_1 = __webpack_require__(27);
+const registry_1 = __webpack_require__(15);
+const listFiles_1 = __webpack_require__(16);
+const readFile_1 = __webpack_require__(19);
+const readActiveEditor_1 = __webpack_require__(20);
+const readSelection_1 = __webpack_require__(21);
+const searchWorkspace_1 = __webpack_require__(22);
+const createFile_1 = __webpack_require__(23);
+const editFile_1 = __webpack_require__(24);
+const renameFile_1 = __webpack_require__(26);
+const deleteFile_1 = __webpack_require__(27);
+const multiEdit_1 = __webpack_require__(28);
+const runCommand_1 = __webpack_require__(29);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -2066,13 +2219,13 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(13);
+var registry_2 = __webpack_require__(15);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-__exportStar(__webpack_require__(16), exports);
+__exportStar(__webpack_require__(18), exports);
 
 
 /***/ }),
-/* 13 */
+/* 15 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2124,7 +2277,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 14 */
+/* 16 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2164,8 +2317,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const fsutil_2 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(17);
+const fsutil_2 = __webpack_require__(17);
 const MAX_ENTRIES = 1000;
 exports.listFilesTool = {
     name: "list_files",
@@ -2237,7 +2390,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 15 */
+/* 17 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2283,7 +2436,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
+const types_1 = __webpack_require__(18);
 /** Glob of paths tools skip by default (noise / large dirs). */
 exports.DEFAULT_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.next/**,**/build/**}";
 /** Directory names skipped during recursive listing. */
@@ -2351,7 +2504,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 16 */
+/* 18 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2372,13 +2525,13 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 17 */
+/* 19 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(17);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -2421,7 +2574,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 18 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2461,7 +2614,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(17);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -2488,7 +2641,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 19 */
+/* 21 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2559,7 +2712,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 20 */
+/* 22 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2599,8 +2752,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(17);
+const types_1 = __webpack_require__(18);
 const MAX_FILES_SCANNED = 2000;
 const MAX_MATCHES = 200;
 exports.searchWorkspaceTool = {
@@ -2694,7 +2847,7 @@ function escapeRegExp(s) {
 
 
 /***/ }),
-/* 21 */
+/* 23 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2734,8 +2887,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(17);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -2786,14 +2939,14 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 22 */
+/* 24 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const fsutil_1 = __webpack_require__(15);
-const editCore_1 = __webpack_require__(23);
+const fsutil_1 = __webpack_require__(17);
+const editCore_1 = __webpack_require__(25);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -2839,7 +2992,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 23 */
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2882,8 +3035,8 @@ exports.applyEdits = applyEdits;
 exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(17);
+const types_1 = __webpack_require__(18);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -2957,7 +3110,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 24 */
+/* 26 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2997,8 +3150,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(17);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -3044,7 +3197,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 25 */
+/* 27 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3084,8 +3237,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(17);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -3137,14 +3290,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 26 */
+/* 28 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(16);
-const editCore_1 = __webpack_require__(23);
+const types_1 = __webpack_require__(18);
+const editCore_1 = __webpack_require__(25);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -3247,15 +3400,15 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 27 */
+/* 29 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(28);
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const child_process_1 = __webpack_require__(30);
+const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(17);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 exports.runCommandTool = {
@@ -3329,13 +3482,13 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 28 */
+/* 30 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 29 */
+/* 31 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3377,8 +3530,8 @@ exports.getWorkspaceRoot = getWorkspaceRoot;
 exports.toRelative = toRelative;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(30));
-const types_1 = __webpack_require__(16);
+const path = __importStar(__webpack_require__(32));
+const types_1 = __webpack_require__(18);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -3427,7 +3580,7 @@ async function resolvePathInWorkspace(input, root, confirm) {
 
 
 /***/ }),
-/* 30 */
+/* 32 */
 /***/ ((module) => {
 
 module.exports = require("path");
