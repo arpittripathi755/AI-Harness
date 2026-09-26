@@ -11,7 +11,10 @@ const KEY_MODE = "claudeAgent.mode";
 const KEY_BASE_URL = "claudeAgent.baseUrl";
 const KEY_TERMINAL_AUTO = "claudeAgent.terminalAutoRun";
 
-export const DEFAULT_BASE_URL = "https://lightning.ai/api/v1/";
+export const DEFAULT_BASE_URL =
+  process.env.AI_API_KEY?.startsWith("nvapi-")
+    ? "https://integrate.api.nvidia.com/v1/"
+    : "https://lightning.ai/api/v1/";
 
 /**
  * Thrown when no API key has been configured yet. The SidebarProvider catches
