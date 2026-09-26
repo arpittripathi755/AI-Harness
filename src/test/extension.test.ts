@@ -12,4 +12,13 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(-1, [1, 2, 3].indexOf(5));
 		assert.strictEqual(-1, [1, 2, 3].indexOf(0));
 	});
+
+	test('Axiom extension is present and can activate', async () => {
+		const ext = vscode.extensions.getExtension('arpit.claude-agent');
+		assert.ok(ext, 'Extension arpit.claude-agent should be found');
+		await ext.activate();
+		assert.strictEqual(ext.isActive, true);
+		const commands = await vscode.commands.getCommands(true);
+		assert.ok(commands.includes('claude-agent.open'), 'claude-agent.open should be registered');
+	});
 });

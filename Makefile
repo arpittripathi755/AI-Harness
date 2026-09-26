@@ -27,7 +27,7 @@ run:
 		exit 1; \
 	fi; \
 	echo "Launching Axiom in Extension Development Host via $$CODE_CMD..."; \
-	"$$CODE_CMD" --extensionDevelopmentPath=. .
+	"$$CODE_CMD" --extensionDevelopmentPath="$(CURDIR)" "$(CURDIR)"
 
 test:
 	npm run lint

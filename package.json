@@ -11,7 +11,12 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:claudeAgent.chat"
+    "onStartupFinished",
+    "onView:claudeAgent.chat",
+    "onCommand:claude-agent.open",
+    "onCommand:claude-agent.newChat",
+    "onCommand:claude-agent.setApiKey",
+    "onCommand:claude-agent.apiSettings"
   ],
   "main": "./dist/extension.js",
   "contributes": {
