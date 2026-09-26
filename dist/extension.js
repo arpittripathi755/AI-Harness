@@ -61,8 +61,6 @@ function activate(context) {
         vscode.commands.executeCommand("claudeAgent.chat.focus");
         provider.openApiSettings();
     }));
-    // Automatically reveal the Axiom chat view in the sidebar on startup.
-    vscode.commands.executeCommand("claude-agent.open");
 }
 function deactivate() { }
 
@@ -130,10 +128,6 @@ class SidebarProvider {
     constructor(context) {
         this.context = context;
         this.chats = new ConversationManager_1.ConversationManager(context.workspaceState);
-        context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
-            this.session = undefined;
-            this.ctx = undefined;
-        }));
     }
     resolveWebviewView(webviewView) {
         this.view = webviewView;
@@ -358,6 +352,10 @@ class SidebarProvider {
         return this.session;
     }
     ensureToolContext() {
+        if (this.ctx) {
+            this.ctx.terminalAutoRun = (0, config_1.getTerminalAutoRun)(this.context);
+            return this.ctx;
+        }
         const root = (0, workspace_1.getWorkspaceRoot)();
         const confirm = async (message, detail) => {
             const pick = await vscode.window.showWarningMessage(message, { modal: true, detail }, "Allow");
