@@ -1,0 +1,92 @@
+{
+  "name": "claude-agent",
+  "displayName": "Axiom",
+  "description": "Axiom — AI Coding Agent",
+  "version": "0.0.1",
+  "publisher": "arpit",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:claudeAgent.chat"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "claudeAgent",
+          "title": "Axiom",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeAgent": [
+        {
+          "type": "webview",
+          "id": "claudeAgent.chat",
+          "name": "Axiom"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claude-agent.setApiKey",
+        "title": "Axiom: Set API Key"
+      },
+      {
+        "command": "claude-agent.newChat",
+        "title": "Axiom: New Chat"
+      },
+      {
+        "command": "claude-agent.open",
+        "title": "Axiom: Open Chat"
+      },
+      {
+        "command": "claude-agent.apiSettings",
+        "title": "Axiom: API Settings"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.106.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "css-loader": "^7.1.4",
+    "eslint": "^10.5.0",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.6.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
+    "webpack": "^5.107.2",
+    "webpack-cli": "^7.0.3"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-markdown": "^10.1.0"
+  }
+}
