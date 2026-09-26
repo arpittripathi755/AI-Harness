@@ -167,7 +167,7 @@ async function main(): Promise<void> {
   async function executeTurn(userText: string): Promise<boolean> {
     const trimmed = userText.trim();
     if (!trimmed) {
-      return true;
+      return true; // empty input: stay in REPL
     }
 
     // Check for CLI slash commands
@@ -259,7 +259,6 @@ async function main(): Promise<void> {
     }
 
     // Normal task execution
-    let turnFailed = false;
     try {
       await session.send(trimmed, {
         onAssistantStart: () => tui.printAssistantStart(),
@@ -267,14 +266,11 @@ async function main(): Promise<void> {
         onAssistantDone: () => tui.printAssistantDone(),
         onToolStart: (_callId, name, title) => tui.printToolStart(name, title),
         onToolEnd: (_callId, ok, summary, content) => {
-          if (!ok) {
-            turnFailed = true;
-          }
           tui.printToolEnd(ok, summary, content);
         },
         onStatus: (status) => tui.printStatus(status),
+        onPhaseChange: (phase) => tui.printPhase(phase),
         onError: (err) => {
-          turnFailed = true;
           tui.printError(err);
         },
       });
@@ -283,11 +279,12 @@ async function main(): Promise<void> {
       chats.active.taskMemory = session.exportTaskMemory();
       chats.save();
     } catch (err: any) {
-      turnFailed = true;
       tui.printError(err.message || String(err));
     }
 
-    return !turnFailed;
+    // ALWAYS return true: task completion or tool errors must NOT close the REPL.
+    // The only way to exit is via explicit /exit, /quit, or Ctrl+D.
+    return true;
   }
 
   // Print TUI header

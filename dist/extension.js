@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(12);
+const config_1 = __webpack_require__(15);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(11);
-const config_1 = __webpack_require__(12);
-const modes_1 = __webpack_require__(13);
-const tools_1 = __webpack_require__(14);
-const workspace_1 = __webpack_require__(31);
+const ConversationManager_1 = __webpack_require__(14);
+const config_1 = __webpack_require__(15);
+const modes_1 = __webpack_require__(16);
+const tools_1 = __webpack_require__(17);
+const workspace_1 = __webpack_require__(34);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -430,11 +430,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChatSession = exports.AGENT_NAME = void 0;
 const LLMClient_1 = __webpack_require__(4);
 const LoopDetector_1 = __webpack_require__(8);
+const Orchestrator_1 = __webpack_require__(10);
 const models_1 = __webpack_require__(5);
-const TaskMemory_1 = __webpack_require__(10);
+const TaskMemory_1 = __webpack_require__(13);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
-function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection) {
+function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection, orchestrator) {
     const ws = root
         ? `You are operating inside the user's VS Code workspace.
 Workspace: ${workspaceName ?? "(unnamed)"}
@@ -447,7 +448,8 @@ access files inside this workspace unless the user explicitly approves otherwise
 - Inspect the workspace, search, and read the files you need.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
 - Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.`
+- Only deletions and terminal commands require the user to confirm.
+- IMPORTANT: After making file changes, run the test/build command if one exists to verify correctness.`
         : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
 - Inspect the workspace, search, and read the relevant files.
@@ -455,6 +457,21 @@ disabled and will be refused. Do the following:
 - Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
     const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
+    // Phase and repo profile context injected when an orchestrator is active
+    let phaseBlock = "";
+    if (orchestrator) {
+        const phaseLabel = Orchestrator_1.PHASE_LABELS[orchestrator.phase];
+        phaseBlock = `\n\nCurrent task phase: ${phaseLabel}`;
+        const profile = orchestrator.formatProfileForPrompt();
+        if (profile) {
+            phaseBlock += `\nRepository info (cached):\n${profile}`;
+        }
+        if (orchestrator.testCommand && orchestrator.phase === "EDITING") {
+            phaseBlock +=
+                `\n\nVerification gate: You MUST run \`${orchestrator.testCommand}\` after editing ` +
+                    `files to verify correctness. Do not declare the task done without attempting this.`;
+        }
+    }
     return `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${exports.AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
@@ -463,7 +480,7 @@ answer honestly that you are ${exports.AGENT_NAME} running on the "${modelDispla
 
 ${ws}
 
-${modeGuidance}${memoryBlock}
+${modeGuidance}${memoryBlock}${phaseBlock}
 
 Work by reasoning step by step: think, choose a tool, execute it, observe the result,
 then continue until the task is complete. Inspect real files rather than guessing.
@@ -485,23 +502,23 @@ function modelDisplayName(apiModelId) {
 function statusForTool(name) {
     switch (name) {
         case "search_workspace":
-            return "Searching workspace…";
+            return "Searching workspace\u2026";
         case "list_files":
         case "read_file":
         case "read_active_editor":
         case "read_selection":
-            return "Reading files…";
+            return "Reading files\u2026";
         case "create_file":
         case "edit_file":
         case "rename_file":
         case "multi_edit":
-            return "Editing files…";
+            return "Editing files\u2026";
         case "delete_file":
-            return "Waiting for approval…";
+            return "Waiting for approval\u2026";
         case "run_command":
-            return "Running terminal command…";
+            return "Running terminal command\u2026";
         default:
-            return "Working…";
+            return "Working\u2026";
     }
 }
 /**
@@ -529,6 +546,10 @@ class ChatSession {
     taskMemory;
     /** Detects when the agent loops on identical tool calls without progress. */
     loopDetector = new LoopDetector_1.LoopDetector();
+    /** Current task orchestrator (phase, budget). Replaced each `send()` call. */
+    orchestrator = null;
+    /** Session-scoped repo profile cache: persists across tasks in same workspace. */
+    repoProfile = null;
     constructor(client, registry, ctx, workspaceName, allowMutations, initialModelId, seedHistory, initialMemory) {
         this.client = client;
         this.registry = registry;
@@ -559,7 +580,7 @@ class ChatSession {
         return this.taskMemory;
     }
     systemPrompt() {
-        return buildSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations, this.taskMemory.formatForSystemPrompt());
+        return buildSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations, this.taskMemory.formatForSystemPrompt(), this.orchestrator ?? undefined);
     }
     /** Refresh the system message in place after a live model/mode change or memory update. */
     refreshSystemPrompt() {
@@ -599,16 +620,30 @@ class ChatSession {
     setEndpoint(baseUrl, apiKey) {
         this.client.setEndpoint(baseUrl, apiKey);
     }
-    /** Switch the active workspace root (used when the agent clones a new repo). */
+    /**
+     * Switch the active workspace root (used when the agent clones a new repo).
+     * Invalidates the session-cached repo profile so it will be rebuilt on the
+     * next task in the new workspace.
+     */
     setWorkspace(ctx, workspaceName) {
         this.ctx = ctx;
         this.workspaceName = workspaceName;
+        this.repoProfile = null; // invalidate profile for new workspace
         this.refreshSystemPrompt();
+    }
+    /** Current task phase (readable by TUI for status display). */
+    get currentPhase() {
+        return this.orchestrator?.phase ?? null;
+    }
+    /** Files edited in the current/last task. */
+    get editedFiles() {
+        return this.orchestrator?.editedFiles ?? new Set();
     }
     reset() {
         this.cancel();
         this.taskMemory.clear();
         this.loopDetector.reset();
+        this.orchestrator = null;
         this.messages = [{ role: "system", content: this.systemPrompt() }];
     }
     cancel() {
@@ -619,20 +654,34 @@ class ChatSession {
      * Run one user turn to completion (may involve several tool round-trips).
      * `images` are data-URL strings; they are attached only for vision-capable
      * models and silently omitted otherwise (no error).
+     *
+     * Always returns (never throws externally) — errors are reported via
+     * `cb.onError`. The caller must NOT interpret a normal task completion as
+     * an exit signal; only explicit /exit commands should close the REPL.
      */
     async send(userText, cb, images) {
         if (this.busy) {
             cb.onError("A response is already in progress.");
             return;
         }
+        // Build (or reuse) the session-scoped repo profile
+        if (!this.repoProfile && this.ctx.workspaceRoot) {
+            try {
+                this.repoProfile = (0, Orchestrator_1.detectRepoProfile)(this.ctx.workspaceRoot.fsPath);
+            }
+            catch {
+                this.repoProfile = null;
+            }
+        }
+        // Fresh orchestrator for this task (phase starts at EXPLORING)
+        this.orchestrator = new Orchestrator_1.Orchestrator(Orchestrator_1.DEFAULT_BUDGET, this.repoProfile);
+        this.loopDetector.reset();
         // Retain user request in active task memory and refresh system prompt
         this.taskMemory.recordUserRequest(userText);
         this.refreshSystemPrompt();
         this.messages.push({ role: "user", content: this.buildUserContent(userText, images) });
         const controller = new AbortController();
         this.abortController = controller;
-        // Omit tools entirely for models that can't do tool calling on this endpoint;
-        // they run as plain chat (no agent loop) rather than 400ing.
         const toolDefs = this.toolsSupported
             ? this.registry.definitions(this.allowMutations)
             : undefined;
@@ -640,18 +689,18 @@ class ChatSession {
             while (!controller.signal.aborted) {
                 const id = `a${++this.counter}`;
                 let started = false;
-                cb.onStatus("Thinking…");
+                cb.onStatus("Thinking\u2026");
                 const ensureStarted = () => {
                     if (!started) {
                         started = true;
-                        cb.onStatus("Generating response…");
+                        cb.onStatus("Generating response\u2026");
                         cb.onAssistantStart(id);
                     }
                 };
                 const gen = this.client.stream(this.messages, {
                     signal: controller.signal,
                     tools: toolDefs,
-                    onRetry: () => cb.onStatus("Rate limited — retrying…"),
+                    onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
                 });
                 let next = await gen.next();
                 while (!next.done) {
@@ -663,7 +712,6 @@ class ChatSession {
                 if (started) {
                     cb.onAssistantDone(id);
                 }
-                // Record any plan or reasoning the assistant articulated
                 if (turn.content) {
                     this.taskMemory.recordAssistantTurn(turn.content);
                 }
@@ -674,13 +722,48 @@ class ChatSession {
                 });
                 // The agent stops ONLY when it responds without requesting more tool calls
                 if (turn.toolCalls.length === 0) {
+                    this.orchestrator.markDone();
                     cb.onStatus("Finished");
                     return;
                 }
                 for (const call of turn.toolCalls) {
+                    // Budget check before each tool call
+                    const budgetStatus = this.orchestrator.onToolCall();
+                    if (budgetStatus?.type === "abort") {
+                        const budgetSummary = this.orchestrator.buildBudgetExhaustedSummary();
+                        this.messages.push({ role: "user", content: budgetSummary });
+                        // Ask the model to summarize without tools, then return to prompt
+                        const abortId = `a${++this.counter}`;
+                        cb.onAssistantStart(abortId);
+                        const finalGen = this.client.stream(this.messages, {
+                            signal: controller.signal,
+                            tools: undefined,
+                            onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
+                        });
+                        let fn = await finalGen.next();
+                        while (!fn.done) {
+                            cb.onAssistantDelta(abortId, fn.value.delta);
+                            fn = await finalGen.next();
+                        }
+                        cb.onAssistantDone(abortId);
+                        cb.onStatus("Finished");
+                        return;
+                    }
+                    if (budgetStatus?.type === "warn") {
+                        const phaseMsg = budgetStatus.phase === "EXPLORING"
+                            ? ` The agent is still in the EXPLORING phase \u2014 no changes have been made yet.`
+                            : "";
+                        this.messages.push({
+                            role: "user",
+                            content: `[SYSTEM] Budget notice: ${budgetStatus.detail}.${phaseMsg} Please wrap up efficiently.`,
+                        });
+                    }
                     await this.runToolCall(call, cb);
+                    if (cb.onPhaseChange && this.orchestrator) {
+                        cb.onPhaseChange(this.orchestrator.phase);
+                    }
                 }
-                // Loop again continuously so the model receives tool results and keeps executing until done
+                // Loop again: model receives tool results and continues until done
             }
         }
         catch (err) {
@@ -723,8 +806,6 @@ class ChatSession {
             summary = parseError;
         }
         else if (!this.allowMutations && tool.mutates) {
-            // Defense in depth: mutating tools aren't advertised in Plan mode, but if a
-            // model calls one anyway, refuse it cleanly rather than editing files.
             content =
                 `Refused: "${name}" modifies files and is disabled in Plan mode. ` +
                     `Describe the change instead, and tell the user to switch to Auto Edit mode to apply it.`;
@@ -736,9 +817,37 @@ class ChatSession {
                 content = result.content;
                 ok = !result.isError;
                 summary = result.summary ?? (ok ? "Done" : "Failed");
-                // Successful mutations signal progress — reset the loop detector
                 if (ok && tool.mutates) {
+                    // Successful mutation: advance phase, clear edit-failure counter, reset loop
+                    const filePath = typeof args.path === "string" ? args.path : undefined;
+                    if (filePath) {
+                        this.orchestrator?.onMutation(filePath);
+                        this.loopDetector.clearEditFailure(filePath);
+                    }
                     this.loopDetector.recordSuccess();
+                }
+                else if (!ok && tool.mutates) {
+                    // Edit failure: detect repeated failures on the same file
+                    const filePath = typeof args.path === "string" ? args.path : undefined;
+                    if (filePath) {
+                        const forceReread = this.loopDetector.recordEditFailure(filePath);
+                        if (forceReread) {
+                            content +=
+                                `\n\n[SYSTEM] You have failed to edit "${filePath}" ` +
+                                    `${this.loopDetector.editFailureCount(filePath)} times in a row. ` +
+                                    `Before attempting another edit on this file, you MUST call read_file to get ` +
+                                    `the exact current file content, then retry the edit with the correct text.`;
+                        }
+                    }
+                }
+                // Track verification: if the agent ran tests/build, advance to VERIFYING
+                if (name === "run_command" && ok) {
+                    const cmd = typeof args.command === "string" ? args.command : "";
+                    const testCmd = this.repoProfile?.testCommand ?? "";
+                    if ((testCmd && cmd.includes(testCmd)) ||
+                        /\b(jest|mocha|vitest|pytest|cargo test|go test|npm test|yarn test|make test)\b/i.test(cmd)) {
+                        this.orchestrator?.onVerification();
+                    }
                 }
             }
             catch (err) {
@@ -746,20 +855,28 @@ class ChatSession {
                 summary = err instanceof Error ? err.message : "Failed";
             }
         }
-        // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
+        // Detect repeated failed searches and nudge strategy change
+        if (name === "search_workspace" && !ok) {
+            const query = typeof args.query === "string" ? args.query : "";
+            if (query && this.loopDetector.recordFailedSearch(query)) {
+                content +=
+                    `\n\n[SYSTEM] You have tried similar searches multiple times without results. ` +
+                        `Try listing directories with list_files, broaden the query, or search for a ` +
+                        `different pattern (e.g., a different file extension or keyword).`;
+            }
+        }
+        // Update task memory with tool findings, file mutations, or test results
         this.taskMemory.recordToolExecution(name, args, ok, summary, content);
         this.refreshSystemPrompt();
         // Check for looping after recording the execution
         const loopWarning = this.loopDetector.record(name, args, content);
         if (loopWarning) {
             if (loopWarning.type === "abort") {
-                // Inject the warning as a tool result so the model sees it, then throw to exit the loop
                 this.messages.push({ role: "tool", tool_call_id: call.id, content });
                 cb.onToolEnd(call.id, ok, summary, content);
                 throw new Error(loopWarning.message);
             }
             else {
-                // Soft warn: inject a system note the model will read on the next turn
                 content += `\n\n[SYSTEM WARNING] ${loopWarning.message}`;
             }
         }
@@ -768,13 +885,13 @@ class ChatSession {
     }
 }
 exports.ChatSession = ChatSession;
-/** Short human title for a tool card, e.g. `read_file → src/foo.ts`. */
+/** Short human title for a tool card, e.g. `read_file -> src/foo.ts`. */
 function describeCall(name, args) {
     const hint = (typeof args.path === "string" && args.path) ||
         (typeof args.query === "string" && args.query) ||
         (typeof args.command === "string" && args.command) ||
         "";
-    return hint ? `${name} → ${hint}` : name;
+    return hint ? `${name} \u2192 ${hint}` : name;
 }
 /** Turn raw endpoint errors into actionable guidance where we recognize them. */
 function friendlyError(message) {
@@ -1454,23 +1571,54 @@ const crypto = __importStar(__webpack_require__(9));
  * Detects when the agent is stuck in an ineffective tool execution loop
  * by tracking canonical signatures of (tool name, args, result) triples.
  *
- * - After WARN_THRESHOLD identical consecutive signatures → emit a warn
- * - After ABORT_THRESHOLD identical consecutive signatures → emit an abort
+ * - After WARN_THRESHOLD identical consecutive (name + args) → emit a warn
+ * - After ABORT_THRESHOLD identical consecutive (name + args) → emit an abort
+ *
+ * Additional heuristics:
+ * - Edit-failure loop: 2 consecutive `old_string not found` on the same file
+ *   → signal the caller to force a fresh full-file read before the next edit.
+ * - Search near-duplicate: N failed searches with the same query/file target
+ *   in a row → nudge the agent to broaden its strategy.
  *
  * Calling `recordSuccess()` clears the history (progress was made).
  */
 class LoopDetector {
     static WARN_THRESHOLD = 3;
     static ABORT_THRESHOLD = 6;
+    /** Max consecutive edit failures on the same file before forcing a re-read. */
+    static EDIT_FAIL_THRESHOLD = 2;
+    /** Max consecutive failed searches before nudging to change strategy. */
+    static SEARCH_FAIL_THRESHOLD = 3;
     history = [];
+    /** file path → count of consecutive edit-tool failures */
+    editFailures = new Map();
+    /** tracks consecutive failed searches (query normalized → count) */
+    searchFailures = new Map();
+    // ─── Hashing ──────────────────────────────────────────────────────────────
     /** Hash a value to a short canonical string for comparison. */
     static hash(value) {
-        const canonical = JSON.stringify(value, Object.keys(value ?? {}).sort());
+        let canonical;
+        try {
+            if (value !== null && typeof value === "object") {
+                canonical = JSON.stringify(value, Object.keys(value).sort());
+            }
+            else {
+                canonical = String(value);
+            }
+        }
+        catch {
+            canonical = String(value);
+        }
         return crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 16);
     }
+    // ─── Primary record ───────────────────────────────────────────────────────
     /**
      * Record one tool execution. Returns a LoopWarning if the agent appears stuck,
      * or undefined if everything looks fine.
+     *
+     * Note: comparison is by (name + argsHash) only — the result hash is stored
+     * but not compared, so re-running `git status` after a real state change is
+     * NOT falsely flagged, but calling the same tool with identical args is.
      */
     record(name, args, result) {
         const sig = {
@@ -1479,12 +1627,12 @@ class LoopDetector {
             resultHash: LoopDetector.hash(result),
         };
         this.history.push(sig);
-        // Count consecutive identical signatures from the end
+        // Count consecutive identical (name + argsHash) signatures from the end
         const last = this.history[this.history.length - 1];
         let consecutive = 0;
         for (let i = this.history.length - 1; i >= 0; i--) {
             const h = this.history[i];
-            if (h.name === last.name && h.argsHash === last.argsHash && h.resultHash === last.resultHash) {
+            if (h.name === last.name && h.argsHash === last.argsHash) {
                 consecutive++;
             }
             else {
@@ -1494,38 +1642,89 @@ class LoopDetector {
         if (consecutive >= LoopDetector.ABORT_THRESHOLD) {
             return {
                 type: "abort",
-                message: `The agent has called \`${name}\` with identical arguments and received ` +
-                    `the same result ${consecutive} times in a row. This indicates an unrecoverable loop. ` +
-                    `Aborting to prevent wasted API calls.`,
+                message: `The agent has called \`${name}\` with identical arguments ` +
+                    `${consecutive} times in a row without making progress. ` +
+                    `This indicates an unrecoverable loop. Aborting to prevent wasted API calls.`,
                 repetitions: consecutive,
             };
         }
         if (consecutive >= LoopDetector.WARN_THRESHOLD) {
             return {
                 type: "warn",
-                message: `Warning: \`${name}\` has been called ${consecutive} times with the same arguments ` +
-                    `and result. If this continues, the agent will be aborted.`,
+                message: `Warning: \`${name}\` has been called ${consecutive} times with the same arguments. ` +
+                    `If you keep doing this without making progress the agent will abort. ` +
+                    `Try a different approach or ask the user for clarification.`,
                 repetitions: consecutive,
             };
         }
         return undefined;
     }
+    // ─── Edit-failure loop detection ──────────────────────────────────────────
+    /**
+     * Record an edit tool failure (edit_file / multi_edit with "old_string not found"
+     * or similar patch errors). Returns true if the caller should force a full file
+     * re-read before allowing the next edit attempt on the same file.
+     */
+    recordEditFailure(filePath) {
+        const count = (this.editFailures.get(filePath) ?? 0) + 1;
+        this.editFailures.set(filePath, count);
+        return count >= LoopDetector.EDIT_FAIL_THRESHOLD;
+    }
+    /** Clear edit failure counter for a file after a successful edit or explicit re-read. */
+    clearEditFailure(filePath) {
+        this.editFailures.delete(filePath);
+    }
+    /** Number of consecutive edit failures recorded for `filePath`. */
+    editFailureCount(filePath) {
+        return this.editFailures.get(filePath) ?? 0;
+    }
+    // ─── Search near-duplicate detection ─────────────────────────────────────
+    /**
+     * Record a failed search (search_workspace / list_files that returned no
+     * matches or a minimal set). Returns true if the agent should be nudged to
+     * change strategy.
+     *
+     * Queries are normalized (lowercased, punctuation collapsed) before comparison
+     * so "find Button.tsx" and "find button.tsx" are treated as the same search.
+     */
+    recordFailedSearch(query) {
+        const normalized = normalizeQuery(query);
+        const count = (this.searchFailures.get(normalized) ?? 0) + 1;
+        this.searchFailures.set(normalized, count);
+        return count >= LoopDetector.SEARCH_FAIL_THRESHOLD;
+    }
+    clearSearchFailures() {
+        this.searchFailures.clear();
+    }
+    // ─── Progress signals ─────────────────────────────────────────────────────
     /**
      * Call this after a successful mutation (file edit, create, delete) to signal
-     * that progress was made. Clears the signature history.
+     * that progress was made. Clears the signature history and edit/search failure maps.
      */
     recordSuccess() {
         this.history.length = 0;
+        this.editFailures.clear();
+        this.searchFailures.clear();
     }
     /** Reset all state (e.g., after a new conversation turn begins). */
     reset() {
         this.history.length = 0;
+        this.editFailures.clear();
+        this.searchFailures.clear();
     }
     get size() {
         return this.history.length;
     }
 }
 exports.LoopDetector = LoopDetector;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function normalizeQuery(query) {
+    return query
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
 
 
 /***/ }),
@@ -1536,6 +1735,320 @@ module.exports = require("crypto");
 
 /***/ }),
 /* 10 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Orchestrator = exports.DEFAULT_BUDGET = exports.PHASE_LABELS = void 0;
+exports.detectRepoProfile = detectRepoProfile;
+const fs = __importStar(__webpack_require__(11));
+const path = __importStar(__webpack_require__(12));
+exports.PHASE_LABELS = {
+    EXPLORING: "Exploring codebase",
+    EDITING: "Editing files",
+    VERIFYING: "Verifying changes",
+    DONE: "Complete",
+};
+exports.DEFAULT_BUDGET = {
+    maxToolCalls: parseInt(process.env.DAXIOM_MAX_TOOL_CALLS ?? "200", 10),
+    maxRuntimeMs: parseInt(process.env.DAXIOM_MAX_RUNTIME_MS ?? "900000", 10), // 15 min
+};
+/**
+ * Detect a repository profile by inspecting package.json, Makefile, etc.
+ * This is synchronous and fast (no network calls, no tool round-trips).
+ */
+function detectRepoProfile(workspacePath) {
+    let packageManager = "none";
+    let testCommand = null;
+    let buildCommand = null;
+    let lintCommand = null;
+    let defaultBranch = null;
+    const keyDirectories = [];
+    // Detect package manager
+    if (fs.existsSync(path.join(workspacePath, "bun.lockb"))) {
+        packageManager = "bun";
+    }
+    else if (fs.existsSync(path.join(workspacePath, "pnpm-lock.yaml"))) {
+        packageManager = "pnpm";
+    }
+    else if (fs.existsSync(path.join(workspacePath, "yarn.lock"))) {
+        packageManager = "yarn";
+    }
+    else if (fs.existsSync(path.join(workspacePath, "package-lock.json"))) {
+        packageManager = "npm";
+    }
+    // Read package.json scripts
+    const pkgPath = path.join(workspacePath, "package.json");
+    if (fs.existsSync(pkgPath)) {
+        try {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+            const scripts = pkg.scripts ?? {};
+            const pm = packageManager !== "none" ? packageManager : "npm";
+            const run = `${pm} run`;
+            if (scripts["test"])
+                testCommand = `${run} test`;
+            else if (scripts["test:run"])
+                testCommand = `${run} test:run`;
+            else if (scripts["jest"])
+                testCommand = `${run} jest`;
+            if (scripts["build"])
+                buildCommand = `${run} build`;
+            else if (scripts["compile"])
+                buildCommand = `${run} compile`;
+            if (scripts["lint"])
+                lintCommand = `${run} lint`;
+            else if (scripts["check"])
+                lintCommand = `${run} check`;
+        }
+        catch {
+            // ignore parse errors
+        }
+    }
+    // Fallback: check Makefile for test/build/lint targets
+    if (!testCommand || !buildCommand) {
+        const makefilePath = path.join(workspacePath, "Makefile");
+        if (fs.existsSync(makefilePath)) {
+            try {
+                const makefile = fs.readFileSync(makefilePath, "utf-8");
+                if (!testCommand && /^test:/m.test(makefile))
+                    testCommand = "make test";
+                if (!buildCommand && /^build:/m.test(makefile))
+                    buildCommand = "make build";
+                if (!lintCommand && /^lint:/m.test(makefile))
+                    lintCommand = "make lint";
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    // Fallback: detect pytest, cargo, etc.
+    if (!testCommand) {
+        if (fs.existsSync(path.join(workspacePath, "pytest.ini")) ||
+            fs.existsSync(path.join(workspacePath, "setup.cfg")) ||
+            fs.existsSync(path.join(workspacePath, "pyproject.toml"))) {
+            testCommand = "python -m pytest";
+        }
+        else if (fs.existsSync(path.join(workspacePath, "Cargo.toml"))) {
+            testCommand = "cargo test";
+            buildCommand ??= "cargo build";
+        }
+        else if (fs.existsSync(path.join(workspacePath, "go.mod"))) {
+            testCommand = "go test ./...";
+            buildCommand ??= "go build ./...";
+        }
+    }
+    // Detect default git branch
+    try {
+        const headRef = fs.readFileSync(path.join(workspacePath, ".git", "HEAD"), "utf-8").trim();
+        const match = headRef.match(/^ref: refs\/heads\/(.+)$/);
+        if (match)
+            defaultBranch = match[1];
+    }
+    catch {
+        // not a git repo or HEAD unreadable
+    }
+    // Key directories (src, lib, tests, etc.)
+    for (const dir of ["src", "lib", "pkg", "app", "test", "tests", "spec"]) {
+        if (fs.existsSync(path.join(workspacePath, dir))) {
+            keyDirectories.push(dir);
+        }
+    }
+    return {
+        workspacePath,
+        packageManager,
+        testCommand,
+        buildCommand,
+        lintCommand,
+        defaultBranch,
+        keyDirectories,
+        detectedAt: Date.now(),
+    };
+}
+// ─── Orchestrator ─────────────────────────────────────────────────────────────
+/**
+ * Per-task state machine that tracks the current phase, budget consumption,
+ * and which files were edited during this task.
+ *
+ * The CLI creates a new Orchestrator for each user task (not each tool call).
+ * It is read by ChatSession to inject phase context into the system prompt
+ * and to gate the handoff to ChangeSet review.
+ */
+class Orchestrator {
+    budget;
+    repoProfile;
+    _phase = "EXPLORING";
+    toolCallCount = 0;
+    startMs = Date.now();
+    filesEdited = new Set();
+    budgetWarnFired = false;
+    constructor(budget = exports.DEFAULT_BUDGET, repoProfile = null) {
+        this.budget = budget;
+        this.repoProfile = repoProfile;
+    }
+    get phase() {
+        return this._phase;
+    }
+    get editedFiles() {
+        return this.filesEdited;
+    }
+    get toolCalls() {
+        return this.toolCallCount;
+    }
+    get elapsedMs() {
+        return Date.now() - this.startMs;
+    }
+    // ─── Phase transitions ───────────────────────────────────────────────────
+    /** Advance phase when the agent begins making edits. */
+    onMutation(filePath) {
+        this.filesEdited.add(filePath);
+        if (this._phase === "EXPLORING") {
+            this._phase = "EDITING";
+        }
+    }
+    /** Advance phase when the agent runs a verification command. */
+    onVerification() {
+        if (this._phase === "EDITING") {
+            this._phase = "VERIFYING";
+        }
+    }
+    /** Mark task as done. Only valid in VERIFYING or EDITING phase. */
+    markDone() {
+        this._phase = "DONE";
+    }
+    // ─── Budget ──────────────────────────────────────────────────────────────
+    /**
+     * Increment tool call count. Returns a string status message if the budget
+     * is being approached or exhausted, otherwise undefined.
+     */
+    onToolCall() {
+        this.toolCallCount++;
+        const { maxToolCalls, maxRuntimeMs } = this.budget;
+        // Hard abort checks
+        if (maxToolCalls > 0 && this.toolCallCount >= maxToolCalls) {
+            return { type: "abort", reason: "tool_calls", count: this.toolCallCount, max: maxToolCalls };
+        }
+        if (maxRuntimeMs > 0 && this.elapsedMs >= maxRuntimeMs) {
+            return { type: "abort", reason: "timeout", elapsed: this.elapsedMs, max: maxRuntimeMs };
+        }
+        // Soft warn at 70%
+        if (!this.budgetWarnFired) {
+            const callPct = maxToolCalls > 0 ? this.toolCallCount / maxToolCalls : 0;
+            const timePct = maxRuntimeMs > 0 ? this.elapsedMs / maxRuntimeMs : 0;
+            if (callPct >= 0.7 || timePct >= 0.7) {
+                this.budgetWarnFired = true;
+                const detail = callPct >= 0.7
+                    ? `${this.toolCallCount}/${maxToolCalls} tool calls used`
+                    : `${Math.round(this.elapsedMs / 1000)}s/${maxRuntimeMs / 1000}s elapsed`;
+                return {
+                    type: "warn",
+                    reason: callPct >= 0.7 ? "tool_calls" : "timeout",
+                    detail,
+                    phase: this._phase,
+                };
+            }
+        }
+        return undefined;
+    }
+    // ─── Repo profile helpers ────────────────────────────────────────────────
+    /** Return the test command if the repo has one, null otherwise. */
+    get testCommand() {
+        return this.repoProfile?.testCommand ?? null;
+    }
+    get buildCommand() {
+        return this.repoProfile?.buildCommand ?? null;
+    }
+    /** Format profile info for injection into the system prompt. */
+    formatProfileForPrompt() {
+        if (!this.repoProfile)
+            return "";
+        const lines = [];
+        if (this.repoProfile.testCommand) {
+            lines.push(`Test command: \`${this.repoProfile.testCommand}\``);
+        }
+        if (this.repoProfile.buildCommand) {
+            lines.push(`Build command: \`${this.repoProfile.buildCommand}\``);
+        }
+        if (this.repoProfile.lintCommand) {
+            lines.push(`Lint command: \`${this.repoProfile.lintCommand}\``);
+        }
+        if (this.repoProfile.defaultBranch) {
+            lines.push(`Default branch: ${this.repoProfile.defaultBranch}`);
+        }
+        if (this.repoProfile.keyDirectories.length > 0) {
+            lines.push(`Key directories: ${this.repoProfile.keyDirectories.join(", ")}`);
+        }
+        return lines.length > 0 ? lines.join("\n") : "";
+    }
+    /**
+     * Build a graceful-stop summary for when the budget is exhausted.
+     */
+    buildBudgetExhaustedSummary() {
+        const lines = [
+            `[SYSTEM] Task budget exhausted after ${this.toolCallCount} tool calls / ${Math.round(this.elapsedMs / 1000)}s.`,
+            `Current phase: ${this._phase}`,
+        ];
+        if (this.filesEdited.size > 0) {
+            lines.push(`Files modified so far: ${Array.from(this.filesEdited).join(", ")}`);
+        }
+        else {
+            lines.push("No file changes have been made yet.");
+        }
+        lines.push("Please summarize what you have found/tried so far and what is blocking completion. " +
+            "The user will decide how to proceed.");
+        return lines.join("\n");
+    }
+}
+exports.Orchestrator = Orchestrator;
+
+
+/***/ }),
+/* 11 */
+/***/ ((module) => {
+
+module.exports = require("fs");
+
+/***/ }),
+/* 12 */
+/***/ ((module) => {
+
+module.exports = require("path");
+
+/***/ }),
+/* 13 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1832,7 +2345,7 @@ exports.TaskMemory = TaskMemory;
 
 
 /***/ }),
-/* 11 */
+/* 14 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1950,7 +2463,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 12 */
+/* 15 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2004,7 +2517,7 @@ exports.resolveConfig = resolveConfig;
 exports.promptAndStoreApiKey = promptAndStoreApiKey;
 const vscode = __importStar(__webpack_require__(1));
 const models_1 = __webpack_require__(5);
-const modes_1 = __webpack_require__(13);
+const modes_1 = __webpack_require__(16);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -2125,7 +2638,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 13 */
+/* 16 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2162,7 +2675,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 14 */
+/* 17 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2183,18 +2696,18 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(15);
-const listFiles_1 = __webpack_require__(16);
-const readFile_1 = __webpack_require__(19);
-const readActiveEditor_1 = __webpack_require__(20);
-const readSelection_1 = __webpack_require__(21);
-const searchWorkspace_1 = __webpack_require__(22);
-const createFile_1 = __webpack_require__(23);
-const editFile_1 = __webpack_require__(24);
-const renameFile_1 = __webpack_require__(26);
-const deleteFile_1 = __webpack_require__(27);
-const multiEdit_1 = __webpack_require__(28);
-const runCommand_1 = __webpack_require__(29);
+const registry_1 = __webpack_require__(18);
+const listFiles_1 = __webpack_require__(19);
+const readFile_1 = __webpack_require__(22);
+const readActiveEditor_1 = __webpack_require__(23);
+const readSelection_1 = __webpack_require__(24);
+const searchWorkspace_1 = __webpack_require__(25);
+const createFile_1 = __webpack_require__(26);
+const editFile_1 = __webpack_require__(27);
+const renameFile_1 = __webpack_require__(29);
+const deleteFile_1 = __webpack_require__(30);
+const multiEdit_1 = __webpack_require__(31);
+const runCommand_1 = __webpack_require__(32);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -2219,13 +2732,13 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(15);
+var registry_2 = __webpack_require__(18);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-__exportStar(__webpack_require__(18), exports);
+__exportStar(__webpack_require__(21), exports);
 
 
 /***/ }),
-/* 15 */
+/* 18 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2277,7 +2790,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 16 */
+/* 19 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2317,8 +2830,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(17);
-const fsutil_2 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(20);
+const fsutil_2 = __webpack_require__(20);
 const MAX_ENTRIES = 1000;
 exports.listFilesTool = {
     name: "list_files",
@@ -2390,7 +2903,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 17 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2436,7 +2949,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(18);
+const types_1 = __webpack_require__(21);
 /** Glob of paths tools skip by default (noise / large dirs). */
 exports.DEFAULT_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.next/**,**/build/**}";
 /** Directory names skipped during recursive listing. */
@@ -2504,7 +3017,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 18 */
+/* 21 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2525,13 +3038,13 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 19 */
+/* 22 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(20);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -2574,7 +3087,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 20 */
+/* 23 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2614,7 +3127,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(20);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -2641,7 +3154,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 21 */
+/* 24 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2712,7 +3225,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 22 */
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2752,8 +3265,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(17);
-const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(20);
+const types_1 = __webpack_require__(21);
 const MAX_FILES_SCANNED = 2000;
 const MAX_MATCHES = 200;
 exports.searchWorkspaceTool = {
@@ -2847,7 +3360,7 @@ function escapeRegExp(s) {
 
 
 /***/ }),
-/* 23 */
+/* 26 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2887,8 +3400,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(18);
-const fsutil_1 = __webpack_require__(17);
+const types_1 = __webpack_require__(21);
+const fsutil_1 = __webpack_require__(20);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -2939,14 +3452,14 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 24 */
+/* 27 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const fsutil_1 = __webpack_require__(17);
-const editCore_1 = __webpack_require__(25);
+const fsutil_1 = __webpack_require__(20);
+const editCore_1 = __webpack_require__(28);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -2992,7 +3505,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 25 */
+/* 28 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3035,8 +3548,8 @@ exports.applyEdits = applyEdits;
 exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(17);
-const types_1 = __webpack_require__(18);
+const fsutil_1 = __webpack_require__(20);
+const types_1 = __webpack_require__(21);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -3110,7 +3623,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 26 */
+/* 29 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3150,8 +3663,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(18);
-const fsutil_1 = __webpack_require__(17);
+const types_1 = __webpack_require__(21);
+const fsutil_1 = __webpack_require__(20);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -3197,7 +3710,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 27 */
+/* 30 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3237,8 +3750,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(18);
-const fsutil_1 = __webpack_require__(17);
+const types_1 = __webpack_require__(21);
+const fsutil_1 = __webpack_require__(20);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -3290,14 +3803,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 28 */
+/* 31 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(18);
-const editCore_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(21);
+const editCore_1 = __webpack_require__(28);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -3400,15 +3913,15 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 29 */
+/* 32 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(30);
-const types_1 = __webpack_require__(18);
-const fsutil_1 = __webpack_require__(17);
+const child_process_1 = __webpack_require__(33);
+const types_1 = __webpack_require__(21);
+const fsutil_1 = __webpack_require__(20);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 exports.runCommandTool = {
@@ -3482,13 +3995,13 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 30 */
+/* 33 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 31 */
+/* 34 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3530,8 +4043,8 @@ exports.getWorkspaceRoot = getWorkspaceRoot;
 exports.toRelative = toRelative;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(32));
-const types_1 = __webpack_require__(18);
+const path = __importStar(__webpack_require__(12));
+const types_1 = __webpack_require__(21);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -3578,12 +4091,6 @@ async function resolvePathInWorkspace(input, root, confirm) {
     return vscode.Uri.file(absolute);
 }
 
-
-/***/ }),
-/* 32 */
-/***/ ((module) => {
-
-module.exports = require("path");
 
 /***/ })
 /******/ 	]);

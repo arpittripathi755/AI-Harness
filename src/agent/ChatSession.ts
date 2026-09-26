@@ -5,6 +5,13 @@ import { ToolRegistry } from "../tools/registry";
 import type { AgentStatus } from "../shared/protocol";
 import { LoopDetector } from "./LoopDetector";
 import {
+  Orchestrator,
+  DEFAULT_BUDGET,
+  detectRepoProfile,
+  PHASE_LABELS,
+  type RepoProfile,
+} from "./Orchestrator";
+import {
   getModelByApiId,
   modelSupportsTools,
   modelSupportsVision,
@@ -21,6 +28,7 @@ function buildSystemPrompt(
   root: string | undefined,
   allowMutations: boolean,
   workingMemorySection?: string,
+  orchestrator?: Orchestrator,
 ): string {
   const ws = root
     ? `You are operating inside the user's VS Code workspace.
@@ -35,7 +43,8 @@ access files inside this workspace unless the user explicitly approves otherwise
 - Inspect the workspace, search, and read the files you need.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
 - Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.`
+- Only deletions and terminal commands require the user to confirm.
+- IMPORTANT: After making file changes, run the test/build command if one exists to verify correctness.`
     : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
 - Inspect the workspace, search, and read the relevant files.
@@ -45,6 +54,22 @@ disabled and will be refused. Do the following:
 
   const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
 
+  // Phase and repo profile context injected when an orchestrator is active
+  let phaseBlock = "";
+  if (orchestrator) {
+    const phaseLabel = PHASE_LABELS[orchestrator.phase];
+    phaseBlock = `\n\nCurrent task phase: ${phaseLabel}`;
+    const profile = orchestrator.formatProfileForPrompt();
+    if (profile) {
+      phaseBlock += `\nRepository info (cached):\n${profile}`;
+    }
+    if (orchestrator.testCommand && orchestrator.phase === "EDITING") {
+      phaseBlock +=
+        `\n\nVerification gate: You MUST run \`${orchestrator.testCommand}\` after editing ` +
+        `files to verify correctness. Do not declare the task done without attempting this.`;
+    }
+  }
+
   return `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
@@ -53,7 +78,7 @@ answer honestly that you are ${AGENT_NAME} running on the "${modelDisplay}" mode
 
 ${ws}
 
-${modeGuidance}${memoryBlock}
+${modeGuidance}${memoryBlock}${phaseBlock}
 
 Work by reasoning step by step: think, choose a tool, execute it, observe the result,
 then continue until the task is complete. Inspect real files rather than guessing.
@@ -77,23 +102,23 @@ function modelDisplayName(apiModelId: string): string {
 function statusForTool(name: string): AgentStatus {
   switch (name) {
     case "search_workspace":
-      return "Searching workspace…";
+      return "Searching workspace\u2026";
     case "list_files":
     case "read_file":
     case "read_active_editor":
     case "read_selection":
-      return "Reading files…";
+      return "Reading files\u2026";
     case "create_file":
     case "edit_file":
     case "rename_file":
     case "multi_edit":
-      return "Editing files…";
+      return "Editing files\u2026";
     case "delete_file":
-      return "Waiting for approval…";
+      return "Waiting for approval\u2026";
     case "run_command":
-      return "Running terminal command…";
+      return "Running terminal command\u2026";
     default:
-      return "Working…";
+      return "Working\u2026";
   }
 }
 
@@ -110,6 +135,8 @@ export interface TurnCallbacks {
   ) => void;
   /** Live status of what the agent is currently doing. */
   onStatus: (status: AgentStatus) => void;
+  /** Optional: called when the task phase advances (e.g. EXPLORING -> EDITING). */
+  onPhaseChange?: (phase: import("./Orchestrator").TaskPhase) => void;
   onError: (message: string) => void;
 }
 
@@ -133,6 +160,10 @@ export class ChatSession {
   private readonly taskMemory: TaskMemory;
   /** Detects when the agent loops on identical tool calls without progress. */
   private readonly loopDetector = new LoopDetector();
+  /** Current task orchestrator (phase, budget). Replaced each `send()` call. */
+  private orchestrator: Orchestrator | null = null;
+  /** Session-scoped repo profile cache: persists across tasks in same workspace. */
+  private repoProfile: RepoProfile | null = null;
 
   constructor(
     private readonly client: LLMClient,
@@ -196,6 +227,7 @@ export class ChatSession {
       this.ctx.workspaceRoot?.fsPath,
       this.allowMutations,
       this.taskMemory.formatForSystemPrompt(),
+      this.orchestrator ?? undefined,
     );
   }
 
@@ -246,17 +278,33 @@ export class ChatSession {
     this.client.setEndpoint(baseUrl, apiKey);
   }
 
-  /** Switch the active workspace root (used when the agent clones a new repo). */
+  /**
+   * Switch the active workspace root (used when the agent clones a new repo).
+   * Invalidates the session-cached repo profile so it will be rebuilt on the
+   * next task in the new workspace.
+   */
   setWorkspace(ctx: ToolContext, workspaceName?: string): void {
     this.ctx = ctx;
     this.workspaceName = workspaceName;
+    this.repoProfile = null; // invalidate profile for new workspace
     this.refreshSystemPrompt();
+  }
+
+  /** Current task phase (readable by TUI for status display). */
+  get currentPhase(): import("./Orchestrator").TaskPhase | null {
+    return this.orchestrator?.phase ?? null;
+  }
+
+  /** Files edited in the current/last task. */
+  get editedFiles(): ReadonlySet<string> {
+    return this.orchestrator?.editedFiles ?? new Set();
   }
 
   reset(): void {
     this.cancel();
     this.taskMemory.clear();
     this.loopDetector.reset();
+    this.orchestrator = null;
     this.messages = [{ role: "system", content: this.systemPrompt() }];
   }
 
@@ -269,6 +317,10 @@ export class ChatSession {
    * Run one user turn to completion (may involve several tool round-trips).
    * `images` are data-URL strings; they are attached only for vision-capable
    * models and silently omitted otherwise (no error).
+   *
+   * Always returns (never throws externally) — errors are reported via
+   * `cb.onError`. The caller must NOT interpret a normal task completion as
+   * an exit signal; only explicit /exit commands should close the REPL.
    */
   async send(
     userText: string,
@@ -280,6 +332,19 @@ export class ChatSession {
       return;
     }
 
+    // Build (or reuse) the session-scoped repo profile
+    if (!this.repoProfile && this.ctx.workspaceRoot) {
+      try {
+        this.repoProfile = detectRepoProfile(this.ctx.workspaceRoot.fsPath);
+      } catch {
+        this.repoProfile = null;
+      }
+    }
+
+    // Fresh orchestrator for this task (phase starts at EXPLORING)
+    this.orchestrator = new Orchestrator(DEFAULT_BUDGET, this.repoProfile);
+    this.loopDetector.reset();
+
     // Retain user request in active task memory and refresh system prompt
     this.taskMemory.recordUserRequest(userText);
     this.refreshSystemPrompt();
@@ -288,8 +353,6 @@ export class ChatSession {
 
     const controller = new AbortController();
     this.abortController = controller;
-    // Omit tools entirely for models that can't do tool calling on this endpoint;
-    // they run as plain chat (no agent loop) rather than 400ing.
     const toolDefs = this.toolsSupported
       ? this.registry.definitions(this.allowMutations)
       : undefined;
@@ -298,11 +361,11 @@ export class ChatSession {
       while (!controller.signal.aborted) {
         const id = `a${++this.counter}`;
         let started = false;
-        cb.onStatus("Thinking…");
+        cb.onStatus("Thinking\u2026");
         const ensureStarted = () => {
           if (!started) {
             started = true;
-            cb.onStatus("Generating response…");
+            cb.onStatus("Generating response\u2026");
             cb.onAssistantStart(id);
           }
         };
@@ -310,7 +373,7 @@ export class ChatSession {
         const gen = this.client.stream(this.messages, {
           signal: controller.signal,
           tools: toolDefs,
-          onRetry: () => cb.onStatus("Rate limited — retrying…"),
+          onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
         });
 
         let next = await gen.next();
@@ -325,7 +388,6 @@ export class ChatSession {
           cb.onAssistantDone(id);
         }
 
-        // Record any plan or reasoning the assistant articulated
         if (turn.content) {
           this.taskMemory.recordAssistantTurn(turn.content);
         }
@@ -338,14 +400,52 @@ export class ChatSession {
 
         // The agent stops ONLY when it responds without requesting more tool calls
         if (turn.toolCalls.length === 0) {
+          this.orchestrator.markDone();
           cb.onStatus("Finished");
           return;
         }
 
         for (const call of turn.toolCalls) {
+          // Budget check before each tool call
+          const budgetStatus = this.orchestrator.onToolCall();
+          if (budgetStatus?.type === "abort") {
+            const budgetSummary = this.orchestrator.buildBudgetExhaustedSummary();
+            this.messages.push({ role: "user", content: budgetSummary });
+            // Ask the model to summarize without tools, then return to prompt
+            const abortId = `a${++this.counter}`;
+            cb.onAssistantStart(abortId);
+            const finalGen = this.client.stream(this.messages, {
+              signal: controller.signal,
+              tools: undefined,
+              onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
+            });
+            let fn = await finalGen.next();
+            while (!fn.done) {
+              cb.onAssistantDelta(abortId, fn.value.delta);
+              fn = await finalGen.next();
+            }
+            cb.onAssistantDone(abortId);
+            cb.onStatus("Finished");
+            return;
+          }
+          if (budgetStatus?.type === "warn") {
+            const phaseMsg =
+              budgetStatus.phase === "EXPLORING"
+                ? ` The agent is still in the EXPLORING phase \u2014 no changes have been made yet.`
+                : "";
+            this.messages.push({
+              role: "user",
+              content: `[SYSTEM] Budget notice: ${budgetStatus.detail}.${phaseMsg} Please wrap up efficiently.`,
+            });
+          }
+
           await this.runToolCall(call, cb);
+
+          if (cb.onPhaseChange && this.orchestrator) {
+            cb.onPhaseChange(this.orchestrator.phase);
+          }
         }
-        // Loop again continuously so the model receives tool results and keeps executing until done
+        // Loop again: model receives tool results and continues until done
       }
     } catch (err) {
       if (controller.signal.aborted) {
@@ -388,8 +488,6 @@ export class ChatSession {
       content = `Error: ${parseError}`;
       summary = parseError;
     } else if (!this.allowMutations && tool.mutates) {
-      // Defense in depth: mutating tools aren't advertised in Plan mode, but if a
-      // model calls one anyway, refuse it cleanly rather than editing files.
       content =
         `Refused: "${name}" modifies files and is disabled in Plan mode. ` +
         `Describe the change instead, and tell the user to switch to Auto Edit mode to apply it.`;
@@ -400,9 +498,40 @@ export class ChatSession {
         content = result.content;
         ok = !result.isError;
         summary = result.summary ?? (ok ? "Done" : "Failed");
-        // Successful mutations signal progress — reset the loop detector
+
         if (ok && tool.mutates) {
+          // Successful mutation: advance phase, clear edit-failure counter, reset loop
+          const filePath = typeof args.path === "string" ? args.path : undefined;
+          if (filePath) {
+            this.orchestrator?.onMutation(filePath);
+            this.loopDetector.clearEditFailure(filePath);
+          }
           this.loopDetector.recordSuccess();
+        } else if (!ok && tool.mutates) {
+          // Edit failure: detect repeated failures on the same file
+          const filePath = typeof args.path === "string" ? args.path : undefined;
+          if (filePath) {
+            const forceReread = this.loopDetector.recordEditFailure(filePath);
+            if (forceReread) {
+              content +=
+                `\n\n[SYSTEM] You have failed to edit "${filePath}" ` +
+                `${this.loopDetector.editFailureCount(filePath)} times in a row. ` +
+                `Before attempting another edit on this file, you MUST call read_file to get ` +
+                `the exact current file content, then retry the edit with the correct text.`;
+            }
+          }
+        }
+
+        // Track verification: if the agent ran tests/build, advance to VERIFYING
+        if (name === "run_command" && ok) {
+          const cmd = typeof args.command === "string" ? args.command : "";
+          const testCmd = this.repoProfile?.testCommand ?? "";
+          if (
+            (testCmd && cmd.includes(testCmd)) ||
+            /\b(jest|mocha|vitest|pytest|cargo test|go test|npm test|yarn test|make test)\b/i.test(cmd)
+          ) {
+            this.orchestrator?.onVerification();
+          }
         }
       } catch (err) {
         content = `Error: ${err instanceof Error ? err.message : String(err)}`;
@@ -410,7 +539,18 @@ export class ChatSession {
       }
     }
 
-    // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
+    // Detect repeated failed searches and nudge strategy change
+    if (name === "search_workspace" && !ok) {
+      const query = typeof args.query === "string" ? args.query : "";
+      if (query && this.loopDetector.recordFailedSearch(query)) {
+        content +=
+          `\n\n[SYSTEM] You have tried similar searches multiple times without results. ` +
+          `Try listing directories with list_files, broaden the query, or search for a ` +
+          `different pattern (e.g., a different file extension or keyword).`;
+      }
+    }
+
+    // Update task memory with tool findings, file mutations, or test results
     this.taskMemory.recordToolExecution(name, args, ok, summary, content);
     this.refreshSystemPrompt();
 
@@ -418,12 +558,10 @@ export class ChatSession {
     const loopWarning = this.loopDetector.record(name, args, content);
     if (loopWarning) {
       if (loopWarning.type === "abort") {
-        // Inject the warning as a tool result so the model sees it, then throw to exit the loop
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
         cb.onToolEnd(call.id, ok, summary, content);
         throw new Error(loopWarning.message);
       } else {
-        // Soft warn: inject a system note the model will read on the next turn
         content += `\n\n[SYSTEM WARNING] ${loopWarning.message}`;
       }
     }
@@ -433,14 +571,14 @@ export class ChatSession {
   }
 }
 
-/** Short human title for a tool card, e.g. `read_file → src/foo.ts`. */
+/** Short human title for a tool card, e.g. `read_file -> src/foo.ts`. */
 function describeCall(name: string, args: Record<string, unknown>): string {
   const hint =
     (typeof args.path === "string" && args.path) ||
     (typeof args.query === "string" && args.query) ||
     (typeof args.command === "string" && args.command) ||
     "";
-  return hint ? `${name} → ${hint}` : name;
+  return hint ? `${name} \u2192 ${hint}` : name;
 }
 
 /** Turn raw endpoint errors into actionable guidance where we recognize them. */

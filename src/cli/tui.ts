@@ -166,7 +166,18 @@ export class TerminalUI {
   }
 
   printNotice(message: string): void {
-    console.log(`  ${colors.cyan}ℹ ${message}${colors.reset}`);
+    console.log(`  ${colors.cyan}\u2139 ${message}${colors.reset}`);
+  }
+
+  printPhase(phase: string): void {
+    const phaseColor: Record<string, string> = {
+      EXPLORING: colors.blue,
+      EDITING: colors.yellow,
+      VERIFYING: colors.magenta,
+      DONE: colors.green,
+    };
+    const c = phaseColor[phase] ?? colors.dim;
+    console.log(`  ${c}\u25B6 Phase: ${phase}${colors.reset}`);
   }
 }
 
