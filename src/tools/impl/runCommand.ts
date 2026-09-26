@@ -1,6 +1,8 @@
 import { exec } from "child_process";
+import * as path from "path";
+import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
-import { ToolDeniedError, ToolError } from "../types";
+import { ToolDeniedError } from "../types";
 import { requireString } from "../fsutil";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -10,16 +12,21 @@ export const runCommandTool: Tool = {
   name: "run_command",
   mutates: true,
   description:
-    "Run a shell command in the workspace root and return its stdout/stderr and " +
-    "exit code. Use for builds, tests, linters, git status, etc. This ALWAYS asks " +
-    "the user to confirm before running. Commands run non-interactively; do not " +
-    "start long-lived watchers or servers that never exit.",
+    "Run a shell command and return its stdout, stderr, and exit code. Use for " +
+    "builds, tests, git operations, file inspection, scripts, etc. Supports optional " +
+    "custom cwd to run in any directory. Special commands: 'cd <dir>' persistently " +
+    "moves the agent's working directory, and 'pwd' prints current directory.",
   parameters: {
     type: "object",
     properties: {
       command: {
         type: "string",
         description: "The exact shell command to execute.",
+      },
+      cwd: {
+        type: "string",
+        description:
+          "Directory path to execute the command in. Defaults to current working directory, but can be any system path.",
       },
       timeout_ms: {
         type: "integer",
@@ -36,22 +43,74 @@ export const runCommandTool: Tool = {
         ? Math.min(args.timeout_ms, 5 * 60_000)
         : DEFAULT_TIMEOUT_MS;
 
-    if (!ctx.workspaceRoot) {
-      throw new ToolError("No workspace folder is open to run a command in.");
-    }
+    const baseDir = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
+    const customCwd =
+      typeof args.cwd === "string" && args.cwd.trim() ? args.cwd.trim() : undefined;
+    const cwd = customCwd
+      ? customCwd.startsWith("~")
+        ? path.normalize(path.join(process.env.HOME || "", customCwd.slice(1)))
+        : path.isAbsolute(customCwd)
+          ? path.normalize(customCwd)
+          : path.normalize(path.join(baseDir, customCwd))
+      : baseDir;
 
-    // In manual mode (default) ask for confirmation; in auto mode run directly.
-    if (!ctx.terminalAutoRun) {
+    // In manual mode ask for confirmation; in auto mode run directly.
+    if (!ctx.terminalAutoRun && !ctx.autoEdit) {
       const approved = await ctx.confirm(
         "Run this command?",
-        `${command}\n\nWorking directory:\n${ctx.workspaceRoot.fsPath}`,
+        `${command}\n\nWorking directory:\n${cwd}`,
       );
       if (!approved) {
         throw new ToolDeniedError(`Running "${command}" was declined by the user.`);
       }
     }
 
-    const cwd = ctx.workspaceRoot.fsPath;
+    // Direct support for cd command to change process working directory persistently
+    const cdMatch = command.match(/^\s*cd(?:\s+(.+))?\s*$/);
+    if (cdMatch) {
+      const rawTarget = cdMatch[1]?.trim() || "~";
+      const target = rawTarget.startsWith("~")
+        ? path.join(process.env.HOME || "", rawTarget.slice(1))
+        : rawTarget;
+      const resolved = path.isAbsolute(target)
+        ? path.normalize(target)
+        : path.normalize(path.join(cwd, target));
+      try {
+        process.chdir(resolved);
+        const newUri = vscode.Uri.file(resolved);
+        (ctx as any).workspaceRoot = newUri;
+        if ((vscode.workspace as any).workspaceFolders) {
+          (vscode.workspace as any).workspaceFolders = [
+            {
+              uri: newUri,
+              name: path.basename(resolved) || resolved,
+              index: 0,
+            },
+          ];
+        }
+        if (typeof (ctx as any).onWorkspaceChanged === "function") {
+          (ctx as any).onWorkspaceChanged(newUri);
+        }
+        return {
+          content: `Working directory changed to: ${resolved}`,
+          summary: `Changed directory to ${resolved}`,
+        };
+      } catch (err: any) {
+        return {
+          content: `Failed to change directory to ${resolved}: ${err.message}`,
+          isError: true,
+          summary: `cd failed: ${err.message}`,
+        };
+      }
+    }
+
+    if (command.trim() === "pwd") {
+      return {
+        content: cwd,
+        summary: `pwd: ${cwd}`,
+      };
+    }
+
     const { stdout, stderr, code, timedOut } = await new Promise<{
       stdout: string;
       stderr: string;

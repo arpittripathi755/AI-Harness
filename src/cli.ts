@@ -56,10 +56,10 @@ async function main(): Promise<void> {
 
   const baseUrl = getCliBaseUrl();
   let currentModelId = getCliModelId();
-  let allowMutations = true; // Auto Edit is enabled by default in evaluation mode!
+  let allowMutations = true; // Auto Edit is enabled by default for autonomous evaluation!
 
-  const cwd = process.cwd();
-  const workspaceRoot = vscode.Uri.file(cwd);
+  let cwd = process.cwd();
+  let workspaceRoot = vscode.Uri.file(cwd);
   (vscode.workspace as any).workspaceFolders = [
     {
       uri: workspaceRoot,
@@ -70,16 +70,16 @@ async function main(): Promise<void> {
 
   const tui = new TerminalUI();
 
-  // Create autonomous tool context: zero confirmation blockers
+  // Create autonomous tool context: zero confirmation blockers & unrestricted filesystem
   const toolContext: ToolContext = {
     workspaceRoot,
     terminalAutoRun: true,
     autoEdit: true,
     resolvePath: async (input: string) => {
-      return resolvePathInWorkspace(input, workspaceRoot, async () => true);
+      return resolvePathInWorkspace(input, toolContext.workspaceRoot, async () => true);
     },
     toRelative: (uri: vscode.Uri) => {
-      return toRelative(workspaceRoot, uri);
+      return toRelative(toolContext.workspaceRoot, uri);
     },
     confirm: async () => true,
   };
@@ -100,6 +100,14 @@ async function main(): Promise<void> {
     chats.active.history,
   );
 
+  // Hook workspace changes from tools (e.g. fetch_repo or cd)
+  (toolContext as any).onWorkspaceChanged = (newRoot: vscode.Uri) => {
+    cwd = newRoot.fsPath;
+    workspaceRoot = newRoot;
+    toolContext.workspaceRoot = newRoot;
+    session.setWorkspace(newRoot, path.basename(cwd) || cwd);
+  };
+
   async function executeTurn(userText: string): Promise<boolean> {
     const trimmed = userText.trim();
     if (!trimmed) {
@@ -113,7 +121,8 @@ async function main(): Promise<void> {
       const arg = parts.slice(1).join(" ");
 
       if (cmd === "/exit" || cmd === "/quit") {
-        return false;
+        console.log(`\n${colors.dim}Exiting Axiom. Goodbye!${colors.reset}`);
+        process.exit(0);
       }
       if (cmd === "/plan") {
         allowMutations = false;
@@ -129,6 +138,99 @@ async function main(): Promise<void> {
         tui.printNotice("Switched to Auto Edit Mode (Autonomous Execution).");
         return true;
       }
+      if (cmd === "/cd") {
+        if (!arg) {
+          tui.printNotice(`Current directory: ${process.cwd()}`);
+          return true;
+        }
+        const targetPath = arg.startsWith("~")
+          ? path.join(process.env.HOME || "", arg.slice(1))
+          : arg;
+        const resolvedPath = path.isAbsolute(targetPath)
+          ? path.normalize(targetPath)
+          : path.normalize(path.join(process.cwd(), targetPath));
+
+        if (!fs.existsSync(resolvedPath)) {
+          tui.printError(`Directory does not exist: ${resolvedPath}`);
+          return true;
+        }
+        try {
+          const stat = fs.statSync(resolvedPath);
+          if (!stat.isDirectory()) {
+            tui.printError(`Not a directory: ${resolvedPath}`);
+            return true;
+          }
+          process.chdir(resolvedPath);
+          const newWorkspaceRoot = vscode.Uri.file(resolvedPath);
+          cwd = resolvedPath;
+          workspaceRoot = newWorkspaceRoot;
+          (vscode.workspace as any).workspaceFolders = [
+            {
+              uri: newWorkspaceRoot,
+              name: path.basename(resolvedPath) || resolvedPath,
+              index: 0,
+            },
+          ];
+          toolContext.workspaceRoot = newWorkspaceRoot;
+          session.setWorkspace(newWorkspaceRoot, path.basename(resolvedPath) || resolvedPath);
+          tui.printNotice(`Working directory moved to: ${resolvedPath}`);
+        } catch (err: any) {
+          tui.printError(`Failed to change directory: ${err.message}`);
+        }
+        return true;
+      }
+      if (cmd === "/pwd") {
+        tui.printNotice(`Current directory: ${process.cwd()}`);
+        return true;
+      }
+      if (cmd === "/clone") {
+        if (!arg) {
+          tui.printNotice("Usage: /clone <repo-url> [dest-dir]");
+          return true;
+        }
+        const [urlArg, destArg] = arg.split(/\s+/);
+        tui.printToolStart("fetch_repo", `fetch_repo → ${urlArg}`);
+        try {
+          const fetchTool = registry.get("fetch_repo");
+          if (!fetchTool) {
+            tui.printError("fetch_repo tool not registered.");
+            return true;
+          }
+          const result = await fetchTool.execute(
+            { url: urlArg, dest_dir: destArg },
+            toolContext,
+          );
+          tui.printToolEnd(!result.isError, result.summary ?? "Done", result.content);
+          if (result.content) {
+            console.log(`\n${result.content}\n`);
+          }
+        } catch (err: any) {
+          tui.printToolEnd(false, err.message, err.message);
+        }
+        return true;
+      }
+      if (cmd === "/issue") {
+        if (!arg) {
+          tui.printNotice("Usage: /issue <github-issue-url>");
+          return true;
+        }
+        tui.printToolStart("fetch_github_issue", `fetch_github_issue → ${arg}`);
+        try {
+          const issueTool = registry.get("fetch_github_issue");
+          if (!issueTool) {
+            tui.printError("fetch_github_issue tool not registered.");
+            return true;
+          }
+          const result = await issueTool.execute({ url: arg }, toolContext);
+          tui.printToolEnd(!result.isError, result.summary ?? "Done", result.content);
+          if (result.content) {
+            console.log(`\n${result.content}\n`);
+          }
+        } catch (err: any) {
+          tui.printToolEnd(false, err.message, err.message);
+        }
+        return true;
+      }
       if (cmd === "/model") {
         if (!arg) {
           tui.printNotice(`Current model: ${currentModelId}`);
@@ -141,8 +243,10 @@ async function main(): Promise<void> {
         return true;
       }
       if (cmd === "/models") {
-        tui.printNotice("Available models:\n" +
-          MODELS.map((m) => `  - ${m.displayName} (${m.apiModelId})`).join("\n"));
+        tui.printNotice(
+          "Available models:\n" +
+            MODELS.map((m) => `  - ${m.displayName} (${m.apiModelId})`).join("\n"),
+        );
         return true;
       }
       if (cmd === "/new") {
@@ -155,13 +259,18 @@ async function main(): Promise<void> {
       if (cmd === "/help") {
         tui.printNotice(
           "Commands:\n" +
-          "  /auto        - Enable Auto Edit mode (autonomous execution, default)\n" +
-          "  /plan        - Enable Plan mode (read-only inspection)\n" +
-          "  /model <id>  - Switch model (ultra, deepseek-v4-pro, deepseek-flash)\n" +
-          "  /models      - List available models\n" +
-          "  /new         - Start fresh conversation\n" +
-          "  /exit, /quit - Exit Daxiom TUI\n" +
-          "  /help        - Show this help message"
+            "  /clone <url> [dir] - Fetch and clone public Git repository & switch workspace\n" +
+            "  /issue <url>       - Fetch and view details of a GitHub issue or PR\n" +
+            "  /cd <dir>          - Change working directory to any path on the system\n" +
+            "  /pwd               - Print current working directory\n" +
+            "  /auto              - Enable Auto Edit mode (autonomous execution, default)\n" +
+            "  /plan              - Enable Plan mode (read-only inspection)\n" +
+            "  /model <id>        - Switch model (ultra, deepseek-v4-pro, deepseek-flash)\n" +
+            "  /models            - List available models\n" +
+            "  /new               - Start fresh conversation session\n" +
+            "  /exit, /quit       - Exit Axiom\n" +
+            "  Ctrl+C             - Cancel running task or exit Axiom\n" +
+            "  /help              - Show this help message",
         );
         return true;
       }
@@ -204,16 +313,7 @@ async function main(): Promise<void> {
   // Print TUI header
   tui.printHeader(allowMutations, modelDisplayName, cwd);
 
-  // Check if non-interactive input was provided via command line arguments
-  const cliArgs = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
-  if (cliArgs.length > 0) {
-    const task = cliArgs.join(" ");
-    console.log(`\n${colors.bold}${colors.cyan}Task:${colors.reset} ${task}\n`);
-    const success = await executeTurn(task);
-    process.exit(success ? 0 : 1);
-  }
-
-  // Check if non-interactive input was piped via stdin
+  // Check if non-interactive input was piped via stdin (e.g. echo "..." | node cli.js)
   if (!process.stdin.isTTY) {
     let pipedInput = "";
     try {
@@ -222,21 +322,52 @@ async function main(): Promise<void> {
       pipedInput = "";
     }
     if (pipedInput) {
-      console.log(`\n${colors.bold}${colors.cyan}Task:${colors.reset} ${pipedInput}\n`);
-      const success = await executeTurn(pipedInput);
-      process.exit(success ? 0 : 1);
+      console.log(`\n${colors.bold}${colors.coral}Task:${colors.reset} ${pipedInput}\n`);
+      await executeTurn(pipedInput);
     }
+    return;
   }
 
-  // Interactive TUI prompt
-  tui.printFooter("Enter task... (or /help)");
-
+  // Set up persistent readline interface for interactive terminal
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: tui.printPromptPrefix(),
   });
 
+  // Handle Ctrl+C (SIGINT): cancel running turn or exit cleanly when idle
+  rl.on("SIGINT", () => {
+    if (session.busy) {
+      tui.printNotice("\nCancelling active task (press Ctrl+C again to exit)...");
+      session.cancel();
+      rl.prompt();
+    } else {
+      console.log(`\n${colors.dim}Exiting Axiom. Goodbye!${colors.reset}`);
+      process.exit(0);
+    }
+  });
+
+  process.on("SIGINT", () => {
+    if (session.busy) {
+      session.cancel();
+    } else {
+      console.log(`\n${colors.dim}Exiting Axiom. Goodbye!${colors.reset}`);
+      process.exit(0);
+    }
+  });
+
+  // Check if initial task was provided via command line arguments
+  const cliArgs = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
+  if (cliArgs.length > 0) {
+    const task = cliArgs.join(" ");
+    console.log(`\n${colors.bold}${colors.coral}Task:${colors.reset} ${task}\n`);
+    await executeTurn(task);
+    // DO NOT EXIT! Keep the session open and wait for further user input or Ctrl+C
+    console.log("");
+  }
+
+  // Interactive prompt loop: stays alive unless user presses Ctrl+C
+  tui.printPromptBox();
   rl.prompt();
 
   rl.on("line", async (line) => {
@@ -253,10 +384,10 @@ async function main(): Promise<void> {
 
     if (trimmed) {
       rl.pause();
-      const continueLoop = await executeTurn(trimmed);
-      if (!continueLoop) {
-        rl.close();
-        return;
+      try {
+        await executeTurn(trimmed);
+      } catch (err: any) {
+        tui.printError(err.message || String(err));
       }
       rl.resume();
     }
@@ -266,10 +397,19 @@ async function main(): Promise<void> {
   });
 
   rl.on("close", () => {
-    console.log(`\n${colors.dim}Exiting Daxiom. Goodbye!${colors.reset}`);
+    console.log(`\n${colors.dim}Exiting Axiom. Goodbye!${colors.reset}`);
     process.exit(0);
   });
 }
+
+// Keep process alive and handle uncaught exceptions without crashing out
+process.on("uncaughtException", (err) => {
+  console.error(`\n${colors.red}Uncaught error:${colors.reset} ${err.message || err}`);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`\n${colors.red}Unhandled rejection:${colors.reset}`, reason);
+});
 
 main().catch((err) => {
   console.error("Fatal error:", err);

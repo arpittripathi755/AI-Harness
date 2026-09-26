@@ -32,7 +32,8 @@ const extensionConfig = {
     rules: [
       {
         test: /\.ts$/,
-        exclude: /node_modules/,
+        include: path.resolve(__dirname, 'src'),
+        exclude: [/node_modules/, /src\/webview/],
         use: [
           {
             loader: 'ts-loader'

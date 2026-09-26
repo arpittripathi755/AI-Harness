@@ -4,6 +4,8 @@ import { readFileTool } from "./impl/readFile";
 import { readActiveEditorTool } from "./impl/readActiveEditor";
 import { readSelectionTool } from "./impl/readSelection";
 import { searchWorkspaceTool } from "./impl/searchWorkspace";
+import { fetchGithubIssueTool } from "./impl/fetchGithubIssue";
+import { fetchRepoTool } from "./impl/fetchRepo";
 import { createFileTool } from "./impl/createFile";
 import { editFileTool } from "./impl/editFile";
 import { renameFileTool } from "./impl/renameFile";
@@ -25,7 +27,9 @@ export function createToolRegistry(): ToolRegistry {
     .register(readActiveEditorTool)
     .register(readSelectionTool)
     .register(searchWorkspaceTool)
+    .register(fetchGithubIssueTool)
     // Mutating
+    .register(fetchRepoTool)
     .register(createFileTool)
     .register(editFileTool)
     .register(renameFileTool)

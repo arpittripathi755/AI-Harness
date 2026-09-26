@@ -1,3 +1,5 @@
+import * as path from "path";
+import type * as vscode from "vscode";
 import { LLMClient, type LLMClientOptions } from "../llm/LLMClient";
 import type { ChatMessage, ContentPart, ToolCall } from "../llm/types";
 import type { ToolContext } from "../tools/types";
@@ -24,36 +26,45 @@ function buildSystemPrompt(
   allowMutations: boolean,
   workingMemorySection?: string,
 ): string {
-  const ws = root
-    ? `You are operating inside the user's VS Code workspace.
-Workspace: ${workspaceName ?? "(unnamed)"}
-Workspace root: ${root}
-All file paths you pass to tools are resolved relative to this root. You may only
-access files inside this workspace unless the user explicitly approves otherwise.`
-    : `No workspace folder is currently open. File tools will fail until the user opens a folder.`;
+  const currentDir = root ?? process.cwd();
+  const ws = `Current Working Directory: ${currentDir}
+Active Workspace: ${workspaceName ?? path.basename(currentDir)}
+You have complete, unrestricted access to the local machine and files. You can read, create, edit, rename, and delete files anywhere on the system. Commands can run in any directory.`;
+
+  const gitEvaluationGuidance = `GITHUB REPOSITORIES & ISSUE SOLVING:
+When given a public GitHub repository link or an issue raised under a repo:
+1. If an issue URL or issue number is provided (e.g. 'https://github.com/owner/repo/issues/123'), immediately use the \`fetch_github_issue\` tool to retrieve the complete issue description, error logs, and discussions.
+2. If the repository is not yet cloned locally or you are not inside it, use the \`fetch_repo\` tool (or git CLI) with the repository URL to clone it and automatically switch the active workspace into it.
+3. Explore the project structure using \`list_files\`, \`search_workspace\`, and \`read_file\` to locate the source code files and tests relevant to the issue.
+4. Reproduce the bug or inspect the codebase to pinpoint the root cause.
+5. Implement the fix cleanly using \`edit_file\`, \`create_file\`, or \`multi_edit\`.
+6. Run the project's tests or verification commands using \`run_command\` (e.g. npm test, pytest, cargo test, go test, or custom scripts).
+7. Review your changes with \`run_command({ command: "git diff" })\` to ensure clean, focused modifications without unintended changes.
+8. Provide a clear, concise summary explaining what caused the issue, what was changed, and how it was verified.`;
 
   const modeGuidance = allowMutations
-    ? `MODE: Auto Edit. Work autonomously to complete the task:
-- Inspect the workspace, search, and read the files you need.
+    ? `MODE: Auto Edit (Autonomous Execution). Work autonomously to complete the task:
+- Inspect files and directories across the project or system as needed.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
-- Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.`
+- Run terminal commands, builds, and tests to verify your changes.
+- Keep using tools until the task is fully accomplished, then summarize what you changed.`
     : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
-- Inspect the workspace, search, and read the relevant files.
-- Then explain precisely what changes you would make (which files, what edits, and why).
-- Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
+- Inspect files, search, and read the relevant context.
+- Present a clear, numbered plan of what changes you would make and why.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
 
   const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
 
-  return `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
+  return `You are ${AGENT_NAME}, an autonomous AI coding agent.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
 answer honestly that you are ${AGENT_NAME} running on the "${modelDisplay}" model.
 
 ${ws}
+
+${gitEvaluationGuidance}
 
 ${modeGuidance}${memoryBlock}
 
@@ -78,6 +89,10 @@ function modelDisplayName(apiModelId: string): string {
 /** Map a tool name to a live status shown while it runs. */
 function statusForTool(name: string): AgentStatus {
   switch (name) {
+    case "fetch_github_issue":
+      return "Reading files…";
+    case "fetch_repo":
+      return "Working…";
     case "search_workspace":
       return "Searching workspace…";
     case "list_files":
@@ -138,7 +153,7 @@ export class ChatSession {
     private readonly client: LLMClient,
     private readonly registry: ToolRegistry,
     private readonly ctx: ToolContext,
-    private readonly workspaceName: string | undefined,
+    private workspaceName: string | undefined,
     private allowMutations: boolean,
     initialModelId: string,
     seedHistory?: ChatMessage[],
@@ -244,6 +259,13 @@ export class ChatSession {
   /** Update the endpoint (base URL / API key) live. */
   setEndpoint(baseUrl: string, apiKey: string): void {
     this.client.setEndpoint(baseUrl, apiKey);
+  }
+
+  /** Update the active workspace root and name live. */
+  setWorkspace(root: vscode.Uri, name?: string): void {
+    (this.ctx as any).workspaceRoot = root;
+    this.workspaceName = name ?? (root.fsPath ? path.basename(root.fsPath) : "workspace");
+    this.refreshSystemPrompt();
   }
 
   reset(): void {
@@ -403,6 +425,12 @@ export class ChatSession {
 
     // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
     this.taskMemory.recordToolExecution(name, args, ok, summary, content);
+    if (this.ctx.workspaceRoot) {
+      const rootPath = this.ctx.workspaceRoot.fsPath;
+      if (rootPath) {
+        this.workspaceName = path.basename(rootPath) || rootPath;
+      }
+    }
     this.refreshSystemPrompt();
 
     this.messages.push({ role: "tool", tool_call_id: call.id, content });
@@ -413,6 +441,7 @@ export class ChatSession {
 /** Short human title for a tool card, e.g. `read_file → src/foo.ts`. */
 function describeCall(name: string, args: Record<string, unknown>): string {
   const hint =
+    (typeof args.url === "string" && args.url) ||
     (typeof args.path === "string" && args.path) ||
     (typeof args.query === "string" && args.query) ||
     (typeof args.command === "string" && args.command) ||

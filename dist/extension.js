@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(10);
+const config_1 = __webpack_require__(11);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(9);
-const config_1 = __webpack_require__(10);
-const modes_1 = __webpack_require__(11);
-const tools_1 = __webpack_require__(12);
-const workspace_1 = __webpack_require__(29);
+const ConversationManager_1 = __webpack_require__(10);
+const config_1 = __webpack_require__(11);
+const modes_1 = __webpack_require__(12);
+const tools_1 = __webpack_require__(13);
+const workspace_1 = __webpack_require__(34);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -423,46 +423,88 @@ function getNonce() {
 
 /***/ }),
 /* 3 */
-/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChatSession = exports.AGENT_NAME = void 0;
-const LLMClient_1 = __webpack_require__(4);
-const models_1 = __webpack_require__(5);
-const TaskMemory_1 = __webpack_require__(8);
+const path = __importStar(__webpack_require__(4));
+const LLMClient_1 = __webpack_require__(5);
+const models_1 = __webpack_require__(6);
+const TaskMemory_1 = __webpack_require__(9);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 /** Safety bound on tool round-trips within a single user turn. */
 const MAX_ITERATIONS = 25;
 function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection) {
-    const ws = root
-        ? `You are operating inside the user's VS Code workspace.
-Workspace: ${workspaceName ?? "(unnamed)"}
-Workspace root: ${root}
-All file paths you pass to tools are resolved relative to this root. You may only
-access files inside this workspace unless the user explicitly approves otherwise.`
-        : `No workspace folder is currently open. File tools will fail until the user opens a folder.`;
+    const currentDir = root ?? process.cwd();
+    const ws = `Current Working Directory: ${currentDir}
+Active Workspace: ${workspaceName ?? path.basename(currentDir)}
+You have complete, unrestricted access to the local machine and files. You can read, create, edit, rename, and delete files anywhere on the system. Commands can run in any directory.`;
+    const gitEvaluationGuidance = `GITHUB REPOSITORIES & ISSUE SOLVING:
+When given a public GitHub repository link or an issue raised under a repo:
+1. If an issue URL or issue number is provided (e.g. 'https://github.com/owner/repo/issues/123'), immediately use the \`fetch_github_issue\` tool to retrieve the complete issue description, error logs, and discussions.
+2. If the repository is not yet cloned locally or you are not inside it, use the \`fetch_repo\` tool (or git CLI) with the repository URL to clone it and automatically switch the active workspace into it.
+3. Explore the project structure using \`list_files\`, \`search_workspace\`, and \`read_file\` to locate the source code files and tests relevant to the issue.
+4. Reproduce the bug or inspect the codebase to pinpoint the root cause.
+5. Implement the fix cleanly using \`edit_file\`, \`create_file\`, or \`multi_edit\`.
+6. Run the project's tests or verification commands using \`run_command\` (e.g. npm test, pytest, cargo test, go test, or custom scripts).
+7. Review your changes with \`run_command({ command: "git diff" })\` to ensure clean, focused modifications without unintended changes.
+8. Provide a clear, concise summary explaining what caused the issue, what was changed, and how it was verified.`;
     const modeGuidance = allowMutations
-        ? `MODE: Auto Edit. Work autonomously to complete the task:
-- Inspect the workspace, search, and read the files you need.
+        ? `MODE: Auto Edit (Autonomous Execution). Work autonomously to complete the task:
+- Inspect files and directories across the project or system as needed.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
-- Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.`
+- Run terminal commands, builds, and tests to verify your changes.
+- Keep using tools until the task is fully accomplished, then summarize what you changed.`
         : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
-- Inspect the workspace, search, and read the relevant files.
-- Then explain precisely what changes you would make (which files, what edits, and why).
-- Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
+- Inspect files, search, and read the relevant context.
+- Present a clear, numbered plan of what changes you would make and why.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
     const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
-    return `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
+    return `You are ${exports.AGENT_NAME}, an autonomous AI coding agent.
 
 Your name is ${exports.AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
 answer honestly that you are ${exports.AGENT_NAME} running on the "${modelDisplay}" model.
 
 ${ws}
+
+${gitEvaluationGuidance}
 
 ${modeGuidance}${memoryBlock}
 
@@ -485,6 +527,10 @@ function modelDisplayName(apiModelId) {
 /** Map a tool name to a live status shown while it runs. */
 function statusForTool(name) {
     switch (name) {
+        case "fetch_github_issue":
+            return "Reading files…";
+        case "fetch_repo":
+            return "Working…";
         case "search_workspace":
             return "Searching workspace…";
         case "list_files":
@@ -597,6 +643,12 @@ class ChatSession {
     /** Update the endpoint (base URL / API key) live. */
     setEndpoint(baseUrl, apiKey) {
         this.client.setEndpoint(baseUrl, apiKey);
+    }
+    /** Update the active workspace root and name live. */
+    setWorkspace(root, name) {
+        this.ctx.workspaceRoot = root;
+        this.workspaceName = name ?? (root.fsPath ? path.basename(root.fsPath) : "workspace");
+        this.refreshSystemPrompt();
     }
     reset() {
         this.cancel();
@@ -736,6 +788,12 @@ class ChatSession {
         }
         // Update task memory with tool findings, file mutations, or test results, and refresh system prompt
         this.taskMemory.recordToolExecution(name, args, ok, summary, content);
+        if (this.ctx.workspaceRoot) {
+            const rootPath = this.ctx.workspaceRoot.fsPath;
+            if (rootPath) {
+                this.workspaceName = path.basename(rootPath) || rootPath;
+            }
+        }
         this.refreshSystemPrompt();
         this.messages.push({ role: "tool", tool_call_id: call.id, content });
         cb.onToolEnd(call.id, ok, summary, content);
@@ -744,7 +802,8 @@ class ChatSession {
 exports.ChatSession = ChatSession;
 /** Short human title for a tool card, e.g. `read_file → src/foo.ts`. */
 function describeCall(name, args) {
-    const hint = (typeof args.path === "string" && args.path) ||
+    const hint = (typeof args.url === "string" && args.url) ||
+        (typeof args.path === "string" && args.path) ||
         (typeof args.query === "string" && args.query) ||
         (typeof args.command === "string" && args.command) ||
         "";
@@ -769,14 +828,20 @@ function friendlyError(message) {
 
 /***/ }),
 /* 4 */
+/***/ ((module) => {
+
+module.exports = require("path");
+
+/***/ }),
+/* 5 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.LLMClient = void 0;
-const models_1 = __webpack_require__(5);
-const responses_1 = __webpack_require__(6);
-const http_1 = __webpack_require__(7);
+const models_1 = __webpack_require__(6);
+const responses_1 = __webpack_require__(7);
+const http_1 = __webpack_require__(8);
 /**
  * Minimal OpenAI-compatible chat client built on native `fetch` — deliberately
  * NOT the Anthropic/openai SDK. Targets any endpoint exposing
@@ -1010,7 +1075,7 @@ async function safeReadText(response) {
 
 
 /***/ }),
-/* 5 */
+/* 6 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1088,13 +1153,13 @@ function resolveModelId(apiModelId) {
 
 
 /***/ }),
-/* 6 */
+/* 7 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.streamResponses = streamResponses;
-const http_1 = __webpack_require__(7);
+const http_1 = __webpack_require__(8);
 /** Build the JSON body for POST {baseUrl}responses. */
 function buildBody(model, messages, tools) {
     const input = [];
@@ -1286,7 +1351,7 @@ async function safeReadText(response) {
 
 
 /***/ }),
-/* 7 */
+/* 8 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1384,7 +1449,7 @@ function sleep(ms, signal) {
 
 
 /***/ }),
-/* 8 */
+/* 9 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1681,7 +1746,7 @@ exports.TaskMemory = TaskMemory;
 
 
 /***/ }),
-/* 9 */
+/* 10 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -1799,7 +1864,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 10 */
+/* 11 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -1852,8 +1917,8 @@ exports.setApiKey = setApiKey;
 exports.resolveConfig = resolveConfig;
 exports.promptAndStoreApiKey = promptAndStoreApiKey;
 const vscode = __importStar(__webpack_require__(1));
-const models_1 = __webpack_require__(5);
-const modes_1 = __webpack_require__(11);
+const models_1 = __webpack_require__(6);
+const modes_1 = __webpack_require__(12);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -1974,7 +2039,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 11 */
+/* 12 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2011,7 +2076,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 12 */
+/* 13 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2032,18 +2097,20 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(13);
-const listFiles_1 = __webpack_require__(14);
-const readFile_1 = __webpack_require__(17);
-const readActiveEditor_1 = __webpack_require__(18);
-const readSelection_1 = __webpack_require__(19);
-const searchWorkspace_1 = __webpack_require__(20);
-const createFile_1 = __webpack_require__(21);
-const editFile_1 = __webpack_require__(22);
-const renameFile_1 = __webpack_require__(24);
-const deleteFile_1 = __webpack_require__(25);
-const multiEdit_1 = __webpack_require__(26);
-const runCommand_1 = __webpack_require__(27);
+const registry_1 = __webpack_require__(14);
+const listFiles_1 = __webpack_require__(15);
+const readFile_1 = __webpack_require__(18);
+const readActiveEditor_1 = __webpack_require__(19);
+const readSelection_1 = __webpack_require__(20);
+const searchWorkspace_1 = __webpack_require__(21);
+const fetchGithubIssue_1 = __webpack_require__(22);
+const fetchRepo_1 = __webpack_require__(24);
+const createFile_1 = __webpack_require__(27);
+const editFile_1 = __webpack_require__(28);
+const renameFile_1 = __webpack_require__(30);
+const deleteFile_1 = __webpack_require__(31);
+const multiEdit_1 = __webpack_require__(32);
+const runCommand_1 = __webpack_require__(33);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -2058,7 +2125,9 @@ function createToolRegistry() {
         .register(readActiveEditor_1.readActiveEditorTool)
         .register(readSelection_1.readSelectionTool)
         .register(searchWorkspace_1.searchWorkspaceTool)
+        .register(fetchGithubIssue_1.fetchGithubIssueTool)
         // Mutating
+        .register(fetchRepo_1.fetchRepoTool)
         .register(createFile_1.createFileTool)
         .register(editFile_1.editFileTool)
         .register(renameFile_1.renameFileTool)
@@ -2068,13 +2137,13 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(13);
+var registry_2 = __webpack_require__(14);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-__exportStar(__webpack_require__(16), exports);
+__exportStar(__webpack_require__(17), exports);
 
 
 /***/ }),
-/* 13 */
+/* 14 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2126,7 +2195,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 14 */
+/* 15 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2166,8 +2235,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const fsutil_2 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(16);
+const fsutil_2 = __webpack_require__(16);
 const MAX_ENTRIES = 1000;
 exports.listFilesTool = {
     name: "list_files",
@@ -2239,7 +2308,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 15 */
+/* 16 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2285,7 +2354,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
+const types_1 = __webpack_require__(17);
 /** Glob of paths tools skip by default (noise / large dirs). */
 exports.DEFAULT_EXCLUDE_GLOB = "{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/.next/**,**/build/**}";
 /** Directory names skipped during recursive listing. */
@@ -2353,7 +2422,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 16 */
+/* 17 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -2374,13 +2443,13 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(16);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -2423,7 +2492,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2463,7 +2532,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
+const fsutil_1 = __webpack_require__(16);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -2490,7 +2559,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 19 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2561,7 +2630,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 20 */
+/* 21 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2601,8 +2670,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(16);
+const types_1 = __webpack_require__(17);
 const MAX_FILES_SCANNED = 2000;
 const MAX_MATCHES = 200;
 exports.searchWorkspaceTool = {
@@ -2696,7 +2765,518 @@ function escapeRegExp(s) {
 
 
 /***/ }),
-/* 21 */
+/* 22 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchGithubIssueTool = void 0;
+const https = __importStar(__webpack_require__(23));
+const types_1 = __webpack_require__(17);
+function parseIssueUrl(raw) {
+    const trimmed = raw.trim();
+    // Pattern: https://github.com/:owner/:repo/(issues|pull)/:number
+    const urlMatch = trimmed.match(/github\.com\/([^/\s]+)\/([^/\s#]+)\/(issues|pull)\/(\d+)/i);
+    if (urlMatch) {
+        return {
+            owner: urlMatch[1],
+            repo: urlMatch[2].replace(/\.git$/i, ""),
+            isPr: urlMatch[3].toLowerCase() === "pull",
+            issueNumber: parseInt(urlMatch[4], 10),
+        };
+    }
+    // Pattern: :owner/:repo#:number
+    const shortMatch = trimmed.match(/^([^/\s]+)\/([^/\s#]+)#(\d+)$/);
+    if (shortMatch) {
+        return {
+            owner: shortMatch[1],
+            repo: shortMatch[2],
+            issueNumber: parseInt(shortMatch[3], 10),
+        };
+    }
+    return null;
+}
+function httpsGet(url, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const req = https.get(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                Accept: "text/html,application/xhtml+xml,application/json,*/*",
+                ...headers,
+            },
+            timeout: 15_000,
+        }, (res) => {
+            // Handle HTTP redirects
+            if (res.statusCode &&
+                [301, 302, 307, 308].includes(res.statusCode) &&
+                res.headers.location) {
+                return resolve(httpsGet(res.headers.location, headers));
+            }
+            let data = "";
+            res.on("data", (chunk) => (data += chunk));
+            res.on("end", () => resolve({ statusCode: res.statusCode || 200, data }));
+        });
+        req.on("timeout", () => {
+            req.destroy();
+            reject(new Error("Request timed out"));
+        });
+        req.on("error", (err) => reject(err));
+    });
+}
+function cleanHtmlText(html) {
+    return html
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/p>/gi, "\n\n")
+        .replace(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n```\n$1\n```\n")
+        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, "`$1`")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+exports.fetchGithubIssueTool = {
+    name: "fetch_github_issue",
+    description: "Fetch the complete description, requirements, error logs, and discussions for a GitHub " +
+        "issue or pull request. Accepts a full GitHub URL (e.g. 'https://github.com/owner/repo/issues/123') " +
+        "or repo and issue number. Returns the issue body, comments, and the repo clone URL.",
+    parameters: {
+        type: "object",
+        properties: {
+            url: {
+                type: "string",
+                description: "Full GitHub issue or PR URL (e.g. 'https://github.com/owner/repo/issues/123').",
+            },
+            repo: {
+                type: "string",
+                description: "Optional repository in 'owner/repo' format.",
+            },
+            issue_number: {
+                type: "integer",
+                description: "Optional issue or pull request number.",
+            },
+        },
+    },
+    async execute(args, _ctx) {
+        let owner = "";
+        let repo = "";
+        let issueNumber = 0;
+        let isPr = false;
+        if (typeof args.url === "string" && args.url.trim()) {
+            const parsed = parseIssueUrl(args.url);
+            if (parsed) {
+                owner = parsed.owner;
+                repo = parsed.repo;
+                issueNumber = parsed.issueNumber;
+                isPr = !!parsed.isPr;
+            }
+        }
+        if (!owner && typeof args.repo === "string") {
+            const parts = args.repo.trim().split("/");
+            if (parts.length === 2) {
+                owner = parts[0];
+                repo = parts[1].replace(/\.git$/i, "");
+            }
+        }
+        if (!issueNumber && typeof args.issue_number === "number") {
+            issueNumber = args.issue_number;
+        }
+        if (!owner || !repo || !issueNumber) {
+            throw new types_1.ToolError("Could not determine GitHub repository and issue number. Please provide a valid URL like 'https://github.com/owner/repo/issues/123'.");
+        }
+        const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+        const issueWebUrl = `https://github.com/${owner}/${repo}/${isPr ? "pull" : "issues"}/${issueNumber}`;
+        // Attempt 1: GitHub REST API
+        const apiToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+        const apiHeaders = {
+            Accept: "application/vnd.github.v3+json",
+        };
+        if (apiToken) {
+            apiHeaders["Authorization"] = `Bearer ${apiToken.trim()}`;
+        }
+        let title = "";
+        let body = "";
+        let state = "open";
+        let author = "";
+        let labels = [];
+        const commentsList = [];
+        let apiSucceeded = false;
+        try {
+            const apiUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`;
+            const res = await httpsGet(apiUrl, apiHeaders);
+            if (res.statusCode === 200) {
+                const issueData = JSON.parse(res.data);
+                title = issueData.title || "";
+                body = issueData.body || "";
+                state = issueData.state || "open";
+                author = issueData.user?.login || "";
+                labels = (issueData.labels || []).map((l) => l.name || l);
+                apiSucceeded = true;
+                // Also fetch comments if any
+                if (issueData.comments > 0) {
+                    try {
+                        const commentsRes = await httpsGet(`https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=10`, apiHeaders);
+                        if (commentsRes.statusCode === 200) {
+                            const commentsData = JSON.parse(commentsRes.data);
+                            for (const c of commentsData) {
+                                if (c.body) {
+                                    commentsList.push({
+                                        user: c.user?.login || "user",
+                                        body: c.body,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        // comments fetch error is non-fatal
+                    }
+                }
+            }
+        }
+        catch {
+            // API call failed, fall back to web scraping
+        }
+        // Attempt 2: Fallback to scraping the public web page directly
+        if (!apiSucceeded) {
+            try {
+                const webRes = await httpsGet(issueWebUrl);
+                if (webRes.statusCode === 200) {
+                    const html = webRes.data;
+                    // Extract title
+                    const titleMatch = html.match(/<bdi class="js-issue-title[^>]*>([\s\S]*?)<\/bdi>/i) ||
+                        html.match(/<meta property="og:title" content="([^"]+)"/i) ||
+                        html.match(/<title>([\s\S]*?)<\/title>/i);
+                    if (titleMatch) {
+                        title = cleanHtmlText(titleMatch[1]).replace(/ · GitHub$/i, "");
+                    }
+                    // Extract og:description
+                    const ogDescMatch = html.match(/<meta property="og:description" content="([^"]+)"/i);
+                    const metaDesc = ogDescMatch ? ogDescMatch[1] : "";
+                    // Extract comment bodies from rendered markdown containers
+                    const commentBlocks = [
+                        ...html.matchAll(/class="[^"]*(?:comment-body|markdown-body)[^"]*"[^>]*>([\s\S]*?)<\/td>/gi),
+                    ];
+                    if (commentBlocks.length > 0) {
+                        body = cleanHtmlText(commentBlocks[0][1]);
+                        for (let i = 1; i < Math.min(commentBlocks.length, 6); i++) {
+                            const cleaned = cleanHtmlText(commentBlocks[i][1]);
+                            if (cleaned) {
+                                commentsList.push({ user: `Commenter #${i}`, body: cleaned });
+                            }
+                        }
+                    }
+                    else if (metaDesc) {
+                        body = metaDesc;
+                    }
+                }
+            }
+            catch (err) {
+                throw new types_1.ToolError(`Failed to fetch GitHub issue from both API and web page: ${err.message}`);
+            }
+        }
+        if (!title && !body) {
+            throw new types_1.ToolError(`Could not retrieve issue #${issueNumber} from https://github.com/${owner}/${repo}. Please check the URL.`);
+        }
+        const docSections = [
+            `# ${isPr ? "Pull Request" : "Issue"} #${issueNumber}: ${title || "Untitled"}`,
+            `**Repository:** \`${owner}/${repo}\``,
+            `**Git Clone URL:** \`${cloneUrl}\``,
+            `**URL:** ${issueWebUrl}`,
+            `**State:** ${state.toUpperCase()}${author ? ` | **Author:** @${author}` : ""}${labels.length ? ` | **Labels:** ${labels.join(", ")}` : ""}`,
+            "\n## Issue Description\n",
+            body || "(No description body provided in issue)",
+        ];
+        if (commentsList.length > 0) {
+            docSections.push(`\n## Discussion Comments (${commentsList.length})`);
+            for (const comment of commentsList) {
+                docSections.push(`\n### Comment by @${comment.user}:\n${comment.body}`);
+            }
+        }
+        docSections.push("\n---", "**Recommended Next Step:**", `1. Use \`fetch_repo\` with \`url: "${cloneUrl}"\` to clone this repository and switch into it.`, "2. Search the codebase for the relevant files using `search_workspace` or `list_files`.", "3. Inspect and edit files with `read_file`, `edit_file`, and `multi_edit`.", "4. Run tests or verification commands with `run_command`.");
+        return {
+            content: docSections.join("\n"),
+            summary: `Fetched issue #${issueNumber}: ${title.slice(0, 60)}${title.length > 60 ? "…" : ""}`,
+        };
+    },
+};
+
+
+/***/ }),
+/* 23 */
+/***/ ((module) => {
+
+module.exports = require("https");
+
+/***/ }),
+/* 24 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.fetchRepoTool = void 0;
+const child_process_1 = __webpack_require__(25);
+const fs = __importStar(__webpack_require__(26));
+const path = __importStar(__webpack_require__(4));
+const vscode = __importStar(__webpack_require__(1));
+const types_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(16);
+exports.fetchRepoTool = {
+    name: "fetch_repo",
+    mutates: true,
+    description: "Clone or fetch a public Git repository from a URL (e.g. GitHub URL) to a local " +
+        "directory, and automatically switch the agent's active working directory and workspace " +
+        "root to that repository. All subsequent tool calls will operate directly inside the cloned repo.",
+    parameters: {
+        type: "object",
+        properties: {
+            url: {
+                type: "string",
+                description: "The Git repository URL (e.g. 'https://github.com/owner/repo' or 'https://github.com/owner/repo.git').",
+            },
+            dest_dir: {
+                type: "string",
+                description: "Optional destination directory path. Defaults to a folder named after the repo in the current working directory.",
+            },
+            branch: {
+                type: "string",
+                description: "Optional branch, tag, or commit to checkout.",
+            },
+            depth: {
+                type: "integer",
+                description: "Clone depth (default 50). Set to 0 or negative for full clone.",
+            },
+        },
+        required: ["url"],
+    },
+    async execute(args, ctx) {
+        const rawUrl = (0, fsutil_1.requireString)(args, "url").trim();
+        if (!rawUrl) {
+            throw new types_1.ToolError("Repository URL is required.");
+        }
+        // Parse URL and extract potential tree/branch references like:
+        // https://github.com/owner/repo/tree/branch-name
+        let cleanUrl = rawUrl;
+        let urlBranch;
+        const treeMatch = rawUrl.match(/^(https?:\/\/github\.com\/[^/]+\/[^/]+)\/tree\/([^/]+(?:\/[^/]+)*)\/?$/);
+        if (treeMatch) {
+            cleanUrl = treeMatch[1];
+            urlBranch = treeMatch[2];
+        }
+        else if (cleanUrl.endsWith(".git")) {
+            // keep clean
+        }
+        const branch = typeof args.branch === "string" && args.branch.trim() ? args.branch.trim() : urlBranch;
+        const depth = typeof args.depth === "number" ? args.depth : 50;
+        // Derive repo name: https://github.com/owner/repo -> repo
+        const match = cleanUrl.match(/\/([^/]+?)(?:\.git)?$/);
+        const repoName = match ? match[1] : "repo";
+        // Determine target destination path
+        const baseCwd = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
+        let targetPath;
+        if (typeof args.dest_dir === "string" && args.dest_dir.trim()) {
+            const customDest = args.dest_dir.trim().replace(/^~/, process.env.HOME || "");
+            targetPath = path.isAbsolute(customDest)
+                ? path.normalize(customDest)
+                : path.normalize(path.join(baseCwd, customDest));
+        }
+        else {
+            targetPath = path.normalize(path.join(baseCwd, repoName));
+        }
+        // Check if target directory already exists and is a git repository
+        const isExistingGit = fs.existsSync(targetPath) &&
+            fs.existsSync(path.join(targetPath, ".git"));
+        let command;
+        if (isExistingGit) {
+            // Fetch latest and optionally switch branch
+            if (branch) {
+                command = `git fetch --all && git checkout ${branch} && git pull origin ${branch}`;
+            }
+            else {
+                command = `git fetch --all && git pull`;
+            }
+        }
+        else {
+            // Clone fresh
+            const branchFlag = branch ? ` --branch ${branch}` : "";
+            const depthFlag = depth > 0 ? ` --depth ${depth}` : "";
+            command = `git clone${depthFlag}${branchFlag} "${cleanUrl}" "${targetPath}"`;
+        }
+        // Run git command
+        const { stdout, stderr, code } = await new Promise((resolve) => {
+            (0, child_process_1.exec)(command, { cwd: isExistingGit ? targetPath : baseCwd, timeout: 120_000, maxBuffer: 10 * 1024 * 1024 }, (err, out, errOut) => {
+                resolve({
+                    stdout: out || "",
+                    stderr: errOut || "",
+                    code: err ? (typeof err.code === "number" ? err.code : 1) : 0,
+                });
+            });
+        });
+        if (code !== 0) {
+            throw new types_1.ToolError(`Git command failed (exit code ${code}):\n$ ${command}\n${stderr || stdout}`);
+        }
+        // Switch working directory and update workspace root
+        try {
+            process.chdir(targetPath);
+        }
+        catch (err) {
+            throw new types_1.ToolError(`Failed to chdir into ${targetPath}: ${err.message}`);
+        }
+        const newRootUri = vscode.Uri.file(targetPath);
+        ctx.workspaceRoot = newRootUri;
+        if (vscode.workspace.workspaceFolders) {
+            vscode.workspace.workspaceFolders = [
+                {
+                    uri: newRootUri,
+                    name: path.basename(targetPath) || repoName,
+                    index: 0,
+                },
+            ];
+        }
+        if (typeof ctx.onWorkspaceChanged === "function") {
+            ctx.onWorkspaceChanged(newRootUri);
+        }
+        // Inspect repository to provide helpful starting context
+        let recentCommit = "";
+        try {
+            recentCommit = (__webpack_require__(25).execSync)("git log -1 --oneline", { cwd: targetPath, encoding: "utf-8" })
+                .trim();
+        }
+        catch {
+            // ignore
+        }
+        let currentBranch = "";
+        try {
+            currentBranch = (__webpack_require__(25).execSync)("git branch --show-current", { cwd: targetPath, encoding: "utf-8" })
+                .trim();
+        }
+        catch {
+            // ignore
+        }
+        // Identify project stack
+        const detected = [];
+        if (fs.existsSync(path.join(targetPath, "package.json"))) {
+            try {
+                const pkg = JSON.parse(fs.readFileSync(path.join(targetPath, "package.json"), "utf-8"));
+                detected.push(`Node.js/npm (${pkg.name || "package"}${pkg.version ? `@${pkg.version}` : ""})`);
+            }
+            catch {
+                detected.push("Node.js/npm");
+            }
+        }
+        if (fs.existsSync(path.join(targetPath, "requirements.txt")) || fs.existsSync(path.join(targetPath, "pyproject.toml"))) {
+            detected.push("Python");
+        }
+        if (fs.existsSync(path.join(targetPath, "Cargo.toml"))) {
+            detected.push("Rust (Cargo)");
+        }
+        if (fs.existsSync(path.join(targetPath, "go.mod"))) {
+            detected.push("Go");
+        }
+        if (fs.existsSync(path.join(targetPath, "pom.xml")) || fs.existsSync(path.join(targetPath, "build.gradle"))) {
+            detected.push("Java");
+        }
+        const sections = [
+            `Successfully ${isExistingGit ? "updated" : "cloned"} repository: ${cleanUrl}`,
+            `Local path: ${targetPath}`,
+            `Current branch: ${currentBranch || branch || "default"}`,
+            recentCommit ? `Latest commit: ${recentCommit}` : "",
+            detected.length ? `Detected stack: ${detected.join(", ")}` : "",
+            `\n✓ Active workspace has been switched to ${targetPath}. All file operations and terminal commands are now scoped to this repository.`,
+        ].filter(Boolean);
+        return {
+            content: sections.join("\n"),
+            summary: `${isExistingGit ? "Updated" : "Cloned"} ${repoName} (${currentBranch || "ready"})`,
+        };
+    },
+};
+
+
+/***/ }),
+/* 25 */
+/***/ ((module) => {
+
+module.exports = require("child_process");
+
+/***/ }),
+/* 26 */
+/***/ ((module) => {
+
+module.exports = require("fs");
+
+/***/ }),
+/* 27 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2736,8 +3316,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(16);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -2788,14 +3368,14 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 22 */
+/* 28 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const fsutil_1 = __webpack_require__(15);
-const editCore_1 = __webpack_require__(23);
+const fsutil_1 = __webpack_require__(16);
+const editCore_1 = __webpack_require__(29);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -2841,7 +3421,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 23 */
+/* 29 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2884,8 +3464,8 @@ exports.applyEdits = applyEdits;
 exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(15);
-const types_1 = __webpack_require__(16);
+const fsutil_1 = __webpack_require__(16);
+const types_1 = __webpack_require__(17);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -2959,7 +3539,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 24 */
+/* 30 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2999,8 +3579,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(16);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -3046,7 +3626,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 25 */
+/* 31 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3086,8 +3666,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const types_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(16);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -3139,14 +3719,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 26 */
+/* 32 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(16);
-const editCore_1 = __webpack_require__(23);
+const types_1 = __webpack_require__(17);
+const editCore_1 = __webpack_require__(29);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -3249,30 +3829,69 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 27 */
-/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+/* 33 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(28);
-const types_1 = __webpack_require__(16);
-const fsutil_1 = __webpack_require__(15);
+const child_process_1 = __webpack_require__(25);
+const path = __importStar(__webpack_require__(4));
+const vscode = __importStar(__webpack_require__(1));
+const types_1 = __webpack_require__(17);
+const fsutil_1 = __webpack_require__(16);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
 exports.runCommandTool = {
     name: "run_command",
     mutates: true,
-    description: "Run a shell command in the workspace root and return its stdout/stderr and " +
-        "exit code. Use for builds, tests, linters, git status, etc. This ALWAYS asks " +
-        "the user to confirm before running. Commands run non-interactively; do not " +
-        "start long-lived watchers or servers that never exit.",
+    description: "Run a shell command and return its stdout, stderr, and exit code. Use for " +
+        "builds, tests, git operations, file inspection, scripts, etc. Supports optional " +
+        "custom cwd to run in any directory. Special commands: 'cd <dir>' persistently " +
+        "moves the agent's working directory, and 'pwd' prints current directory.",
     parameters: {
         type: "object",
         properties: {
             command: {
                 type: "string",
                 description: "The exact shell command to execute.",
+            },
+            cwd: {
+                type: "string",
+                description: "Directory path to execute the command in. Defaults to current working directory, but can be any system path.",
             },
             timeout_ms: {
                 type: "integer",
@@ -3286,17 +3905,67 @@ exports.runCommandTool = {
         const timeout = typeof args.timeout_ms === "number" && args.timeout_ms > 0
             ? Math.min(args.timeout_ms, 5 * 60_000)
             : DEFAULT_TIMEOUT_MS;
-        if (!ctx.workspaceRoot) {
-            throw new types_1.ToolError("No workspace folder is open to run a command in.");
-        }
-        // In manual mode (default) ask for confirmation; in auto mode run directly.
-        if (!ctx.terminalAutoRun) {
-            const approved = await ctx.confirm("Run this command?", `${command}\n\nWorking directory:\n${ctx.workspaceRoot.fsPath}`);
+        const baseDir = ctx.workspaceRoot ? ctx.workspaceRoot.fsPath : process.cwd();
+        const customCwd = typeof args.cwd === "string" && args.cwd.trim() ? args.cwd.trim() : undefined;
+        const cwd = customCwd
+            ? customCwd.startsWith("~")
+                ? path.normalize(path.join(process.env.HOME || "", customCwd.slice(1)))
+                : path.isAbsolute(customCwd)
+                    ? path.normalize(customCwd)
+                    : path.normalize(path.join(baseDir, customCwd))
+            : baseDir;
+        // In manual mode ask for confirmation; in auto mode run directly.
+        if (!ctx.terminalAutoRun && !ctx.autoEdit) {
+            const approved = await ctx.confirm("Run this command?", `${command}\n\nWorking directory:\n${cwd}`);
             if (!approved) {
                 throw new types_1.ToolDeniedError(`Running "${command}" was declined by the user.`);
             }
         }
-        const cwd = ctx.workspaceRoot.fsPath;
+        // Direct support for cd command to change process working directory persistently
+        const cdMatch = command.match(/^\s*cd(?:\s+(.+))?\s*$/);
+        if (cdMatch) {
+            const rawTarget = cdMatch[1]?.trim() || "~";
+            const target = rawTarget.startsWith("~")
+                ? path.join(process.env.HOME || "", rawTarget.slice(1))
+                : rawTarget;
+            const resolved = path.isAbsolute(target)
+                ? path.normalize(target)
+                : path.normalize(path.join(cwd, target));
+            try {
+                process.chdir(resolved);
+                const newUri = vscode.Uri.file(resolved);
+                ctx.workspaceRoot = newUri;
+                if (vscode.workspace.workspaceFolders) {
+                    vscode.workspace.workspaceFolders = [
+                        {
+                            uri: newUri,
+                            name: path.basename(resolved) || resolved,
+                            index: 0,
+                        },
+                    ];
+                }
+                if (typeof ctx.onWorkspaceChanged === "function") {
+                    ctx.onWorkspaceChanged(newUri);
+                }
+                return {
+                    content: `Working directory changed to: ${resolved}`,
+                    summary: `Changed directory to ${resolved}`,
+                };
+            }
+            catch (err) {
+                return {
+                    content: `Failed to change directory to ${resolved}: ${err.message}`,
+                    isError: true,
+                    summary: `cd failed: ${err.message}`,
+                };
+            }
+        }
+        if (command.trim() === "pwd") {
+            return {
+                content: cwd,
+                summary: `pwd: ${cwd}`,
+            };
+        }
         const { stdout, stderr, code, timedOut } = await new Promise((resolve) => {
             const child = (0, child_process_1.exec)(command, { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
                 const execErr = err;
@@ -3331,13 +4000,7 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 28 */
-/***/ ((module) => {
-
-module.exports = require("child_process");
-
-/***/ }),
-/* 29 */
+/* 34 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3377,10 +4040,11 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getWorkspaceRoot = getWorkspaceRoot;
 exports.toRelative = toRelative;
+exports.isInside = isInside;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(30));
-const types_1 = __webpack_require__(16);
+const path = __importStar(__webpack_require__(4));
+const types_1 = __webpack_require__(17);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -3391,6 +4055,9 @@ function toRelative(root, uri) {
         return uri.fsPath;
     }
     const rel = path.relative(root.fsPath, uri.fsPath);
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        return uri.fsPath;
+    }
     return rel === "" ? "." : rel.split(path.sep).join("/");
 }
 /** True if `candidate` is the root itself or nested strictly inside it. */
@@ -3399,40 +4066,27 @@ function isInside(root, candidate) {
     return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 /**
- * Resolve a model-supplied path to an absolute Uri, confined to the workspace.
- *
- * - No workspace open → hard error (nothing is in scope).
- * - Resolves relative paths against the workspace root; absolute paths are honored.
- * - If the result escapes the workspace root, require an explicit modal approval;
- *   denial throws {@link ToolDeniedError}. This is the single choke point that
- *   enforces "never access files outside the workspace unless I approve it".
+ * Resolve a model-supplied path to an absolute Uri.
+ * Fully unrestricted: resolves relative paths against the workspace root or cwd,
+ * supports tilde (~) expansion for the user home directory,
+ * and allows absolute paths anywhere on the system.
  */
-async function resolvePathInWorkspace(input, root, confirm) {
-    if (!root) {
-        throw new types_1.ToolError("No workspace folder is open, so there is no project to operate on.");
-    }
+async function resolvePathInWorkspace(input, root, _confirm) {
     const trimmed = input.trim();
     if (!trimmed) {
         throw new types_1.ToolError("An empty path is not valid.");
     }
-    const absolute = path.isAbsolute(trimmed)
-        ? path.normalize(trimmed)
-        : path.normalize(path.join(root.fsPath, trimmed));
-    if (!isInside(root.fsPath, absolute)) {
-        const approved = await confirm("Allow access outside the workspace?", `The agent wants to access:\n${absolute}\n\nThis is outside the current workspace root:\n${root.fsPath}`);
-        if (!approved) {
-            throw new types_1.ToolDeniedError(`Access denied: "${trimmed}" is outside the workspace and approval was declined.`);
-        }
-    }
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+    const expanded = trimmed.startsWith("~")
+        ? path.join(home, trimmed.slice(1))
+        : trimmed;
+    const basePath = root ? root.fsPath : process.cwd();
+    const absolute = path.isAbsolute(expanded)
+        ? path.normalize(expanded)
+        : path.normalize(path.join(basePath, expanded));
     return vscode.Uri.file(absolute);
 }
 
-
-/***/ }),
-/* 30 */
-/***/ ((module) => {
-
-module.exports = require("path");
 
 /***/ })
 /******/ 	]);
