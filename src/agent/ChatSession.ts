@@ -1,4 +1,3 @@
-import * as path from "path";
 import { LLMClient, type LLMClientOptions } from "../llm/LLMClient";
 import type { ChatMessage, ContentPart, ToolCall } from "../llm/types";
 import type { ToolContext } from "../tools/types";
@@ -15,8 +14,8 @@ import { TaskMemory, type TaskMemoryData } from "./TaskMemory";
 /** Product name shown to the user and used in the agent's self-identity. */
 export const AGENT_NAME = "Axiom";
 
-/** Safety bound on tool round-trips within a single user turn. */
-const MAX_ITERATIONS = 25;
+/** Safety bound on tool round-trips within a single user turn (default 1000). */
+const MAX_ITERATIONS = parseInt(process.env.MAX_TOOL_ITERATIONS || "1000", 10);
 
 function buildSystemPrompt(
   modelDisplay: string,
@@ -26,22 +25,19 @@ function buildSystemPrompt(
   workingMemorySection?: string,
 ): string {
   const ws = root
-    ? `WORKSPACE (UNRESTRICTED ACCESS):
+    ? `You are operating inside the user's VS Code workspace.
 Workspace: ${workspaceName ?? "(unnamed)"}
 Workspace root: ${root}
-You have FULL unrestricted access to the entire filesystem — you can read, write, create,
-and delete files anywhere on this machine. You can also change the active workspace directory
-at any time using the cd command or by cloning a repository with fetch_repo.`
-    : `No workspace folder is currently open. You can clone a repository using fetch_repo,
-or change directory with the run_command cd built-in.`;
+All file paths you pass to tools are resolved relative to this root. You may only
+access files inside this workspace unless the user explicitly approves otherwise.`
+    : `No workspace folder is currently open. File tools will fail until the user opens a folder.`;
 
   const modeGuidance = allowMutations
-    ? `MODE: Auto Edit (AUTONOMOUS). Work fully autonomously to complete the task:
-- Inspect the repository, search, and read the files you need.
-- Create, edit, rename, multi-edit, and delete files directly to accomplish the goal.
-- Run shell commands (builds, tests, lint, git) without asking for approval.
+    ? `MODE: Auto Edit. Work autonomously to complete the task:
+- Inspect the workspace, search, and read the files you need.
+- Create, edit, rename, and multi-edit files directly to accomplish the goal.
 - Keep using tools until the task is fully done, then summarize what you changed.
-- Never ask "should I proceed?" — just proceed.`
+- Only deletions and terminal commands require the user to confirm.`
     : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
 - Inspect the workspace, search, and read the relevant files.
@@ -51,7 +47,7 @@ disabled and will be refused. Do the following:
 
   const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
 
-  return `You are ${AGENT_NAME}, an autonomous AI coding assistant.
+  return `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
@@ -61,43 +57,14 @@ ${ws}
 
 ${modeGuidance}${memoryBlock}
 
-GITHUB REPOSITORIES & ISSUE SOLVING:
-When the user gives you a GitHub repository URL and an issue number (e.g.,
-"https://github.com/owner/repo.git solve issue #42"), follow this EXACT workflow:
+Work by reasoning step by step: think, choose a tool, execute it, observe the result,
+then continue until the task is complete. Inspect real files rather than guessing.
 
-  STEP 1 — Fetch the issue FIRST (before any codebase exploration):
-    Use fetch_github_issue with the issue URL or repo + issue_number.
-    Read the full title, body, and comments carefully.
-
-  STEP 2 — Clone or switch to the repository:
-    Use fetch_repo with the repository URL.
-    This automatically switches the active workspace to the cloned repo.
-
-  STEP 3 — Understand the codebase:
-    Use list_files, read_file, search_workspace to understand structure and find relevant code.
-
-  STEP 4 — Implement the fix:
-    Use create_file, edit_file, multi_edit to implement the required changes.
-    Make minimal, targeted changes that directly address the issue.
-
-  STEP 5 — Validate:
-    Use run_command to run tests, build, or lint.
-    Inspect the test/build output. If failures occur, fix them and re-run.
-
-  STEP 6 — Report:
-    Summarize: what the issue was, what files you changed, and how you verified the fix.
-
-IMPORTANT RULES:
-- Never hardcode repository names, issue numbers, or paths in your reasoning.
-- Always use the dynamically cloned repository root as the working directory.
-- fetch_github_issue and fetch_repo are the entry points — use them before anything else.
-- After fetch_repo completes, ALL file tools (read_file, edit_file, etc.) automatically
-  operate inside the cloned repository — no manual path adjustment needed.
-
-EFFICIENCY:
-- When you need several independent files, request them in ONE step with parallel tool calls.
+Be efficient with tool calls to minimize API usage:
+- When you need several independent files, request them in ONE step with multiple tool
+  calls rather than one at a time.
 - Read a file once; reuse what you already saw instead of re-reading it.
-- Read only the parts you need (line ranges / search) instead of dumping whole large files.
+- Read only the parts you need (use line ranges / search) instead of dumping whole large files.
 - Stop as soon as the task is done; don't make extra calls to double-check needlessly.
 
 Be concise and precise. Use fenced code blocks with correct language tags for any code.`;
@@ -124,13 +91,9 @@ function statusForTool(name: string): AgentStatus {
     case "multi_edit":
       return "Editing files…";
     case "delete_file":
-      return "Deleting file…";
+      return "Waiting for approval…";
     case "run_command":
       return "Running terminal command…";
-    case "fetch_github_issue":
-      return "Fetching GitHub issue…";
-    case "fetch_repo":
-      return "Cloning repository…";
     default:
       return "Working…";
   }
@@ -175,7 +138,7 @@ export class ChatSession {
     private readonly client: LLMClient,
     private readonly registry: ToolRegistry,
     private readonly ctx: ToolContext,
-    private workspaceName: string | undefined,
+    private readonly workspaceName: string | undefined,
     private allowMutations: boolean,
     initialModelId: string,
     seedHistory?: ChatMessage[],
@@ -281,13 +244,6 @@ export class ChatSession {
   /** Update the endpoint (base URL / API key) live. */
   setEndpoint(baseUrl: string, apiKey: string): void {
     this.client.setEndpoint(baseUrl, apiKey);
-  }
-
-  /** Switch the active workspace (called when fetch_repo or cd changes the working directory). */
-  setWorkspace(root: { fsPath: string }, name?: string): void {
-    this.ctx.workspaceRoot = root as any;
-    this.workspaceName = name ?? (path.basename(root.fsPath) || root.fsPath);
-    this.refreshSystemPrompt();
   }
 
   reset(): void {
@@ -457,11 +413,9 @@ export class ChatSession {
 /** Short human title for a tool card, e.g. `read_file → src/foo.ts`. */
 function describeCall(name: string, args: Record<string, unknown>): string {
   const hint =
-    (typeof args.url === "string" && args.url) ||
     (typeof args.path === "string" && args.path) ||
     (typeof args.query === "string" && args.query) ||
     (typeof args.command === "string" && args.command) ||
-    (typeof args.repo === "string" && args.repo) ||
     "";
   return hint ? `${name} → ${hint}` : name;
 }
