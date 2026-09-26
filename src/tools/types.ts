@@ -27,7 +27,7 @@ export interface JSONSchemaProperty {
  */
 export interface ToolContext {
   /** Root of the currently open workspace, or undefined if no folder is open. */
-  workspaceRoot: vscode.Uri | undefined;
+  readonly workspaceRoot: vscode.Uri | undefined;
 
   /**
    * When true, terminal commands run without a confirmation prompt. Mutable so a

@@ -8,45 +8,19 @@ export const colors = {
   reset: USE_COLOR ? "\x1b[0m" : "",
   bold: USE_COLOR ? "\x1b[1m" : "",
   dim: USE_COLOR ? "\x1b[2m" : "",
-  italic: USE_COLOR ? "\x1b[3m" : "",
   cyan: USE_COLOR ? "\x1b[36m" : "",
   green: USE_COLOR ? "\x1b[32m" : "",
   yellow: USE_COLOR ? "\x1b[33m" : "",
   red: USE_COLOR ? "\x1b[31m" : "",
   magenta: USE_COLOR ? "\x1b[35m" : "",
   blue: USE_COLOR ? "\x1b[34m" : "",
-  brightCyan: USE_COLOR ? "\x1b[96m" : "",
-  brightGreen: USE_COLOR ? "\x1b[92m" : "",
-  brightYellow: USE_COLOR ? "\x1b[93m" : "",
-  brightRed: USE_COLOR ? "\x1b[91m" : "",
-  brightWhite: USE_COLOR ? "\x1b[97m" : "",
-  bgBlue: USE_COLOR ? "\x1b[44m" : "",
-  bgCyan: USE_COLOR ? "\x1b[46m" : "",
 };
 
-// AXIOM ASCII logo — coral/cyan gradient effect using ANSI
-const AXIOM_LOGO = USE_COLOR
-  ? [
-      `${colors.brightCyan}${colors.bold}   ▄████████ ▀████    ▐████▀  ▄█   ▄██████▄    ▄▄▄▄███▄▄▄▄   ${colors.reset}`,
-      `${colors.cyan}${colors.bold}  ███    ███   ███▌   ████▀  ███  ███    ███  ▄██▀▀▀███▀▀▀██▄ ${colors.reset}`,
-      `${colors.brightCyan}${colors.bold}  ███    ███    ███  ▐███   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
-      `${colors.cyan}${colors.bold}  ███    ███    ▀███▄███▀   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
-      `${colors.brightCyan}${colors.bold}▀███████████    ████▀██▄   ███▌ ███    ███  ███   ███   ███ ${colors.reset}`,
-      `${colors.cyan}${colors.bold}  ███    ███   ▐███  ▀███  ███  ███    ███  ███   ███   ███ ${colors.reset}`,
-      `${colors.brightCyan}${colors.bold}  ███    ███  ▄███     ███▄ ███  ███    ███  ███   ███   ███ ${colors.reset}`,
-      `${colors.cyan}${colors.bold}  ███    █▀  ████       ███▄█▀    ▀██████▀    ▀█   ███   █▀  ${colors.reset}`,
-    ]
-  : [
-      "   AAAAAA  XX  XX  IIII   OOOO   MM   MM",
-      "  AA   AA   XXXX    II   OO  OO  MMM MMM",
-      "  AAAAAAA    XX     II   OO  OO  MM M MM",
-      "  AA   AA   XXXX    II   OO  OO  MM   MM",
-      "  AA   AA  XX  XX  IIII   OOOO   MM   MM",
-    ];
+const DEFAULT_WIDTH = 64;
 
 export function getTerminalWidth(): number {
   const cols = process.stdout.columns || 80;
-  return Math.min(Math.max(cols - 2, 60), 100);
+  return Math.min(Math.max(cols - 2, 50), 80);
 }
 
 export function padBetween(left: string, right: string, width: number): string {
@@ -57,7 +31,6 @@ export function padBetween(left: string, right: string, width: number): string {
 }
 
 export function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
@@ -71,92 +44,76 @@ export class TerminalUI {
 
   printHeader(autoEdit: boolean, modelName: string, workspacePath: string): void {
     const w = this.width;
+    const top = "┌" + "─".repeat(w) + "┐";
+    const mid = "├" + "─".repeat(w) + "┤";
 
-    // Top border
-    console.log(`${colors.cyan}${colors.bold}╔${"═".repeat(w)}╗${colors.reset}`);
-
-    // Logo
-    for (const line of AXIOM_LOGO) {
-      const visLen = stripAnsi(line).length;
-      const pad = Math.max(0, w - visLen);
-      console.log(`${colors.cyan}${colors.bold}║${colors.reset}${line}${" ".repeat(pad)}${colors.cyan}${colors.bold}║${colors.reset}`);
-    }
-
-    // Separator
-    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
-
-    // Status bar
+    const titleLeft = `  ${colors.bold}${colors.cyan}DAXIOM${colors.reset}`;
     const autoEditBadge = autoEdit
-      ? `${colors.bold}${colors.brightGreen}● AUTO EDIT${colors.reset}`
-      : `${colors.bold}${colors.brightYellow}● PLAN MODE${colors.reset}`;
-    const modeLabel = autoEdit
-      ? `${colors.dim}Autonomous Execution${colors.reset}`
-      : `${colors.dim}Read-Only Inspection${colors.reset}`;
-    const statusLine = `  ${autoEditBadge}  ${modeLabel}`;
-    const statusPad = Math.max(1, w - stripAnsi(statusLine).length - 2);
-    console.log(
-      `${colors.cyan}${colors.bold}║${colors.reset}${statusLine}${" ".repeat(statusPad)}${colors.dim}Axiom v1.0${colors.reset}  ${colors.cyan}${colors.bold}║${colors.reset}`,
-    );
+      ? `${colors.bold}${colors.green}AUTO EDIT: ON${colors.reset}  `
+      : `${colors.bold}${colors.yellow}PLAN MODE (READ-ONLY)${colors.reset}  `;
+    const titleLine = "│" + padBetween(titleLeft, autoEditBadge, w) + "│";
 
-    // Separator
-    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
+    const wsName = path.basename(workspacePath) || workspacePath;
+    const infoLeft = `  ${colors.dim}Model: ${modelName}${colors.reset}`;
+    const infoRight = `${colors.dim}Workspace: ${wsName}${colors.reset}  `;
+    const infoLine = "│" + padBetween(infoLeft, infoRight, w) + "│";
 
-    // Model + workspace info
-    const wsName = workspacePath ? (path.basename(workspacePath) || workspacePath) : "~";
-    const infoLeft = `  ${colors.dim}Model: ${colors.reset}${colors.brightWhite}${modelName}${colors.reset}`;
-    const infoRight = `${colors.dim}Workspace: ${colors.reset}${colors.brightWhite}${wsName}${colors.reset}  `;
-    console.log(`${colors.cyan}${colors.bold}║${colors.reset}${padBetween(infoLeft, infoRight, w)}${colors.cyan}${colors.bold}║${colors.reset}`);
-
-    // Bottom border
-    console.log(`${colors.cyan}${colors.bold}╠${"═".repeat(w)}╣${colors.reset}`);
-
-    // Hint line
-    const hint = `  ${colors.dim}Type a task, paste a GitHub URL, or /help for commands${colors.reset}`;
-    const hintPad = Math.max(1, w - stripAnsi(hint).length);
-    console.log(`${colors.cyan}${colors.bold}║${colors.reset}${hint}${" ".repeat(hintPad)}${colors.cyan}${colors.bold}║${colors.reset}`);
-    console.log(`${colors.cyan}${colors.bold}╚${"═".repeat(w)}╝${colors.reset}`);
-    console.log("");
+    console.log(top);
+    console.log(titleLine);
+    console.log(mid);
+    console.log(infoLine);
+    console.log(mid);
   }
 
   printDivider(): void {
     const w = this.width;
-    console.log(`${colors.dim}${"─".repeat(w + 2)}${colors.reset}`);
+    console.log("├" + "─".repeat(w) + "┤");
   }
 
   printFooter(promptPlaceholder = "Enter task..."): void {
-    console.log(`\n${colors.dim}${promptPlaceholder}${colors.reset}`);
+    const w = this.width;
+    const mid = "├" + "─".repeat(w) + "┤";
+    const bottom = "└" + "─".repeat(w) + "┘";
+    const promptText = `  ${colors.dim}> ${promptPlaceholder}${colors.reset}`;
+    const promptLine = "│" + padBetween(promptText, "", w) + "│";
+
+    console.log(mid);
+    console.log(promptLine);
+    console.log(bottom);
   }
 
   printPromptPrefix(): string {
-    return `${colors.bold}${colors.brightCyan}❯ ${colors.reset}`;
+    return `${colors.bold}${colors.cyan}> ${colors.reset}`;
   }
 
   printToolStart(name: string, title: string): void {
     if (this.assistantActive) {
-      process.stdout.write("\n");
+      console.log("");
       this.assistantActive = false;
     }
     const label = formatToolStartLabel(name, title);
-    console.log(`  ${colors.yellow}◉${colors.reset} ${colors.dim}${label}${colors.reset}`);
+    console.log(`  ${colors.yellow}◉${colors.reset} ${label}`);
   }
 
   printToolEnd(ok: boolean, summary: string, rawContent?: string): void {
     if (this.assistantActive) {
-      process.stdout.write("\n");
+      console.log("");
       this.assistantActive = false;
     }
 
     if (ok) {
+      // Check if command output indicates tests passed
       if (rawContent && isTestPassOutput(rawContent)) {
         const testMatch = rawContent.match(/(\d+\s+passing|\d+\s+tests?\s+passed)/i);
         const passSummary = testMatch ? testMatch[1] : summary;
-        console.log(`  ${colors.brightGreen}✔${colors.reset} ${passSummary}`);
+        console.log(`  ${colors.green}✓${colors.reset} ${passSummary}`);
       } else {
-        console.log(`  ${colors.brightGreen}✔${colors.reset} ${summary}`);
+        console.log(`  ${colors.green}✓${colors.reset} ${summary}`);
       }
     } else {
+      // If tests failed or command failed, show failure
       const failureExtract = rawContent ? extractFailureSnippet(rawContent) : undefined;
-      console.log(`  ${colors.brightRed}✘${colors.reset} ${summary}`);
+      console.log(`  ${colors.red}✗${colors.reset} ${summary}`);
       if (failureExtract) {
         console.log(`    ${colors.red}${failureExtract}${colors.reset}`);
       }
@@ -173,16 +130,15 @@ export class TerminalUI {
       return;
     }
     if (this.assistantActive) {
-      process.stdout.write("\n");
+      console.log("");
       this.assistantActive = false;
     }
-    console.log(`  ${colors.yellow}◉${colors.reset} ${colors.dim}${status}${colors.reset}`);
+    console.log(`  ${colors.yellow}◉${colors.reset} ${status}`);
   }
 
   printAssistantStart(): void {
     if (!this.assistantActive) {
-      console.log(`\n  ${colors.bold}${colors.brightCyan}╭─ Axiom${colors.reset}`);
-      process.stdout.write(`  ${colors.dim}│${colors.reset} `);
+      console.log(`\n  ${colors.bold}${colors.blue}Agent${colors.reset}`);
       this.assistantActive = true;
     }
   }
@@ -191,58 +147,26 @@ export class TerminalUI {
     if (!this.assistantActive) {
       this.printAssistantStart();
     }
-    // Prefix each newline with the │ gutter
-    const formatted = delta.replace(/\n/g, `\n  ${colors.dim}│${colors.reset} `);
-    process.stdout.write(formatted);
+    process.stdout.write(delta);
   }
 
   printAssistantDone(): void {
     if (this.assistantActive) {
-      process.stdout.write(`\n  ${colors.bold}${colors.brightCyan}╰─${colors.reset}\n\n`);
+      process.stdout.write("\n\n");
       this.assistantActive = false;
     }
   }
 
   printError(message: string): void {
     if (this.assistantActive) {
-      process.stdout.write("\n");
+      console.log("");
       this.assistantActive = false;
     }
-    console.log(`  ${colors.brightRed}✘ Error:${colors.reset} ${message}`);
+    console.log(`  ${colors.red}✗ ${message}${colors.reset}`);
   }
 
   printNotice(message: string): void {
-    console.log(`  ${colors.brightCyan}ℹ${colors.reset} ${message}`);
-  }
-
-  /** Print an orchestration step (e.g. cloning, fetching issue). */
-  printOrchestrationStep(step: string, detail?: string): void {
-    if (this.assistantActive) {
-      process.stdout.write("\n");
-      this.assistantActive = false;
-    }
-    console.log(`  ${colors.cyan}◈${colors.reset} ${colors.bold}${step}${colors.reset}${detail ? `  ${colors.dim}${detail}${colors.reset}` : ""}`);
-  }
-
-  /** Print success of an orchestration step. */
-  printOrchestrationDone(step: string, detail?: string): void {
-    if (this.assistantActive) {
-      process.stdout.write("\n");
-      this.assistantActive = false;
-    }
-    console.log(`  ${colors.brightGreen}◈${colors.reset} ${colors.bold}${step}${colors.reset}${detail ? `  ${colors.dim}${detail}${colors.reset}` : ""}`);
-  }
-
-  /** Print a prominent section header. */
-  printSectionHeader(title: string): void {
-    if (this.assistantActive) {
-      process.stdout.write("\n");
-      this.assistantActive = false;
-    }
-    const w = this.width;
-    const line = `── ${title} `;
-    const pad = Math.max(0, w - line.length);
-    console.log(`\n${colors.cyan}${colors.dim}${line}${"─".repeat(pad)}${colors.reset}`);
+    console.log(`  ${colors.cyan}ℹ ${message}${colors.reset}`);
   }
 }
 
@@ -251,7 +175,7 @@ function formatToolStartLabel(name: string, title: string): string {
     case "search_workspace":
       return `Searching workspace...`;
     case "list_files":
-      return `Listing files...`;
+      return `Listing files in workspace...`;
     case "read_file": {
       const match = title.match(/→\s*(.+)$/);
       return match ? `Reading ${match[1]}` : `Reading file...`;
@@ -275,15 +199,7 @@ function formatToolStartLabel(name: string, title: string): string {
     }
     case "run_command": {
       const match = title.match(/→\s*(.+)$/);
-      return match ? `Running: ${match[1]}` : `Running command...`;
-    }
-    case "fetch_repo": {
-      const match = title.match(/→\s*(.+)$/);
-      return match ? `Cloning repo: ${match[1]}` : `Cloning repository...`;
-    }
-    case "fetch_github_issue": {
-      const match = title.match(/→\s*(.+)$/);
-      return match ? `Fetching issue: ${match[1]}` : `Fetching GitHub issue...`;
+      return match ? `Running ${match[1]}` : `Running command...`;
     }
     default:
       return title || `Executing ${name}...`;
@@ -292,8 +208,9 @@ function formatToolStartLabel(name: string, title: string): string {
 
 function isTestPassOutput(content: string): boolean {
   return (
-    /\b(\d+\s+passing|\d+\s+tests?\s+passed|test suites?:\s*\d+\s*passed)\b/i.test(content) &&
-    !/\bfailed\b/i.test(content)
+    /\b(\d+\s+passing|\d+\s+tests?\s+passed|test suites?:\s*\d+\s*passed)\b/i.test(
+      content,
+    ) && !/\bfailed\b/i.test(content)
   );
 }
 
@@ -302,11 +219,13 @@ function extractFailureSnippet(content: string): string | undefined {
   for (const line of lines) {
     const trimmed = line.trim();
     if (
-      /\b(\d+\s+tests?\s+failed|tests? failed|FAIL|AssertionError|Error:)\b/i.test(trimmed) &&
+      /\b(\d+\s+tests?\s+failed|tests? failed|FAIL|AssertionError|Error:)\b/i.test(
+        trimmed,
+      ) &&
       !trimmed.startsWith("$") &&
       !trimmed.startsWith("exit code")
     ) {
-      return trimmed.slice(0, 120);
+      return trimmed.slice(0, 100);
     }
   }
   return undefined;

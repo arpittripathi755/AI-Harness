@@ -14,8 +14,10 @@ import { TaskMemory, type TaskMemoryData } from "./TaskMemory";
 /** Product name shown to the user and used in the agent's self-identity. */
 export const AGENT_NAME = "Axiom";
 
-/** Safety bound on tool round-trips within a single user turn (default 1000). */
-const MAX_ITERATIONS = parseInt(process.env.MAX_TOOL_ITERATIONS || "1000", 10);
+/** Safety bound on tool round-trips: unlimited by default (runs until done). */
+const MAX_ITERATIONS = process.env.MAX_TOOL_ITERATIONS
+  ? parseInt(process.env.MAX_TOOL_ITERATIONS, 10)
+  : Infinity;
 
 function buildSystemPrompt(
   modelDisplay: string,
