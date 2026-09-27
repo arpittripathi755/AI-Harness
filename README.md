@@ -1,215 +1,306 @@
-# Axiom
+# Daxiom
 
-> An autonomous AI coding agent and harness embedded directly within Visual Studio Code.
+> Autonomous AI Coding Agent & Terminal Harness
+
+Daxiom is a high-performance terminal AI coding agent and harness built with TypeScript and Node.js. It inspects repositories, reasons through complex software engineering tasks, modifies files across directories, executes terminal commands, verifies changes, and manages Git and GitHub workflows—all through an interactive Terminal User Interface (TUI) backed by an OpenAI-compatible Large Language Model (LLM) and a modular tool execution layer.
 
 ---
 
-## Overview
+## Features
 
-Axiom is an embedded VS Code AI coding agent designed to explore, understand, and modify codebases autonomously. Operating directly inside the VS Code Extension Host, Axiom pairs a rich React-based sidebar interface with an agentic loop capable of inspecting workspace files, executing terminal commands, performing precise code edits, and streaming real-time reasoning and tool actions.
+* **Terminal User Interface (TUI)**: Fast, distraction-free terminal interface with interactive prompt input, real-time streaming LLM reasoning, color-coded tool execution cards, phase indicators, and status updates.
+* **Autonomous AI Agent Loop**: Multi-turn agent loop (`ChatSession`) executing up to 25 tool roundtrips per task, feeding structured tool outputs back into context until the model completes the solution.
+* **Repository Exploration**:
+  * `list_files`: Explores directory hierarchies with depth control and glob filtering.
+  * `search_workspace`: Substring and regex text search across repository files with ripgrep-like efficiency.
+  * `read_file`: Line-range slicing and full-file reading with truncation guardrails.
+  * `read_active_editor` & `read_selection`: Inspects open files and active editor selections.
+* **Code Modification**:
+  * `create_file`: Generates new files and parent directories.
+  * `edit_file`: Performs targeted search-and-replace edits against existing files.
+  * `multi_edit`: Performs multiple contiguous or non-contiguous search-and-replace edits within a single file.
+  * `rename_file`: Moves and renames files or directories safely within the workspace.
+  * `delete_file`: Deletes obsolete or temporary files safely.
+* **Terminal Command Execution**:
+  * `run_command`: Executes shell commands, test runners (`npm test`, `pytest`), compilers, and linters with timeout handling and output capture.
+* **Autonomous Execution & Auto Edit**:
+  * Default Auto Edit mode applies changes immediately without manual blocker prompts.
+  * Plan Mode (`/plan`) provides safe read-only inspection.
+* **Live Change Management**:
+  * `ChangeManager`: Tracks staged file creations, modifications, and deletions in memory.
+  * `/diff`: Displays colorful unified diffs of all pending changes before disk writes.
+* **Context & Working Memory**:
+  * `TaskMemory`: Maintains structured knowledge (identified files, active plan, discoveries, completed steps) across turns.
+  * `ConversationManager`: Persists conversation histories across sessions.
+* **Runtime LLM Configuration**:
+  * `/model <model>`: Live switching of the active LLM model without restarting the session.
+  * `/base-url <url>`: Live switching of the LLM provider endpoint (e.g. OpenRouter, AWS Bedrock).
+  * `/config`: Safe view of current runtime settings (model, endpoint, API key status, workspace).
+* **GitHub Integration**:
+  * Detects repository remotes, default branches, and GitHub CLI authentication (`/git`).
+  * Clones remote repositories directly into isolated workspaces (`/repo <url>`).
+  * Creates feature branches, commits changes, pushes branches, and opens GitHub Pull Requests (`/pr`).
+  * `fetch_github_issue`: Fetches issue descriptions and comments directly into agent context.
+* **Web Documentation Tools**:
+  * `web_search` & `web_fetch`: Searches authoritative online documentation and fetches technical references when troubleshooting external libraries.
 
 ---
 
 ## Architecture
 
-The system consists of a dual-target architecture: an extension backend running in Node.js inside the VS Code Extension Host, and a web-based chat frontend running in a VS Code webview panel.
-
-```
-                    ┌─────────────────────────┐
-                    │          User           │
-                    └────────────┬────────────┘
-                                 │ Interacts via UI
-                                 ▼
-        ┌──────────────────────────────────────────────────┐
-        │               Axiom VS Code Extension            │
-        │  ┌────────────────────┐  ┌────────────────────┐  │
-        │  │  React 19 Webview  │  │  SidebarProvider   │  │
-        │  │  (dist/webview.js) │◀─┼─▶(dist/extension.js│  │
-        │  └────────────────────┘  └──────────┬─────────┘  │
-        └─────────────────────────────────────┼────────────┘
-                                              │
-                                              ▼
-                             ┌─────────────────────────────────┐
-                             │ ChatSession/ConversationManager │
-                             └────────────────┬────────────────┘
-                                              │
-                         ┌────────────────────┴────────────────────┐
-                         ▼                                         ▼
-              ┌─────────────────────┐                   ┌─────────────────────┐
-              │      LLMClient      │                   │     Tool Layer      │
-              │  (OpenAI-compatible │                   │  (Registry & Core   │
-              │  Streaming SSE API) │                   │    Tool Impls)      │
-              └──────────┬──────────┘                   └──────────┬──────────┘
-                         │                                         │
-                         ▼                                         ▼
-              ┌─────────────────────┐                   ┌─────────────────────┐
-              │   Lightning AI /    │                   │ VS Code Workspace / │
-              │   OpenAI Endpoint   │                   │    Local System     │
-              └─────────────────────┘                   └─────────────────────┘
+```text
+┌───────────────────────────────────────────────────────────┐
+│                 Terminal User Interface (TUI)             │
+│            (Interactive REPL & Slash Command Parser)       │
+└─────────────────────────────┬─────────────────────────────┘
+                              │
+                              ▼
+┌───────────────────────────────────────────────────────────┐
+│                        ChatSession                        │
+│          (Agent Loop, Working Memory & Orchestrator)      │
+└──────────────┬─────────────────────────────┬──────────────┘
+               │                             │
+               ▼                             ▼
+┌──────────────────────────────┐ ┌──────────────────────────┐
+│          LLMClient           │ │       ToolRegistry       │
+│    (OpenAI-Compatible SSE)   │ │ (14 Built-in Tool Impls) │
+└──────────────┬───────────────┘ └───────────┬──────────────┘
+               │                             │
+               ▼                             │
+┌──────────────────────────────┐             │
+│        ProviderClient        │             │
+│   (Endpoint & Auth Router)   │             │
+└──────┬───────────────┬───────┘             │
+       │               │                     │
+       ▼               ▼                     ▼
+┌─────────────┐ ┌─────────────┐  ┌──────────────────────────┐
+│ OpenRouter  │ │ AWS Bedrock │  │  Filesystem / ChangeSet  │
+│  Endpoint   │ │  Endpoint   │  │   & Terminal Execution   │
+└─────────────┘ └─────────────┘  └──────────────────────────┘
 ```
 
-### Components
-* **VS Code Extension Host**: Hosts the core extension logic, lifecycle management, secret storage, and command registry.
-* **React 19 Webview**: An interactive sidebar interface (`dist/webview.js`) providing conversational history, model/mode configuration, and live tool call cards.
-* **Webpack Bundles**: Dual-configured bundling via Webpack 5 compiling `src/extension.ts` (Node target) and `src/webview/index.tsx` (web target).
-* **LLM Client (`src/llm/LLMClient.ts`)**: A custom, lightweight streaming client leveraging native `fetch` with server-sent events (SSE) support and automatic retry with exponential backoff on HTTP 429 rate limits.
-* **Tool Layer (`src/tools/`)**: A modular tool execution registry dispatching actions against the workspace.
-* **Workspace APIs**: Utilizes VS Code's native file system and terminal APIs (`vscode.workspace`, `vscode.window`) with safety guardrails against path traversal.
+### Component Breakdown
+
+1. **TUI & CLI Entry Point (`src/cli.ts`, `src/cli/tui.ts`)**:
+   - Manages terminal input/output, interactive readline turns, command routing, and ANSI-colored output formatting.
+2. **ChatSession (`src/agent/ChatSession.ts`)**:
+   - Orchestrates multi-turn agent turns, system prompt synthesis, tool calling iteration, and context budget management.
+3. **LLMClient (`src/llm/LLMClient.ts`)**:
+   - Native `fetch`-based SSE client for OpenAI-compatible chat completion endpoints. Handles live model/endpoint switching.
+4. **ProviderClient (`src/llm/ProviderClient.ts`, `src/llm/providers.ts`)**:
+   - Multi-provider abstraction with automatic connectivity detection, health probing, header configuration (OpenRouter vs. AWS Bedrock), and failover.
+5. **Tool Registry (`src/tools/index.ts`, `src/tools/registry.ts`)**:
+   - Central registration and dispatch table for all tools. Tools declare strict JSON schemas and execute against the isolated `ToolContext`.
+6. **Workspace Isolation (`src/cli/workspaceIsolation.ts`)**:
+   - Ensures coding operations execute inside target repositories (or dedicated workspaces under `~/Desktop/`), preventing accidental modification of Daxiom's own installation directory.
 
 ---
 
-## Current Capabilities
+## Requirements
 
-Axiom includes the following verified tool capabilities:
-
-* **Repository Inspection & Navigation**:
-  * `list_files`: Lists directory contents with recursion depth control.
-  * `search_workspace`: Substring and regex text search across the codebase.
-  * `read_file`: Reads whole files or specific line number slices.
-  * `read_active_editor`: Inspects the currently focused document in the editor.
-  * `read_selection`: Inspects the active text selection in the editor.
-* **Code Modification**:
-  * `create_file`: Generates new files and directories.
-  * `edit_file`: Applies precise search-and-replace edits to existing files.
-  * `multi_edit`: Performs multiple contiguous or non-contiguous search-and-replace chunks across a file.
-  * `rename_file`: Moves or renames files and directories.
-  * `delete_file`: Deletes files or folders with explicit user confirmation.
-* **Environment Execution**:
-  * `run_command`: Executes commands in the VS Code integrated terminal (with user confirmation or optional auto-run).
-* **Model Configuration**:
-  * Model switching via the central model registry in `src/shared/models.ts`.
+* **Node.js**: Version 18.0.0 or higher (Node 20+ or 22+ LTS recommended).
+* **npm**: Version 9.0.0 or higher.
+* **Git**: Installed and available on your system `PATH`.
+* **Operating System**: macOS or Linux (with zsh or bash).
+* **GitHub CLI (`gh`)** *(Optional)*: Required only if using `/pr` or `fetch_github_issue` workflows with GitHub authentication.
 
 ---
 
-## Current Agent Workflow
+## Installation
 
-Axiom executes through an iterative agentic loop managed by `ChatSession`:
-
-```
-User Request
-     │
-     ▼
-[ChatSession.send()] ─── System prompt + conversation history assembled
-     │
-     ▼
-[LLMClient.stream()] ─── Streams assistant reasoning & tool-call deltas
-     │
-     ├─► If model emits text only ──────────────► [Assistant Output to User] ──► Done
-     │
-     └─► If model requests tool call(s)
-              │
-              ▼
-         [runToolCall()] ── Dispatch to ToolRegistry
-              │
-              ▼
-         [Tool Execution] ── File I/O or terminal command
-              │
-              ▼
-         [Tool Result] ── Appended as role: "tool" to conversation
-              │
-              ▼
-         (Loop back to LLMClient with updated messages up to MAX_ITERATIONS=25)
-```
-
----
-
-## Current Limitations
-
-To provide an honest evaluation, the following features are **not** present in the current release:
-
-* **No Autonomous Verification Loop**: Axiom does not automatically invoke test suites, linters, or syntax checks after file edits unless explicitly instructed by the user via terminal tools.
-* **No Autonomous Failure Recovery**: Beyond basic HTTP 429 retry backoff, there is no automatic error reflection, multi-strategy backtracking, or loop detection.
-* **No MCP (Model Context Protocol)**: Tools are currently hardcoded and registered natively in the codebase.
-* **No Git Checkpoint / Rollback**: Axiom does not create automatic Git commits, stash checkpoints, or rollback bad edits on failure.
-* **No Token / Context Compaction**: Conversation messages and tool responses are appended linearly without dynamic token budget pruning or rolling compaction.
-* **No AST / LSP Repository Navigation**: Search is text-based (ripgrep-style) without language server protocol symbol graphs or AST indexing.
-
----
-
-## Hackathon Evaluation
-
-The repository adheres to the standardized AI Harness Hackathon 2026 evaluation contract. The evaluator provides the credential externally via the environment without needing to edit source files or use GUI prompts.
-
-### Evaluation Commands
-
-1. **Set Environment Credential**:
+1. **Clone the repository**:
    ```bash
-   export AI_API_KEY="<PROVIDED_API_KEY>"
+   git clone https://github.com/arpittripathi755/AI-Harness.git
+   cd AI-Harness
    ```
 
-2. **Setup**:
+2. **Run setup**:
    ```bash
    make setup
    ```
-   *Installs locked dependencies via `npm ci` and compiles the extension bundles.*
 
-3. **Run**:
-   ```bash
-   make run
-   ```
-   *Validates `AI_API_KEY` presence, verifies build artifacts, and launches the Extension Development Host (`code --extensionDevelopmentPath=. .`).*
-
-4. **Test**:
-   ```bash
-   make test
-   ```
-   *Runs ESLint and the extension automated test suite.*
-
-5. **Clean**:
-   ```bash
-   make clean
-   ```
-   *Removes compiled build artifacts (`dist/`, `out/`).*
-
-### Model Configuration
-
-* **Default Evaluation Model**: `lightning-ai/nvidia-nemotron-3-ultra-550b-a55b` (Nemotron 550B).
-* **Text-Only Compliance**: The default model explicitly declares `supportsVision: false`. Image inputs and multimodal payload parts are omitted from API requests, ensuring strict compliance with text-only evaluation requirements.
+### What `make setup` does:
+* Runs `npm ci` to install exact locked dependencies from `package-lock.json`.
+* Runs `npm run compile` to execute Webpack 5, generating production bundles for the CLI (`dist/cli.js`), extension (`dist/extension.js`), and webview (`dist/webview.js`).
 
 ---
 
-## Local Development
+## Configuration
 
-For developers actively working on Axiom within VS Code:
+### API Key
 
-1. **Install Dependencies**:
-   ```bash
-   npm ci
-   ```
+Daxiom requires an OpenAI-compatible API key set via environment variable:
 
-2. **Build and Watch**:
-   ```bash
-   npm run watch
-   ```
+```bash
+export AI_API_KEY="<YOUR_API_KEY>"
+```
 
-3. **Launch & Debug**:
-   * Open the project in VS Code.
-   * Press **F5** (or navigate to Run & Debug and select **Run Extension**).
-   * An Extension Development Host window will open with Axiom active in the secondary sidebar.
+*(Alternatively, `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` are accepted as fallbacks).*
+
+> [!IMPORTANT]
+> Never commit API keys or credentials to version control. Daxiom will never print, log, or commit your API credentials.
+
+### Configuration Precedence
+
+Daxiom uses a deterministic configuration hierarchy:
+
+```text
+1. Runtime Slash Commands (/model, /base-url)
+      ↓
+2. Current Session Configuration
+      ↓
+3. Environment Variables (MODEL, BASE_URL)
+      ↓
+4. Default Configuration
+```
+
+### Models & Endpoints
+
+* **Default Canonical Model**:
+  ```text
+  deepseek/deepseek-v4.1-flash
+  ```
+
+* **Supported Provider Endpoints**:
+  * **OpenRouter**:
+    ```text
+    https://openrouter.ai/api/v1
+    ```
+  * **AWS Bedrock** (OpenAI-compatible runtime):
+    ```text
+    https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1
+    ```
+
+### Environment Variables Template
+
+You can copy `.env.example` as a template for local environment variables:
+
+```env
+AI_API_KEY=
+MODEL=deepseek/deepseek-v4.1-flash
+BASE_URL=https://openrouter.ai/api/v1
+```
 
 ---
 
-## Harness Roadmap
+## Running Daxiom
 
-The following enhancements are planned for upcoming iterations of the Axiom harness:
+Launch Daxiom using Make:
 
-* **Verification Engine**: Automated post-edit linting, syntax verification, and test execution before completing tasks.
-* **Failure Recovery**: Autonomous error diagnosis, strategy switching, and automatic Git checkpoints with rollback on broken builds.
-* **Model Context Protocol (MCP)**: Dynamic tool discovery and integration with external MCP servers.
-* **Planner & Task Decomposition**: Explicit two-phase planning and goal-tracking loops prior to execution.
-* **Context Budget Management**: Token-aware message compaction, tool output pruning, and sliding-window history.
-* **AST / Symbol Navigation**: Integration with LSP to enable semantic code exploration and cross-file references.
-* **Observability & Tracing**: Structured logging of agent iterations, tool latency, and token consumption metrics.
+```bash
+make run
+```
+
+### What happens when `make run` executes:
+1. Re-compiles the project (`npm run compile`) to ensure your build is always up to date.
+2. Invokes `./scripts/launch-tui.sh`:
+   - Validates that `AI_API_KEY` is present.
+   - On macOS with a GUI terminal (Terminal.app or iTerm.app), it activates the terminal and opens Daxiom in a dedicated, clean terminal window.
+   - In headless environments, CI, or when `AXIOM_HEADLESS=1` is set, it runs directly attached in the current terminal.
+3. Probes the configured LLM provider and starts the interactive TUI.
+
+### Targeting a Specific Repository
+
+You can launch Daxiom directly against a Git repository:
+
+```bash
+# Using REPO environment variable with make run
+make run REPO=https://github.com/octocat/Hello-World
+
+# Or passing arguments to the CLI
+node dist/cli.js --repo=https://github.com/octocat/Hello-World "Fix broken unit tests"
+```
+
+Daxiom clones the repository to an isolated workspace under `~/Desktop/<repo-name>` and sets it as the active workspace root.
 
 ---
 
-## Hackathon Alignment
+## TUI Usage
 
-| Responsibility | Current Axiom Implementation | Planned Enhancement |
-|---|---|---|
-| **Orchestration** | Single iterative `ChatSession` loop (up to 25 tool round-trips) | Multi-phase planner, task decomposition, and sub-agent delegates |
-| **Context** | In-memory message history with full tool outputs | Token-budgeted compaction, sliding window, and tool summary pruning |
-| **Tools** | Native workspace tools (`list`, `read`, `edit`, `search`, `run_command`) | Extensible Model Context Protocol (MCP) tool integration |
-| **Verification** | Build/lint/test infrastructure exists, but no autonomous post-edit verification | Autonomous verification engine running test/lint checks after edits |
-| **Recovery** | Basic transient HTTP 429 exponential backoff | Error reflection, strategy backtracking, and automated Git rollback |
-| **Efficiency** | Prompt guidance for concise reading and line-range slicing | Semantic symbol caching, AST indexing, and prompt caching |
+When Daxiom starts, you are presented with the status header showing the active Model, Workspace, Mode, and Provider connection:
+
+```text
+┌────────────────────────────────────────────────────────────────┐
+│  DAXIOM                                          AUTO EDIT: ON  │
+├────────────────────────────────────────────────────────────────┤
+│  Model: deepseek/deepseek-v4.1-flash    Workspace: my-repo     │
+│  Provider: OpenRouter                   Connected              │
+├────────────────────────────────────────────────────────────────┤
+```
+
+### 1. Entering a Task
+Simply type your task description at the `>` prompt:
+```text
+> Find all unused imports across src/ and remove them. Run tests to verify.
+```
+
+### 2. Observing Agent Execution
+Daxiom streams the assistant's reasoning and displays each tool action in real time:
+- `◉ Reading files… read_file (src/index.ts:1-50)`
+- `◉ Editing files… edit_file (src/index.ts)`
+- `◉ Running terminal command… run_command (npm test)`
+- `✓ 12 tests passed`
+- `✓ Changes applied immediately to disk (1 file).`
+
+### 3. Auto Edit vs. Plan Mode
+- **Auto Edit (Default)**: Full autonomous execution. File modifications are applied immediately to disk and terminal commands run automatically.
+- **Plan Mode**: Switch using `/plan`. In Plan mode, mutating tools are restricted, allowing safe read-only repository inspection and planning. Switch back using `/auto`.
+
+### 4. Managing Changes
+- Type `/diff` at any time to preview the unified diff of staged changes.
+- Type `/clear` to clear current task memory and discard staged changes.
+
+### 5. Managing Conversations
+- Type `/new` to archive the current conversation and start a clean session with fresh context.
+
+### 6. Exiting
+- Type `/exit` or `/quit` (or press `Ctrl+C`) to exit Daxiom.
+
+---
+
+## Slash Commands
+
+Daxiom supports the following runtime slash commands:
+
+| Command | Description |
+|---|---|
+| `/help` | Display all available commands and their descriptions. |
+| `/model <model-name>` | Switch the active LLM model live in the current session (e.g. `/model deepseek/deepseek-v4.1-flash`). |
+| `/base-url <url>` | Switch the active LLM provider endpoint live in the current session (e.g. `/base-url https://openrouter.ai/api/v1`). |
+| `/config` | Display the current runtime configuration safely (Model, Base URL, API key status, Mode, Workspace). |
+| `/clear` | Clear the current conversation history, task memory, and discard staged changes. |
+| `/new` | Start a completely new conversation session. |
+| `/auto` | Enable Auto Edit mode (autonomous execution with immediate disk writes). |
+| `/plan` | Enable Plan mode (read-only inspection without file mutations). |
+| `/diff` | Preview colored unified diffs of staged changes. |
+| `/status` | Display detailed agent status (current phase, read files, staged files, verification result, git details). |
+| `/git` | Display repository remote URL, owner/repo, branch, and GitHub auth status. |
+| `/repo <url>` | Clone a remote GitHub repository to `~/Desktop/` and switch the active workspace. |
+| `/pr` | Commit accepted changes, push a feature branch to the remote, and open a GitHub Pull Request. |
+| `/models` | List built-in model presets and aliases. |
+| `/exit`, `/quit` | Exit the Daxiom application. |
+
+---
+
+## Testing & Quality
+
+To run the automated test suite and linter:
+
+```bash
+# Run ESLint and all unit tests
+make test
+
+# Or run separately:
+npm run lint
+npm run compile-tests
+```
+
+Unit tests cover the provider layer, LLM client streaming, SSE decoding, tool execution, workspace safety boundaries, and cancellation handling.
+
+---
+
+## Security & Safety Guardrails
+
+* **No Credential Leakage**: API credentials from `AI_API_KEY` are never printed in the TUI, never displayed by `/config`, and never written to logs or error messages.
+* **Workspace Isolation**: Agent filesystem operations are strictly confined within the selected repository workspace, preventing accidental path traversal outside the project.
+* **Sensitive File Protection**: Modifications to critical environment files (such as `.env` or system configurations) are blocked or strictly guarded.

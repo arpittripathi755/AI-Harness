@@ -11,9 +11,7 @@ import { createToolRegistry } from "./tools";
 import type { ToolContext } from "./tools/types";
 import { ChangeManager } from "./tools/changes";
 import { resolvePathInWorkspace, toRelative } from "./tools/workspace";
-import { DEFAULT_BASE_URL } from "./config";
 import {
-  DEFAULT_MODEL_ID,
   getModelByApiId,
   MODELS,
   resolveModelId,
@@ -21,8 +19,16 @@ import {
 import { TerminalUI, colors } from "./cli/tui";
 import { WorkspaceIsolation } from "./cli/workspaceIsolation";
 import { GitHubManager } from "./git/GitHubManager";
+import { LLMClient } from "./llm/LLMClient";
+import {
+  detectProviders,
+  buildProviderClient,
+  type ProviderClient,
+} from "./llm/ProviderClient";
+import { CANONICAL_MODEL } from "./llm/providers";
 
 function getCliApiKey(): string | undefined {
+  // AI_API_KEY is the canonical credential — never logged or displayed.
   return (
     process.env.AI_API_KEY?.trim() ||
     process.env.DEEPSEEK_API_KEY?.trim() ||
@@ -30,19 +36,7 @@ function getCliApiKey(): string | undefined {
   );
 }
 
-function getCliBaseUrl(): string {
-  const raw =
-    process.env.AI_BASE_URL?.trim() ||
-    process.env.DEEPSEEK_BASE_URL?.trim() ||
-    process.env.OPENAI_BASE_URL?.trim() ||
-    DEFAULT_BASE_URL;
-  return raw.replace(/\/+$/, "") + "/";
-}
 
-function getCliModelId(): string {
-  const raw = process.env.AI_MODEL?.trim() || process.env.MODEL_ID?.trim();
-  return resolveModelId(raw);
-}
 
 async function main(): Promise<void> {
   const apiKey = getCliApiKey();
@@ -57,8 +51,38 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const baseUrl = getCliBaseUrl();
-  let currentModelId = getCliModelId();
+  // Deterministic configuration priority:
+  // Runtime command -> Session configuration -> Environment configuration -> Default configuration
+  const envModel = process.env.MODEL?.trim() || process.env.AI_MODEL?.trim();
+  const envBaseUrl =
+    process.env.BASE_URL?.trim() ||
+    process.env.AI_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim();
+
+  // ── Provider Detection ──────────────────────────────────────────────────────
+  // Probe configured or default providers (OpenRouter, AWS Bedrock). The API key is never logged.
+  console.log("Detecting LLM providers...");
+  let providerClient: ProviderClient;
+  try {
+    const detection = await detectProviders(apiKey, undefined, envBaseUrl, envModel);
+    for (const s of detection.statuses) {
+      if (s.available) {
+        console.log(`  ✓ ${s.name}: available`);
+      } else {
+        // Error details must never include the raw API key
+        console.log(`  ✗ ${s.name}: unavailable`);
+      }
+    }
+    providerClient = buildProviderClient(detection, apiKey);
+    console.log(`  → Using: ${providerClient.providerName}`);
+  } catch (err: any) {
+    console.error(`\n[DAXIOM] Fatal: ${err.message}`);
+    process.exit(1);
+  }
+
+  // Use the environment model or default canonical model as the active model ID.
+  // Declared as `let` so the /model slash command can switch it live.
+  let currentModelId = envModel ? resolveModelId(envModel) : CANONICAL_MODEL;
   let allowMutations = true; // Auto Edit is enabled by default in evaluation mode!
 
   // 1. Host / Application Root: where DAXIOM itself is installed.
@@ -117,14 +141,18 @@ async function main(): Promise<void> {
   const modelInfo = getModelByApiId(currentModelId);
   const modelDisplayName = modelInfo?.displayName ?? currentModelId;
 
-  let session = ChatSession.create(
-    { baseUrl, model: currentModelId, apiKey },
+  // Build the LLMClient wrapping the selected ProviderClient
+  const llmClientForSession = LLMClient.fromProviderClient(providerClient, apiKey);
+
+  let session = new (ChatSession as any)(
+    llmClientForSession,
     registry,
     toolContext,
     path.basename(defaultWorkspace),
     allowMutations,
+    currentModelId,
     chats.active.history,
-  );
+  ) as ChatSession;
 
   /**
    * Clone a GitHub repository to the Desktop and switch the session workspace.
@@ -394,14 +422,50 @@ async function main(): Promise<void> {
         return true;
       }
       if (cmd === "/model") {
-        if (!arg) {
-          tui.printNotice(`Current model: ${currentModelId}`);
+        const targetModel = arg.trim();
+        if (!targetModel) {
+          tui.printError("Usage: /model <model-name>");
           return true;
         }
-        currentModelId = resolveModelId(arg);
+        currentModelId = resolveModelId(targetModel);
+        process.env.MODEL = currentModelId;
+        process.env.AI_MODEL = currentModelId;
         session.setModel(currentModelId);
-        const name = getModelByApiId(currentModelId)?.displayName ?? currentModelId;
-        tui.printNotice(`Model switched to: ${name} (${currentModelId})`);
+        providerClient.setModel(currentModelId);
+        tui.printSuccess(`Model changed to ${currentModelId}`);
+        return true;
+      }
+      if (cmd === "/base-url") {
+        const targetUrl = arg.trim();
+        if (!targetUrl) {
+          tui.printError("Usage: /base-url <base-url>");
+          return true;
+        }
+        try {
+          const parsed = new URL(targetUrl);
+          if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error("Protocol must be http: or https:");
+          }
+        } catch {
+          tui.printError(`Invalid URL: ${targetUrl}. Must be a valid http:// or https:// URL.`);
+          return true;
+        }
+        process.env.BASE_URL = targetUrl;
+        process.env.AI_BASE_URL = targetUrl;
+        session.setEndpoint(targetUrl, apiKey!);
+        providerClient.setBaseUrl(targetUrl);
+        tui.printSuccess("Base URL changed");
+        tui.printSuccess(`Provider endpoint: ${targetUrl}`);
+        return true;
+      }
+      if (cmd === "/config") {
+        const activeBaseUrl = providerClient.providerBaseUrl.replace(/\/+$/, "");
+        console.log(`\n${colors.bold}${colors.cyan}DAXIOM CONFIGURATION${colors.reset}\n`);
+        console.log(`${colors.bold}Model:${colors.reset}\n${currentModelId}\n`);
+        console.log(`${colors.bold}Base URL:${colors.reset}\n${activeBaseUrl}\n`);
+        console.log(`${colors.bold}API Key:${colors.reset}\n${apiKey ? `${colors.green}Configured ✓${colors.reset}` : `${colors.red}Missing ✗${colors.reset}`}\n`);
+        console.log(`${colors.bold}Auto Edit:${colors.reset}\n${allowMutations ? "ON" : "OFF"}\n`);
+        console.log(`${colors.bold}Workspace:${colors.reset}\n${currentWorkspacePath}\n`);
         return true;
       }
       if (cmd === "/models") {
@@ -418,22 +482,22 @@ async function main(): Promise<void> {
         return true;
       }
       if (cmd === "/help") {
-        tui.printNotice(
-          "Commands:\n" +
-          "  /diff        - Preview staged ChangeSet diff\n" +
-          "  /status      - Show session status, read/staged files, git & auth details\n" +
-          "  /clear       - Clear current task state and discard staged overlay\n" +
-          "  /pr          - Commit accepted changes, push branch, and create GitHub PR\n" +
-          "  /git         - Show repository, branch, and remote details\n" +
-          "  /auto        - Enable Auto Edit mode (autonomous execution, default)\n" +
-          "  /plan        - Enable Plan mode (read-only inspection)\n" +
-          "  /model <id>  - Switch model (ultra, deepseek-v4-pro, deepseek-flash)\n" +
-          "  /models      - List available models\n" +
-          "  /repo <url>  - Clone a GitHub repo to Desktop and switch workspace\n" +
-          "  /new         - Start fresh conversation\n" +
-          "  /exit, /quit - Exit Daxiom TUI\n" +
-          "  /help        - Show this help message"
-        );
+        console.log(`\n${colors.bold}${colors.cyan}Available commands:${colors.reset}\n`);
+        console.log(`  ${colors.bold}/help${colors.reset}\n    Show available commands.\n`);
+        console.log(`  ${colors.bold}/model <model>${colors.reset}\n    Change the active AI model.\n`);
+        console.log(`  ${colors.bold}/base-url <url>${colors.reset}\n    Change the active LLM provider endpoint.\n`);
+        console.log(`  ${colors.bold}/config${colors.reset}\n    Show current configuration.\n`);
+        console.log(`  ${colors.bold}/clear${colors.reset}\n    Clear the current conversation.\n`);
+        console.log(`  ${colors.bold}/new${colors.reset}\n    Start a new conversation.\n`);
+        console.log(`  ${colors.bold}/auto${colors.reset}\n    Enable Auto Edit mode (autonomous execution).\n`);
+        console.log(`  ${colors.bold}/plan${colors.reset}\n    Enable Plan mode (read-only inspection).\n`);
+        console.log(`  ${colors.bold}/diff${colors.reset}\n    Preview staged ChangeSet diff.\n`);
+        console.log(`  ${colors.bold}/status${colors.reset}\n    Show session status, read/staged files, and git details.\n`);
+        console.log(`  ${colors.bold}/git${colors.reset}\n    Show repository, branch, and remote details.\n`);
+        console.log(`  ${colors.bold}/repo <url>${colors.reset}\n    Clone a GitHub repo to Desktop and switch workspace.\n`);
+        console.log(`  ${colors.bold}/pr${colors.reset}\n    Commit accepted changes, push branch, and create GitHub PR.\n`);
+        console.log(`  ${colors.bold}/models${colors.reset}\n    List available models.\n`);
+        console.log(`  ${colors.bold}/exit${colors.reset}\n    Exit Daxiom.\n`);
         return true;
       }
       if (cmd === "/repo") {
@@ -510,7 +574,7 @@ async function main(): Promise<void> {
   }
 
   // Print TUI header with active workspace name (Desktop by default, or target repo if switched)
-  tui.printHeader(allowMutations, modelDisplayName, currentWorkspacePath);
+  tui.printHeader(allowMutations, modelDisplayName, currentWorkspacePath, providerClient.providerName);
 
   console.log(`${colors.dim}  Application Root:  ${applicationRoot}${colors.reset}`);
   console.log(`${colors.dim}  Default Workspace: ${defaultWorkspace}${colors.reset}`);

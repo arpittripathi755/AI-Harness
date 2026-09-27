@@ -42,7 +42,7 @@ export class TerminalUI {
     this.width = getTerminalWidth();
   }
 
-  printHeader(autoEdit: boolean, modelName: string, workspacePath: string): void {
+  printHeader(autoEdit: boolean, modelName: string, workspacePath: string, providerName?: string): void {
     const w = this.width;
     const top = "┌" + "─".repeat(w) + "┐";
     const mid = "├" + "─".repeat(w) + "┤";
@@ -62,6 +62,14 @@ export class TerminalUI {
     console.log(titleLine);
     console.log(mid);
     console.log(infoLine);
+
+    if (providerName) {
+      const provLeft = `  ${colors.dim}Provider: ${colors.green}${providerName}${colors.reset}`;
+      const statusRight = `${colors.dim}${colors.green}Connected${colors.reset}  `;
+      const provLine = "│" + padBetween(provLeft, statusRight, w) + "│";
+      console.log(provLine);
+    }
+
     console.log(mid);
   }
 
@@ -163,6 +171,14 @@ export class TerminalUI {
       this.assistantActive = false;
     }
     console.log(`  ${colors.red}✗ ${message}${colors.reset}`);
+  }
+
+  printSuccess(message: string): void {
+    if (this.assistantActive) {
+      console.log("");
+      this.assistantActive = false;
+    }
+    console.log(`  ${colors.green}✓${colors.reset} ${message}`);
   }
 
   printNotice(message: string): void {

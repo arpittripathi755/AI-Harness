@@ -10,6 +10,7 @@ import type {
 import { modelApi } from "../shared/models";
 import { streamResponses } from "./responses";
 import { fetchWithRetry } from "./http";
+import type { ProviderClient } from "./ProviderClient";
 
 export interface LLMClientOptions {
   baseUrl: string;
@@ -31,10 +32,29 @@ export interface StreamOptions {
  */
 export class LLMClient {
   private model: string;
+  /** Optional delegate; when set, all stream() calls route through this. */
+  private providerClient: ProviderClient | undefined;
 
   constructor(private readonly opts: LLMClientOptions) {
     this.model = opts.model;
     this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+  }
+
+  /**
+   * Create an LLMClient that delegates streaming to a ProviderClient.
+   * The canonical model from the provider is used for all metadata lookups.
+   */
+  static fromProviderClient(
+    providerClient: ProviderClient,
+    apiKey: string,
+  ): LLMClient {
+    const instance = new LLMClient({
+      baseUrl: providerClient.providerBaseUrl,
+      model: providerClient.canonicalModel,
+      apiKey,
+    });
+    instance.providerClient = providerClient;
+    return instance;
   }
 
   private normalizeEndpoint(baseUrl: string, apiKey: string): string {
@@ -48,12 +68,22 @@ export class LLMClient {
   /** Change the model used for subsequent requests (live, no restart). */
   setModel(model: string): void {
     this.model = model;
+    this.providerClient?.setModel(model);
   }
 
   /** Update the base URL / API key for subsequent requests. */
   setEndpoint(baseUrl: string, apiKey: string): void {
     this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
     this.opts.apiKey = apiKey;
+    this.providerClient?.setBaseUrl(baseUrl);
+  }
+
+  getModel(): string {
+    return this.providerClient ? this.providerClient.model : this.model;
+  }
+
+  getBaseUrl(): string {
+    return this.providerClient ? this.providerClient.providerBaseUrl : this.opts.baseUrl;
   }
 
   /**
@@ -117,6 +147,15 @@ export class LLMClient {
     messages: ChatMessage[],
     { signal, tools, onRetry }: StreamOptions = {},
   ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
+    // Delegate to ProviderClient when one is active (dual-provider path)
+    if (this.providerClient) {
+      return yield* this.providerClient.stream(messages, {
+        signal,
+        tools,
+        onRetry,
+      });
+    }
+
     // Models that require the OpenAI Responses API (e.g. GPT-5.5) use a separate
     // adapter. The chat/completions path below is unchanged for every other model.
     if (modelApi(this.model) === "responses") {

@@ -42,6 +42,12 @@ export interface ToolContext {
   autoEdit?: boolean;
 
   /**
+   * Optional AbortSignal that tools can check to cancel in-progress work.
+   * Propagated from the current turn's AbortController.
+   */
+  signal?: AbortSignal;
+
+  /**
    * In-memory staging overlay managing virtual changes.
    */
   changeManager?: import("./changes").ChangeManager;

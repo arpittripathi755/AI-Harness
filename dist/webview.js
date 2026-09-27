@@ -17482,12 +17482,24 @@ __webpack_require__.r(__webpack_exports__);
  * Central Model Registry — the single source of truth mapping user-facing display
  * names to Lightning API model IDs. Imported by BOTH bundles: the webview shows
  * `displayName`, the extension sends `apiModelId`. Add/remove a model here only.
+ *
+ * The canonical evaluation model is "deepseek/deepseek-v4.1-flash". It is kept in
+ * sync with CANONICAL_MODEL in src/llm/providers.ts — do not change one without
+ * the other.
  */
 const MODELS = [
+    /**
+     * Canonical evaluation model — matches CANONICAL_MODEL in src/llm/providers.ts.
+     * This MUST remain "deepseek/deepseek-v4.1-flash".
+     */
+    {
+        displayName: "deepseek/deepseek-v4.1-flash",
+        apiModelId: "deepseek/deepseek-v4.1-flash",
+        supportsVision: false,
+    },
     {
         displayName: "ultra",
         apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
-        // Text-only model; omit images rather than risk a 400.
         supportsVision: false,
     },
     {
@@ -17501,8 +17513,11 @@ const MODELS = [
         supportsVision: false,
     },
 ];
-/** Default evaluation model (text-only, supportsVision: false). */
-const DEFAULT_MODEL_ID = "nvidia/nemotron-3-ultra-550b-a55b";
+/**
+ * Default evaluation model — the canonical DeepSeek model.
+ * Must stay in sync with CANONICAL_MODEL in src/llm/providers.ts.
+ */
+const DEFAULT_MODEL_ID = "deepseek/deepseek-v4.1-flash";
 function getModelByApiId(apiModelId) {
     const resolved = resolveModelId(apiModelId);
     return MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === apiModelId);
@@ -17521,26 +17536,30 @@ function modelApi(apiModelId) {
 }
 /** Resolve a stored/selected api id to a valid one, falling back to the default. */
 function resolveModelId(apiModelId) {
-    if (!apiModelId) {
+    const trimmed = apiModelId?.trim();
+    if (!trimmed) {
         return DEFAULT_MODEL_ID;
     }
-    if (MODELS.some((m) => m.apiModelId === apiModelId)) {
-        return apiModelId;
+    if (MODELS.some((m) => m.apiModelId === trimmed)) {
+        return trimmed;
     }
-    if (apiModelId === "ultra" ||
-        apiModelId === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
+    // Aliases for the canonical evaluation model
+    if (trimmed === "deepseek-v4.1-flash" ||
+        trimmed === "deepseek-flash" ||
+        trimmed === "deepseek-ai/deepseek-v4.1-flash" ||
+        trimmed === "deepseek v4") {
+        return "deepseek/deepseek-v4.1-flash";
+    }
+    if (trimmed === "ultra" ||
+        trimmed === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
         return "nvidia/nemotron-3-ultra-550b-a55b";
     }
-    if (apiModelId === "deepseek-v4-pro" ||
-        apiModelId === "deepseek-ai/deepseek-v4-pro") {
+    if (trimmed === "deepseek-v4-pro" ||
+        trimmed === "deepseek-ai/deepseek-v4-pro") {
         return "deepseek-v4-pro";
     }
-    if (apiModelId === "deepseek-flash" ||
-        apiModelId === "deepseek-ai/deepseek-v4.1-flash" ||
-        apiModelId === "deepseek v4") {
-        return "deepseek-flash";
-    }
-    return DEFAULT_MODEL_ID;
+    // If an explicit model name was supplied, respect it rather than overwriting
+    return trimmed;
 }
 
 

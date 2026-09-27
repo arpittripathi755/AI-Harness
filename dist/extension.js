@@ -449,7 +449,7 @@ access files inside this workspace unless the user explicitly approves otherwise
 - Inspect the workspace, search, and read the files you need.
 - Create, edit, rename, and multi-edit files directly to accomplish the goal.
 - Keep using tools until the task is fully done, then summarize what you changed.
-- Only deletions and terminal commands require the user to confirm.
+- Work completely autonomously without asking the user for confirmation or permission.
 - IMPORTANT: After making file changes, run the test/build command if one exists to verify correctness.`
         : `MODE: Plan (READ-ONLY). You currently have ONLY read-only tools; editing tools are
 disabled and will be refused. Do the following:
@@ -1022,10 +1022,25 @@ const http_1 = __webpack_require__(7);
 class LLMClient {
     opts;
     model;
+    /** Optional delegate; when set, all stream() calls route through this. */
+    providerClient;
     constructor(opts) {
         this.opts = opts;
         this.model = opts.model;
         this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+    }
+    /**
+     * Create an LLMClient that delegates streaming to a ProviderClient.
+     * The canonical model from the provider is used for all metadata lookups.
+     */
+    static fromProviderClient(providerClient, apiKey) {
+        const instance = new LLMClient({
+            baseUrl: providerClient.providerBaseUrl,
+            model: providerClient.canonicalModel,
+            apiKey,
+        });
+        instance.providerClient = providerClient;
+        return instance;
     }
     normalizeEndpoint(baseUrl, apiKey) {
         const trimmed = (baseUrl || "").trim();
@@ -1037,11 +1052,19 @@ class LLMClient {
     /** Change the model used for subsequent requests (live, no restart). */
     setModel(model) {
         this.model = model;
+        this.providerClient?.setModel(model);
     }
     /** Update the base URL / API key for subsequent requests. */
     setEndpoint(baseUrl, apiKey) {
         this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
         this.opts.apiKey = apiKey;
+        this.providerClient?.setBaseUrl(baseUrl);
+    }
+    getModel() {
+        return this.providerClient ? this.providerClient.model : this.model;
+    }
+    getBaseUrl() {
+        return this.providerClient ? this.providerClient.providerBaseUrl : this.opts.baseUrl;
     }
     /**
      * Translate the model ID if required by the target provider to prevent errors.
@@ -1091,6 +1114,14 @@ class LLMClient {
      * generator RETURNS the assembled {@link AssistantTurn} (content + tool calls).
      */
     async *stream(messages, { signal, tools, onRetry } = {}) {
+        // Delegate to ProviderClient when one is active (dual-provider path)
+        if (this.providerClient) {
+            return yield* this.providerClient.stream(messages, {
+                signal,
+                tools,
+                onRetry,
+            });
+        }
         // Models that require the OpenAI Responses API (e.g. GPT-5.5) use a separate
         // adapter. The chat/completions path below is unchanged for every other model.
         if ((0, models_1.modelApi)(this.model) === "responses") {
@@ -1255,6 +1286,10 @@ async function safeReadText(response) {
  * Central Model Registry — the single source of truth mapping user-facing display
  * names to Lightning API model IDs. Imported by BOTH bundles: the webview shows
  * `displayName`, the extension sends `apiModelId`. Add/remove a model here only.
+ *
+ * The canonical evaluation model is "deepseek/deepseek-v4.1-flash". It is kept in
+ * sync with CANONICAL_MODEL in src/llm/providers.ts — do not change one without
+ * the other.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.DEFAULT_MODEL_ID = exports.MODELS = void 0;
@@ -1264,10 +1299,18 @@ exports.modelSupportsVision = modelSupportsVision;
 exports.modelApi = modelApi;
 exports.resolveModelId = resolveModelId;
 exports.MODELS = [
+    /**
+     * Canonical evaluation model — matches CANONICAL_MODEL in src/llm/providers.ts.
+     * This MUST remain "deepseek/deepseek-v4.1-flash".
+     */
+    {
+        displayName: "deepseek/deepseek-v4.1-flash",
+        apiModelId: "deepseek/deepseek-v4.1-flash",
+        supportsVision: false,
+    },
     {
         displayName: "ultra",
         apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
-        // Text-only model; omit images rather than risk a 400.
         supportsVision: false,
     },
     {
@@ -1281,8 +1324,11 @@ exports.MODELS = [
         supportsVision: false,
     },
 ];
-/** Default evaluation model (text-only, supportsVision: false). */
-exports.DEFAULT_MODEL_ID = "nvidia/nemotron-3-ultra-550b-a55b";
+/**
+ * Default evaluation model — the canonical DeepSeek model.
+ * Must stay in sync with CANONICAL_MODEL in src/llm/providers.ts.
+ */
+exports.DEFAULT_MODEL_ID = "deepseek/deepseek-v4.1-flash";
 function getModelByApiId(apiModelId) {
     const resolved = resolveModelId(apiModelId);
     return exports.MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === apiModelId);
@@ -1301,26 +1347,30 @@ function modelApi(apiModelId) {
 }
 /** Resolve a stored/selected api id to a valid one, falling back to the default. */
 function resolveModelId(apiModelId) {
-    if (!apiModelId) {
+    const trimmed = apiModelId?.trim();
+    if (!trimmed) {
         return exports.DEFAULT_MODEL_ID;
     }
-    if (exports.MODELS.some((m) => m.apiModelId === apiModelId)) {
-        return apiModelId;
+    if (exports.MODELS.some((m) => m.apiModelId === trimmed)) {
+        return trimmed;
     }
-    if (apiModelId === "ultra" ||
-        apiModelId === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
+    // Aliases for the canonical evaluation model
+    if (trimmed === "deepseek-v4.1-flash" ||
+        trimmed === "deepseek-flash" ||
+        trimmed === "deepseek-ai/deepseek-v4.1-flash" ||
+        trimmed === "deepseek v4") {
+        return "deepseek/deepseek-v4.1-flash";
+    }
+    if (trimmed === "ultra" ||
+        trimmed === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
         return "nvidia/nemotron-3-ultra-550b-a55b";
     }
-    if (apiModelId === "deepseek-v4-pro" ||
-        apiModelId === "deepseek-ai/deepseek-v4-pro") {
+    if (trimmed === "deepseek-v4-pro" ||
+        trimmed === "deepseek-ai/deepseek-v4-pro") {
         return "deepseek-v4-pro";
     }
-    if (apiModelId === "deepseek-flash" ||
-        apiModelId === "deepseek-ai/deepseek-v4.1-flash" ||
-        apiModelId === "deepseek v4") {
-        return "deepseek-flash";
-    }
-    return exports.DEFAULT_MODEL_ID;
+    // If an explicit model name was supplied, respect it rather than overwriting
+    return trimmed;
 }
 
 
@@ -1589,6 +1639,9 @@ async function fetchWithRetry(url, init, { retries = 5, signal, onRetry } = {}) 
     }
 }
 function backoffMs(attempt) {
+    if (process.env.NODE_ENV === "test" || process.env.FAST_RETRY === "1") {
+        return 1;
+    }
     const base = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
     return base + Math.floor(Math.random() * 400); // jitter to avoid thundering herd
 }
@@ -4426,6 +4479,10 @@ exports.runCommandTool = {
             if (!approved) {
                 throw new types_1.ToolDeniedError(`Running "${command}" was declined by the user.`);
             }
+        }
+        // Ensure any staged changes are applied to disk so shell commands (test, build, lint, git) see them
+        if (ctx.changeManager?.hasStaged()) {
+            await ctx.changeManager.applyChangeSet();
         }
         const cwd = ctx.workspaceRoot.fsPath;
         console.log(`[run_command] command="${command}" cwd="${cwd}"`);

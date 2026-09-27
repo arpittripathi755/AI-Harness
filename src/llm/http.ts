@@ -81,6 +81,9 @@ export async function fetchWithRetry(
 }
 
 function backoffMs(attempt: number): number {
+  if (process.env.NODE_ENV === "test" || process.env.FAST_RETRY === "1") {
+    return 1;
+  }
   const base = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** attempt);
   return base + Math.floor(Math.random() * 400); // jitter to avoid thundering herd
 }
