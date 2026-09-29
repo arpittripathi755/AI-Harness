@@ -17,6 +17,35 @@ export const PHASE_BUDGET: Record<CallPhase, number> = {
 };
 
 /**
+ * Initial derived reasoning floor (2,560 tokens), calibrated from Phase 0 empirical
+ * p95 measurement of 2,110 tokens on tool-call turns plus a ~20% safety margin (approximately 2,110 * 1.2).
+ * Note: this is a configurable derived starting configuration, not a universal guarantee of correctness.
+ */
+export const DERIVED_REASONING_FLOOR = 2560;
+
+/**
+ * Read the minimum reasoning floor from DAXIOM_MIN_REASONING_FLOOR.
+ * Returns 0 if unset, "0", or "false" (disabled by default).
+ * When "1" or "true", returns DERIVED_REASONING_FLOOR (2560).
+ * If a valid positive integer is provided, returns that value.
+ */
+export function getReasoningFloor(): number {
+  const proc = typeof globalThis !== "undefined" ? (globalThis as any).process : undefined;
+  const raw = proc?.env?.DAXIOM_MIN_REASONING_FLOOR?.trim();
+  if (!raw || raw === "0" || raw === "false") {
+    return 0;
+  }
+  if (raw === "1" || raw === "true") {
+    return DERIVED_REASONING_FLOOR;
+  }
+  const val = Number(raw);
+  if (Number.isFinite(val) && val > 0 && Number.isInteger(val)) {
+    return val;
+  }
+  return 0;
+}
+
+/**
  * Read the hard ceiling from environment variables (MAX_TOKENS / AI_MAX_TOKENS).
  * Returns undefined if unset or invalid (invalid values do not establish a ceiling).
  */
@@ -36,9 +65,10 @@ export function getEnvCeiling(): number | undefined {
 /**
  * Compute the maximum completion tokens for a given call phase.
  *
- * Resolution order (each step can only lower the value, never raise it):
+ * Resolution order:
  * 1. Start with `override` if provided and positive, otherwise `PHASE_BUDGET[phase]`.
- * 2. Cap by the env ceiling (MAX_TOKENS / AI_MAX_TOKENS) when set. Env becomes a hard CEILING, not the default.
+ *    If floor is active and phase is tool_decision or edit and override is unset, apply floor.
+ * 2. Cap by the env ceiling (MAX_TOKENS / AI_MAX_TOKENS) when set.
  * 3. Cap by the model's maxOutputTokens if specified in model metadata.
  * 4. Validate through resolveMaxTokens so bad values never crash.
  */
@@ -53,6 +83,11 @@ export function getPhaseMaxTokens(
     override !== undefined && Number.isFinite(override) && override > 0
       ? override
       : defaultBudget;
+
+  const floor = getReasoningFloor();
+  if (floor > 0 && (phase === "tool_decision" || phase === "edit") && override === undefined) {
+    budget = Math.max(budget, floor);
+  }
 
   // Step 2: Cap by env ceiling if set
   const envCeiling = getEnvCeiling();

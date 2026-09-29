@@ -8,7 +8,16 @@
 import type { CallPhase } from "./tokenBudget";
 import { getModelByApiId } from "../shared/models";
 import { estimateMessagesTokens, estimateTokens } from "./contextBudget";
-import type { ChatMessage, AssistantTurn } from "./types";
+import type { ChatMessage, AssistantTurn, ToolCall } from "./types";
+import { PHASE_BUDGET, getEnvCeiling } from "./tokenBudget";
+import {
+  isUsageMarkEnabled,
+  resolveUsageMark,
+  defaultCalibrationTracker,
+  CalibrationTracker,
+  type UsageMark,
+  type RawProviderUsage,
+} from "./usageMark";
 
 export interface UsageRecord {
   phase?: CallPhase;
@@ -18,6 +27,7 @@ export interface UsageRecord {
   costUsd: number;
   timestamp: number;
   estimated?: boolean;
+  usageMark?: UsageMark;
 }
 
 export interface UsageTotals {
@@ -32,56 +42,242 @@ export interface SessionSummary {
   byPhase: Record<string, UsageTotals>;
   byModel: Record<string, UsageTotals>;
   recordCount: number;
+  p95ToolCallCompletionTokens?: number;
 }
 
 export interface TurnForUsage {
   content: string | null;
   toolCalls?: any[];
   finishReason?: string | null;
+  usage?: RawProviderUsage;
+}
+
+export interface ToolResultBreakdown {
+  run_command: number;
+  read_file: number;
+  search: number;
+  list: number;
+  other: number;
+  total: number;
+}
+
+/**
+ * Classify a tool name into one of the required measurement buckets.
+ */
+export function classifyToolBucket(toolName: string): keyof Omit<ToolResultBreakdown, "total"> {
+  const lower = toolName.toLowerCase();
+  if (lower === "run_command" || lower === "runcommand") {
+    return "run_command";
+  }
+  if (
+    lower === "read_file" ||
+    lower === "readfile" ||
+    lower === "readactiveeditor" ||
+    lower === "readselection"
+  ) {
+    return "read_file";
+  }
+  if (
+    lower === "search_workspace" ||
+    lower === "searchfiles" ||
+    lower === "grep" ||
+    lower.includes("search") ||
+    lower.includes("grep")
+  ) {
+    return "search";
+  }
+  if (lower === "list_files" || lower === "listfiles" || lower.includes("list")) {
+    return "list";
+  }
+  return "other";
+}
+
+/**
+ * Compute the distribution of tool-result tokens in message history by tool bucket.
+ */
+export function analyzeToolResultTokens(messages: ChatMessage[]): ToolResultBreakdown {
+  const breakdown: ToolResultBreakdown = {
+    run_command: 0,
+    read_file: 0,
+    search: 0,
+    list: 0,
+    other: 0,
+    total: 0,
+  };
+
+  // Map tool_call_id to tool name
+  const callIdToName = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc.id && tc.function?.name) {
+          callIdToName.set(tc.id, tc.function.name);
+        }
+      }
+    }
+  }
+
+  for (const msg of messages) {
+    if (msg.role === "tool") {
+      const toolName = (msg.tool_call_id && callIdToName.get(msg.tool_call_id)) || "other";
+      const bucket = classifyToolBucket(toolName);
+      let text = "";
+      if (typeof msg.content === "string") {
+        text = msg.content;
+      } else if (msg.content) {
+        text = JSON.stringify(msg.content);
+      }
+      const tok = estimateTokens(text);
+      breakdown[bucket] += tok;
+      breakdown.total += tok;
+    }
+  }
+
+  return breakdown;
 }
 
 export class UsageTracker {
+  calibrationTracker: CalibrationTracker = defaultCalibrationTracker;
   private records: UsageRecord[] = [];
+  private toolCallTurnCompletions: number[] = [];
   private warned80 = false;
 
   /** Reset all usage tracking data for a new session. */
-  reset(): void {
+  reset(resetCalibration = false): void {
     this.records = [];
+    this.toolCallTurnCompletions = [];
     this.warned80 = false;
+    if (resetCalibration) {
+      this.calibrationTracker.reset();
+    }
+  }
+
+  /** Calculate p95 completion side tokens for tool-call turns. */
+  getP95ToolCallTokens(): number {
+    if (this.toolCallTurnCompletions.length === 0) {
+      return 0;
+    }
+    const sorted = [...this.toolCallTurnCompletions].sort((a, b) => a - b);
+    const p95Idx = Math.ceil(0.95 * sorted.length) - 1;
+    return sorted[Math.max(0, p95Idx)];
   }
 
   /**
-   * Record usage from an assistant turn. If exact usage is available from the provider,
-   * it is recorded; otherwise tokens are estimated.
+   * Record usage from an assistant turn.
+   * If UsageMark is enabled (DAXIOM_USAGE_MARK=1), applies the 3-tier hierarchy:
+   *   Provider usage (ground truth) > Calibrated estimate > Raw local estimate.
+   * If disabled, exact legacy behavior is preserved.
    */
   recordUsage(
     model: string,
     messages: ChatMessage[],
     turn: TurnForUsage,
     phase?: CallPhase,
-    rawUsage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number },
+    rawUsage?: RawProviderUsage,
   ): UsageRecord {
+    const effectiveRawUsage: RawProviderUsage | undefined = rawUsage ?? turn.usage;
     let promptTokens: number;
     let completionTokens: number;
     let estimated = false;
+    let usageMark: UsageMark | undefined;
 
-    if (
-      rawUsage &&
-      typeof rawUsage.prompt_tokens === "number" &&
-      typeof rawUsage.completion_tokens === "number"
-    ) {
-      promptTokens = rawUsage.prompt_tokens;
-      completionTokens = rawUsage.completion_tokens;
+    if (isUsageMarkEnabled()) {
+      try {
+        const estPrompt = estimateMessagesTokens(messages);
+        const estCompletion = estimateTokens(turn.content);
+
+        const actPrompt =
+          typeof effectiveRawUsage?.prompt_tokens === "number" &&
+          Number.isFinite(effectiveRawUsage.prompt_tokens) &&
+          effectiveRawUsage.prompt_tokens >= 0
+            ? effectiveRawUsage.prompt_tokens
+            : undefined;
+
+        const actCompletion =
+          typeof effectiveRawUsage?.completion_tokens === "number" &&
+          Number.isFinite(effectiveRawUsage.completion_tokens) &&
+          effectiveRawUsage.completion_tokens >= 0
+            ? effectiveRawUsage.completion_tokens
+            : undefined;
+
+        const actTotal =
+          typeof effectiveRawUsage?.total_tokens === "number" &&
+          Number.isFinite(effectiveRawUsage.total_tokens) &&
+          effectiveRawUsage.total_tokens >= 0
+            ? effectiveRawUsage.total_tokens
+            : undefined;
+
+        // Preserve undefined when omitted: NEVER assume 0 for missing cached tokens!
+        const rawCached =
+          effectiveRawUsage?.prompt_tokens_details?.cached_tokens ??
+          effectiveRawUsage?.cached_tokens;
+        const cachedTokens =
+          typeof rawCached === "number" && Number.isFinite(rawCached) ? rawCached : undefined;
+
+        // Preserve undefined when omitted for reasoning tokens!
+        const rawReasoning =
+          effectiveRawUsage?.completion_tokens_details?.reasoning_tokens ??
+          effectiveRawUsage?.reasoning_tokens;
+        const reasoningTokens =
+          typeof rawReasoning === "number" && Number.isFinite(rawReasoning) ? rawReasoning : undefined;
+
+        usageMark = resolveUsageMark(
+          {
+            model,
+            estimatedPromptTokens: estPrompt,
+            estimatedCompletionTokens: estCompletion,
+            actualPromptTokens: actPrompt,
+            actualCompletionTokens: actCompletion,
+            actualTotalTokens: actTotal,
+            cachedTokens,
+            reasoningTokens,
+          },
+          this.calibrationTracker,
+        );
+
+        promptTokens = usageMark.promptTokens;
+        completionTokens = usageMark.completionTokens;
+        estimated = usageMark.source !== "provider";
+      } catch (err) {
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+          console.debug("[DAXIOM] UsageMark resolution failed; failing open to legacy estimation", err);
+        }
+        promptTokens = estimateMessagesTokens(messages);
+        completionTokens = estimateTokens(turn.content);
+        estimated = true;
+      }
     } else {
-      promptTokens = estimateMessagesTokens(messages);
-      completionTokens = estimateTokens(turn.content);
-      estimated = true;
+      // Legacy behavior when DAXIOM_USAGE_MARK=0 or unset
+      if (
+        effectiveRawUsage &&
+        typeof effectiveRawUsage.prompt_tokens === "number" &&
+        typeof effectiveRawUsage.completion_tokens === "number"
+      ) {
+        promptTokens = effectiveRawUsage.prompt_tokens;
+        completionTokens = effectiveRawUsage.completion_tokens;
+      } else {
+        promptTokens = estimateMessagesTokens(messages);
+        completionTokens = estimateTokens(turn.content);
+        estimated = true;
+      }
+    }
+
+    // Extract reasoning tokens if exposed
+    const reasoningTokens =
+      effectiveRawUsage?.completion_tokens_details?.reasoning_tokens ??
+      effectiveRawUsage?.reasoning_tokens;
+
+    // Track tool-call turn completion tokens
+    const hasToolCalls = Boolean(turn.toolCalls && turn.toolCalls.length > 0);
+    const totalCompletionSideTokens = completionTokens + (reasoningTokens || 0);
+    if (hasToolCalls) {
+      this.toolCallTurnCompletions.push(totalCompletionSideTokens);
     }
 
     const modelInfo = getModelByApiId(model);
     let costUsd = 0;
-    if (typeof rawUsage?.cost === "number" && Number.isFinite(rawUsage.cost)) {
-      costUsd = rawUsage.cost;
+    if (typeof effectiveRawUsage?.cost === "number" && Number.isFinite(effectiveRawUsage.cost)) {
+      costUsd = effectiveRawUsage.cost;
     } else if (modelInfo?.completionPricePerToken) {
       costUsd = completionTokens * modelInfo.completionPricePerToken;
     }
@@ -94,10 +290,94 @@ export class UsageTracker {
       costUsd,
       timestamp: Date.now(),
       estimated,
+      usageMark,
     };
 
     this.records.push(record);
+
+    // Diagnostic logging under DEBUG_TOKEN_BUDGET=1
+    if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+      this.logDiagnostics(
+        model,
+        messages,
+        turn,
+        phase,
+        effectiveRawUsage,
+        promptTokens,
+        completionTokens,
+        reasoningTokens,
+        hasToolCalls,
+        usageMark,
+      );
+    }
+
     return record;
+  }
+
+  private logDiagnostics(
+    model: string,
+    messages: ChatMessage[],
+    turn: TurnForUsage,
+    phase: CallPhase | undefined,
+    rawUsage: any,
+    promptTokens: number,
+    completionTokens: number,
+    reasoningTokens: number | undefined,
+    hasToolCalls: boolean,
+    usageMark?: UsageMark,
+  ): void {
+    const isDebug = process.env.DEBUG_TOKEN_BUDGET === "1";
+    if (!isDebug) {
+      return;
+    }
+
+    const cachedTokens =
+      rawUsage?.prompt_tokens_details?.cached_tokens ??
+      rawUsage?.cached_tokens;
+    const cacheReport =
+      typeof cachedTokens === "number"
+        ? `${cachedTokens} tokens`
+        : "cached_tokens not reported by provider";
+
+    const reasoningReport =
+      typeof reasoningTokens === "number"
+        ? `${reasoningTokens} tokens`
+        : "reasoning tokens not reported by provider / embedded in output";
+
+    const toolBreakdown = analyzeToolResultTokens(messages);
+    const p95 = this.getP95ToolCallTokens();
+
+    const phaseBudget = phase ? PHASE_BUDGET[phase] ?? 1024 : 1024;
+    const envCeiling = getEnvCeiling();
+
+    console.log(`\n[DEBUG_TOKEN_BUDGET] ── Turn Telemetry (${phase ?? "unknown"}) ──`);
+    console.log(`  Model: ${model} | FinishReason: ${turn.finishReason ?? "unknown"} | HasToolCalls: ${hasToolCalls}`);
+    console.log(`  Tokens: prompt=${promptTokens} (${cacheReport}), completion=${completionTokens}, reasoning=${reasoningReport}`);
+    console.log(`  Tool-Call Turns p95 Output Tokens: ${p95}`);
+    console.log(`  MaxTokens Investigation: phaseBudget=${phaseBudget}, envCeiling=${envCeiling ?? "unset"}, reservationFloor=512`);
+    if (usageMark) {
+      const pFact = usageMark.promptCorrectionFactor !== undefined ? usageMark.promptCorrectionFactor.toFixed(3) : "none";
+      const cFact = usageMark.completionCorrectionFactor !== undefined ? usageMark.completionCorrectionFactor.toFixed(3) : "none";
+      const pErr = usageMark.absolutePromptError !== undefined ? ` (absErr=${usageMark.absolutePromptError})` : "";
+      const cErr = usageMark.absoluteCompletionError !== undefined ? ` (absErr=${usageMark.absoluteCompletionError})` : "";
+      console.log(
+        `  UsageMark [${usageMark.source}] (confidence=${usageMark.confidence}): ` +
+        `prompt=${usageMark.promptTokens} (calFactor=${pFact}${pErr}), ` +
+        `completion=${usageMark.completionTokens} (calFactor=${cFact}${cErr}), ` +
+        `total=${usageMark.totalTokens}`
+      );
+    }
+    if (toolBreakdown.total > 0) {
+      const pct = (n: number) => ((n / toolBreakdown.total) * 100).toFixed(1);
+      console.log(
+        `  Tool-Result Distribution (total ${toolBreakdown.total} tokens): ` +
+        `run_command=${toolBreakdown.run_command} (${pct(toolBreakdown.run_command)}%), ` +
+        `read_file=${toolBreakdown.read_file} (${pct(toolBreakdown.read_file)}%), ` +
+        `search=${toolBreakdown.search} (${pct(toolBreakdown.search)}%), ` +
+        `list=${toolBreakdown.list} (${pct(toolBreakdown.list)}%), ` +
+        `other=${toolBreakdown.other} (${pct(toolBreakdown.other)}%)`
+      );
+    }
   }
 
   /** Retrieve the complete session summary aggregated overall, by phase, and by model. */
@@ -144,6 +424,7 @@ export class UsageTracker {
       byPhase,
       byModel,
       recordCount: this.records.length,
+      p95ToolCallCompletionTokens: this.getP95ToolCallTokens(),
     };
   }
 

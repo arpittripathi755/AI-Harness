@@ -241,6 +241,7 @@ export class LLMClient {
     let content = "";
     const toolAcc = new ToolCallAccumulator();
     let finishReason: string | null = null;
+    let providerUsage: AssistantTurn["usage"] | undefined;
 
     try {
       while (true) {
@@ -257,7 +258,10 @@ export class LLMClient {
 
           for (const chunk of parseSseEvent(rawEvent)) {
             if (chunk === DONE) {
-              return { content, toolCalls: toolAcc.finalize(), finishReason };
+              return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+            }
+            if (chunk.usage) {
+              providerUsage = chunk.usage;
             }
             const choice = chunk.choices?.[0];
             if (!choice) {
@@ -281,7 +285,7 @@ export class LLMClient {
       reader.releaseLock();
     }
 
-    return { content, toolCalls: toolAcc.finalize(), finishReason };
+    return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
   }
 }
 

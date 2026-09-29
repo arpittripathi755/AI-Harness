@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(18);
+const config_1 = __webpack_require__(20);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(17);
-const config_1 = __webpack_require__(18);
-const modes_1 = __webpack_require__(19);
-const tools_1 = __webpack_require__(20);
-const workspace_1 = __webpack_require__(42);
+const ConversationManager_1 = __webpack_require__(19);
+const config_1 = __webpack_require__(20);
+const modes_1 = __webpack_require__(21);
+const tools_1 = __webpack_require__(22);
+const workspace_1 = __webpack_require__(46);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -432,6 +432,7 @@ exports.getMaxToolTurns = getMaxToolTurns;
 exports.canonicalizeValue = canonicalizeValue;
 exports.canonicalizeToolCallKey = canonicalizeToolCallKey;
 exports.isReadOnlyTool = isReadOnlyTool;
+exports.buildStableSystemPrompt = buildStableSystemPrompt;
 exports.buildSystemPrompt = buildSystemPrompt;
 const LLMClient_1 = __webpack_require__(4);
 const LoopDetector_1 = __webpack_require__(9);
@@ -441,6 +442,8 @@ const TaskMemory_1 = __webpack_require__(14);
 const tokenBudget_1 = __webpack_require__(8);
 const contextBudget_1 = __webpack_require__(15);
 const usageTracker_1 = __webpack_require__(16);
+const promptPrefix_1 = __webpack_require__(18);
+const usageMark_1 = __webpack_require__(17);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 /**
@@ -506,8 +509,7 @@ function isReadOnlyTool(name, tool) {
     }
     return true;
 }
-function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection, orchestrator) {
-    // 1. Stable prefix: identical between turns for maximum prompt-cache hit rate
+function buildStableSystemPrompt(modelDisplay, workspaceName, root, allowMutations, repoProfile) {
     const ws = root
         ? `You are operating inside the user's VS Code workspace.
 Workspace: ${workspaceName ?? "(unnamed)"}
@@ -529,7 +531,7 @@ disabled and will be refused. Do the following:
 - Then explain precisely what changes you would make (which files, what edits, and why).
 - Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
-    const stablePrefix = `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
+    let prompt = `You are ${exports.AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${exports.AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
@@ -565,6 +567,32 @@ REPOSITORY CLONING & PATH NAVIGATION GUIDANCE:
 - When the user gives a repository URL and it is not already in the workspace, use \`git_clone\` first, then work inside the cloned folder.
 - Never guess file paths; always verify directory layout with \`list_files\` at the exact path first.
 - Never run a workspace-wide search when a specific repository folder is known — always pass the narrow \`path\` parameter to \`search_workspace\` and \`list_files\`.`;
+    if (repoProfile) {
+        const profileLines = [];
+        if (repoProfile.testCommand) {
+            profileLines.push(`Test command: \`${repoProfile.testCommand}\``);
+        }
+        if (repoProfile.buildCommand) {
+            profileLines.push(`Build command: \`${repoProfile.buildCommand}\``);
+        }
+        if (repoProfile.lintCommand) {
+            profileLines.push(`Lint command: \`${repoProfile.lintCommand}\``);
+        }
+        if (repoProfile.defaultBranch) {
+            profileLines.push(`Default branch: ${repoProfile.defaultBranch}`);
+        }
+        if (repoProfile.keyDirectories?.length) {
+            profileLines.push(`Key directories: ${repoProfile.keyDirectories.join(", ")}`);
+        }
+        if (profileLines.length > 0) {
+            prompt += `\n\nRepository info (session-cached):\n${profileLines.join("\n")}`;
+        }
+    }
+    return prompt;
+}
+function buildSystemPrompt(modelDisplay, workspaceName, root, allowMutations, workingMemorySection, orchestrator) {
+    // 1. Stable prefix: identical between turns for maximum prompt-cache hit rate
+    const stablePrefix = buildStableSystemPrompt(modelDisplay, workspaceName, root, allowMutations);
     // 2. Dynamic/volatile suffix: placed at the end so it never invalidates the stable prefix cache
     const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
     let phaseBlock = "";
@@ -648,6 +676,8 @@ class ChatSession {
     usageTracker = new usageTracker_1.UsageTracker();
     /** Session cache for duplicate read-only tool calls. */
     readOnlyToolCache = new Map();
+    /** Tracker for prompt prefix stability and invalidation reasons. */
+    prefixTracker = new promptPrefix_1.PromptPrefixTracker();
     constructor(client, registry, ctx, workspaceName, allowMutations, initialModelId, seedHistory, initialMemory) {
         this.client = client;
         this.registry = registry;
@@ -678,7 +708,24 @@ class ChatSession {
         return this.taskMemory;
     }
     systemPrompt() {
+        if ((0, promptPrefix_1.isStablePromptPrefixEnabled)()) {
+            return buildStableSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations, this.repoProfile);
+        }
         return buildSystemPrompt(this.modelDisplay, this.workspaceName, this.ctx.workspaceRoot?.fsPath, this.allowMutations, this.taskMemory.formatForSystemPrompt(), this.orchestrator ?? undefined);
+    }
+    /** Format dynamic task phase and verification gate information for ephemeral injection. */
+    formatOrchestratorPhase() {
+        if (!this.orchestrator) {
+            return "";
+        }
+        let phaseBlock = `Current task phase: ${Orchestrator_1.PHASE_LABELS[this.orchestrator.phase]}`;
+        if (this.orchestrator.testCommand &&
+            (this.orchestrator.phase === "EDITING" || this.orchestrator.phase === "VERIFYING")) {
+            phaseBlock +=
+                `\nVerification gate: You MUST run \`${this.orchestrator.testCommand}\` after editing ` +
+                    `files to verify correctness. Do not declare the task done without attempting this.`;
+        }
+        return phaseBlock;
     }
     /** Refresh the system message in place after a live model/mode change or memory update. */
     refreshSystemPrompt() {
@@ -749,6 +796,10 @@ class ChatSession {
     get usage() {
         return this.usageTracker;
     }
+    /** Prompt prefix stability tracker for inspection and testing. */
+    get stablePrefixTracker() {
+        return this.prefixTracker;
+    }
     getActiveModel() {
         if (typeof this.client?.getModel === "function") {
             return this.client.getModel();
@@ -760,6 +811,7 @@ class ChatSession {
         this.taskMemory.clear();
         this.loopDetector.reset();
         this.usageTracker.reset();
+        this.prefixTracker.reset();
         this.readOnlyToolCache.clear();
         this.orchestrator = null;
         this.messages = [{ role: "system", content: this.systemPrompt() }];
@@ -794,6 +846,7 @@ class ChatSession {
         // Fresh orchestrator for this task (phase starts at EXPLORING)
         this.orchestrator = new Orchestrator_1.Orchestrator(Orchestrator_1.DEFAULT_BUDGET, this.repoProfile);
         this.loopDetector.reset();
+        this.prefixTracker.reset();
         // Retain user request in active task memory and refresh system prompt
         this.taskMemory.recordUserRequest(userText);
         this.refreshSystemPrompt();
@@ -822,7 +875,30 @@ class ChatSession {
                 const currentModel = phaseModelOverride ?? this.getActiveModel();
                 const inputBudget = (0, contextBudget_1.getInputTokenBudget)();
                 this.messages = (0, contextBudget_1.compactHistory)(this.messages, inputBudget);
-                const outgoingMessages = this.messages;
+                let outgoingMessages = this.messages;
+                if ((0, promptPrefix_1.isStablePromptPrefixEnabled)()) {
+                    try {
+                        const dynamicContext = (0, promptPrefix_1.formatDynamicTaskContext)(this.taskMemory.formatForSystemPrompt(), this.formatOrchestratorPhase());
+                        const partition = (0, promptPrefix_1.partitionPrompt)({
+                            stableSystemPrompt: typeof this.messages[0]?.content === "string"
+                                ? this.messages[0].content
+                                : "",
+                            tools: toolDefs,
+                            model: phaseModelOverride ?? currentModel,
+                            provider: this.client.getBaseUrl(),
+                            history: this.messages,
+                            dynamicContext,
+                            tracker: this.prefixTracker,
+                        });
+                        outgoingMessages = partition.outgoingMessages;
+                    }
+                    catch (err) {
+                        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                            console.debug("[StablePromptPrefix] Failed to partition prompt prefix; falling back to legacy layout", err);
+                        }
+                        outgoingMessages = this.messages;
+                    }
+                }
                 const gen = this.client.stream(outgoingMessages, {
                     signal: controller.signal,
                     tools: toolDefs,
@@ -836,21 +912,84 @@ class ChatSession {
                     cb.onAssistantDelta(id, next.value.delta);
                     next = await gen.next();
                 }
-                const turn = next.value;
+                let turn = next.value;
                 if (started) {
                     cb.onAssistantDone(id);
                 }
-                // Guard: an assistant turn with neither text nor tool calls must NOT be
-                // pushed to history — OpenRouter (and most providers) will reject any
-                // subsequent request that replays such an empty message with:
-                //   "model output error: model output must contain either output text or tool calls"
+                // Empty turn handling & optional single retry
                 if (!turn.content && turn.toolCalls.length === 0) {
-                    const emptyMsg = "The model returned an empty response (no text and no tool calls). " +
-                        "This can happen when the token budget is exhausted or the provider " +
-                        "drops the turn. Please retry your request.";
-                    cb.onError(emptyMsg);
-                    cb.onStatus("Finished");
-                    return;
+                    const shouldRetryEmpty = process.env.DAXIOM_EMPTY_TURN_RETRY === "1" ||
+                        process.env.DAXIOM_EMPTY_TURN_RETRY === "true";
+                    if (shouldRetryEmpty) {
+                        // When UsageMark is enabled, record request A before executing retry request B
+                        // to ensure accurate non-double-counted multi-request accounting (Section 21)
+                        if ((0, usageMark_1.isUsageMarkEnabled)()) {
+                            this.usageTracker.recordUsage(currentModel, outgoingMessages, turn, callPhase);
+                        }
+                        const isLength = turn.finishReason === "length";
+                        const baseTokens = (0, tokenBudget_1.getPhaseMaxTokens)(callPhase, phaseModelOverride ?? currentModel);
+                        const envCeil = (0, tokenBudget_1.getEnvCeiling)();
+                        let retryMaxTokens = baseTokens * 2;
+                        if (envCeil !== undefined) {
+                            retryMaxTokens = Math.min(retryMaxTokens, envCeil);
+                        }
+                        const retryMessages = isLength
+                            ? outgoingMessages
+                            : [
+                                ...outgoingMessages,
+                                {
+                                    role: "user",
+                                    content: "Your previous response was empty. Please provide your response or call a tool to proceed.",
+                                },
+                            ];
+                        const retryStreamOpts = {
+                            signal: controller.signal,
+                            tools: toolDefs,
+                            phase: callPhase,
+                            model: phaseModelOverride,
+                            onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
+                        };
+                        if (isLength) {
+                            retryStreamOpts.maxTokens = retryMaxTokens;
+                        }
+                        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                            console.debug(`[EmptyTurnRetry] Retrying empty turn (finishReason=${turn.finishReason}, isLength=${isLength}, maxTokens=${retryStreamOpts.maxTokens ?? baseTokens})`);
+                        }
+                        let retryStarted = false;
+                        const retryId = started ? `a${++this.counter}` : id;
+                        const ensureRetryStarted = () => {
+                            if (!retryStarted) {
+                                retryStarted = true;
+                                cb.onAssistantStart(retryId);
+                            }
+                        };
+                        const retryGen = this.client.stream(retryMessages, retryStreamOpts);
+                        let retryNext = await retryGen.next();
+                        while (!retryNext.done) {
+                            ensureRetryStarted();
+                            cb.onAssistantDelta(retryId, retryNext.value.delta);
+                            retryNext = await retryGen.next();
+                        }
+                        if (retryStarted) {
+                            cb.onAssistantDone(retryId);
+                        }
+                        const retryTurn = retryNext.value;
+                        if (retryTurn.content || retryTurn.toolCalls.length > 0) {
+                            turn = retryTurn;
+                        }
+                    }
+                    // Guard: an assistant turn with neither text nor tool calls must NOT be
+                    // pushed to history — OpenRouter (and most providers) will reject any
+                    // subsequent request that replays such an empty message with:
+                    //   "model output error: model output must contain either output text or tool calls"
+                    if (!turn.content && turn.toolCalls.length === 0) {
+                        const emptyMsg = "The model returned an empty response (no text and no tool calls). " +
+                            "This can happen when the token budget is exhausted or the provider " +
+                            "drops the turn. Please retry your request.";
+                        cb.onError(emptyMsg);
+                        cb.onStatus("Finished");
+                        return;
+                    }
                 }
                 if (turn.content) {
                     this.taskMemory.recordAssistantTurn(turn.content);
@@ -1375,6 +1514,7 @@ class LLMClient {
         let content = "";
         const toolAcc = new ToolCallAccumulator();
         let finishReason = null;
+        let providerUsage;
         try {
             while (true) {
                 const { done, value } = await reader.read();
@@ -1388,7 +1528,10 @@ class LLMClient {
                     buffer = buffer.slice(boundary + 2);
                     for (const chunk of parseSseEvent(rawEvent)) {
                         if (chunk === DONE) {
-                            return { content, toolCalls: toolAcc.finalize(), finishReason };
+                            return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+                        }
+                        if (chunk.usage) {
+                            providerUsage = chunk.usage;
                         }
                         const choice = chunk.choices?.[0];
                         if (!choice) {
@@ -1412,7 +1555,7 @@ class LLMClient {
         finally {
             reader.releaseLock();
         }
-        return { content, toolCalls: toolAcc.finalize(), finishReason };
+        return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
     }
 }
 exports.LLMClient = LLMClient;
@@ -2083,7 +2226,8 @@ function sleep(ms, signal) {
  * request-time execution token budgeting for LLM calls, keeping models.ts focused on static model metadata.
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.PHASE_BUDGET = void 0;
+exports.DERIVED_REASONING_FLOOR = exports.PHASE_BUDGET = void 0;
+exports.getReasoningFloor = getReasoningFloor;
 exports.getEnvCeiling = getEnvCeiling;
 exports.getPhaseMaxTokens = getPhaseMaxTokens;
 exports.getPhaseModelOverride = getPhaseModelOverride;
@@ -2094,6 +2238,33 @@ exports.PHASE_BUDGET = {
     explain: 2048, // raised: summary turns were being cut off
     plan: 2048,
 };
+/**
+ * Initial derived reasoning floor (2,560 tokens), calibrated from Phase 0 empirical
+ * p95 measurement of 2,110 tokens on tool-call turns plus a ~20% safety margin (approximately 2,110 * 1.2).
+ * Note: this is a configurable derived starting configuration, not a universal guarantee of correctness.
+ */
+exports.DERIVED_REASONING_FLOOR = 2560;
+/**
+ * Read the minimum reasoning floor from DAXIOM_MIN_REASONING_FLOOR.
+ * Returns 0 if unset, "0", or "false" (disabled by default).
+ * When "1" or "true", returns DERIVED_REASONING_FLOOR (2560).
+ * If a valid positive integer is provided, returns that value.
+ */
+function getReasoningFloor() {
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const raw = proc?.env?.DAXIOM_MIN_REASONING_FLOOR?.trim();
+    if (!raw || raw === "0" || raw === "false") {
+        return 0;
+    }
+    if (raw === "1" || raw === "true") {
+        return exports.DERIVED_REASONING_FLOOR;
+    }
+    const val = Number(raw);
+    if (Number.isFinite(val) && val > 0 && Number.isInteger(val)) {
+        return val;
+    }
+    return 0;
+}
 /**
  * Read the hard ceiling from environment variables (MAX_TOKENS / AI_MAX_TOKENS).
  * Returns undefined if unset or invalid (invalid values do not establish a ceiling).
@@ -2113,9 +2284,10 @@ function getEnvCeiling() {
 /**
  * Compute the maximum completion tokens for a given call phase.
  *
- * Resolution order (each step can only lower the value, never raise it):
+ * Resolution order:
  * 1. Start with `override` if provided and positive, otherwise `PHASE_BUDGET[phase]`.
- * 2. Cap by the env ceiling (MAX_TOKENS / AI_MAX_TOKENS) when set. Env becomes a hard CEILING, not the default.
+ *    If floor is active and phase is tool_decision or edit and override is unset, apply floor.
+ * 2. Cap by the env ceiling (MAX_TOKENS / AI_MAX_TOKENS) when set.
  * 3. Cap by the model's maxOutputTokens if specified in model metadata.
  * 4. Validate through resolveMaxTokens so bad values never crash.
  */
@@ -2125,6 +2297,10 @@ function getPhaseMaxTokens(phase, apiModelId, override) {
     let budget = override !== undefined && Number.isFinite(override) && override > 0
         ? override
         : defaultBudget;
+    const floor = getReasoningFloor();
+    if (floor > 0 && (phase === "tool_decision" || phase === "edit") && override === undefined) {
+        budget = Math.max(budget, floor);
+    }
     // Step 2: Cap by env ceiling if set
     const envCeiling = getEnvCeiling();
     if (envCeiling !== undefined) {
@@ -3326,40 +3502,192 @@ function compactHistory(messages, inputBudgetTokens = exports.DEFAULT_INPUT_TOKE
  */
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.defaultUsageTracker = exports.UsageTracker = void 0;
+exports.classifyToolBucket = classifyToolBucket;
+exports.analyzeToolResultTokens = analyzeToolResultTokens;
 exports.getMaxSessionUsd = getMaxSessionUsd;
 const models_1 = __webpack_require__(5);
 const contextBudget_1 = __webpack_require__(15);
+const tokenBudget_1 = __webpack_require__(8);
+const usageMark_1 = __webpack_require__(17);
+/**
+ * Classify a tool name into one of the required measurement buckets.
+ */
+function classifyToolBucket(toolName) {
+    const lower = toolName.toLowerCase();
+    if (lower === "run_command" || lower === "runcommand") {
+        return "run_command";
+    }
+    if (lower === "read_file" ||
+        lower === "readfile" ||
+        lower === "readactiveeditor" ||
+        lower === "readselection") {
+        return "read_file";
+    }
+    if (lower === "search_workspace" ||
+        lower === "searchfiles" ||
+        lower === "grep" ||
+        lower.includes("search") ||
+        lower.includes("grep")) {
+        return "search";
+    }
+    if (lower === "list_files" || lower === "listfiles" || lower.includes("list")) {
+        return "list";
+    }
+    return "other";
+}
+/**
+ * Compute the distribution of tool-result tokens in message history by tool bucket.
+ */
+function analyzeToolResultTokens(messages) {
+    const breakdown = {
+        run_command: 0,
+        read_file: 0,
+        search: 0,
+        list: 0,
+        other: 0,
+        total: 0,
+    };
+    // Map tool_call_id to tool name
+    const callIdToName = new Map();
+    for (const msg of messages) {
+        if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+                if (tc.id && tc.function?.name) {
+                    callIdToName.set(tc.id, tc.function.name);
+                }
+            }
+        }
+    }
+    for (const msg of messages) {
+        if (msg.role === "tool") {
+            const toolName = (msg.tool_call_id && callIdToName.get(msg.tool_call_id)) || "other";
+            const bucket = classifyToolBucket(toolName);
+            let text = "";
+            if (typeof msg.content === "string") {
+                text = msg.content;
+            }
+            else if (msg.content) {
+                text = JSON.stringify(msg.content);
+            }
+            const tok = (0, contextBudget_1.estimateTokens)(text);
+            breakdown[bucket] += tok;
+            breakdown.total += tok;
+        }
+    }
+    return breakdown;
+}
 class UsageTracker {
+    calibrationTracker = usageMark_1.defaultCalibrationTracker;
     records = [];
+    toolCallTurnCompletions = [];
     warned80 = false;
     /** Reset all usage tracking data for a new session. */
-    reset() {
+    reset(resetCalibration = false) {
         this.records = [];
+        this.toolCallTurnCompletions = [];
         this.warned80 = false;
+        if (resetCalibration) {
+            this.calibrationTracker.reset();
+        }
+    }
+    /** Calculate p95 completion side tokens for tool-call turns. */
+    getP95ToolCallTokens() {
+        if (this.toolCallTurnCompletions.length === 0) {
+            return 0;
+        }
+        const sorted = [...this.toolCallTurnCompletions].sort((a, b) => a - b);
+        const p95Idx = Math.ceil(0.95 * sorted.length) - 1;
+        return sorted[Math.max(0, p95Idx)];
     }
     /**
-     * Record usage from an assistant turn. If exact usage is available from the provider,
-     * it is recorded; otherwise tokens are estimated.
+     * Record usage from an assistant turn.
+     * If UsageMark is enabled (DAXIOM_USAGE_MARK=1), applies the 3-tier hierarchy:
+     *   Provider usage (ground truth) > Calibrated estimate > Raw local estimate.
+     * If disabled, exact legacy behavior is preserved.
      */
     recordUsage(model, messages, turn, phase, rawUsage) {
+        const effectiveRawUsage = rawUsage ?? turn.usage;
         let promptTokens;
         let completionTokens;
         let estimated = false;
-        if (rawUsage &&
-            typeof rawUsage.prompt_tokens === "number" &&
-            typeof rawUsage.completion_tokens === "number") {
-            promptTokens = rawUsage.prompt_tokens;
-            completionTokens = rawUsage.completion_tokens;
+        let usageMark;
+        if ((0, usageMark_1.isUsageMarkEnabled)()) {
+            try {
+                const estPrompt = (0, contextBudget_1.estimateMessagesTokens)(messages);
+                const estCompletion = (0, contextBudget_1.estimateTokens)(turn.content);
+                const actPrompt = typeof effectiveRawUsage?.prompt_tokens === "number" &&
+                    Number.isFinite(effectiveRawUsage.prompt_tokens) &&
+                    effectiveRawUsage.prompt_tokens >= 0
+                    ? effectiveRawUsage.prompt_tokens
+                    : undefined;
+                const actCompletion = typeof effectiveRawUsage?.completion_tokens === "number" &&
+                    Number.isFinite(effectiveRawUsage.completion_tokens) &&
+                    effectiveRawUsage.completion_tokens >= 0
+                    ? effectiveRawUsage.completion_tokens
+                    : undefined;
+                const actTotal = typeof effectiveRawUsage?.total_tokens === "number" &&
+                    Number.isFinite(effectiveRawUsage.total_tokens) &&
+                    effectiveRawUsage.total_tokens >= 0
+                    ? effectiveRawUsage.total_tokens
+                    : undefined;
+                // Preserve undefined when omitted: NEVER assume 0 for missing cached tokens!
+                const rawCached = effectiveRawUsage?.prompt_tokens_details?.cached_tokens ??
+                    effectiveRawUsage?.cached_tokens;
+                const cachedTokens = typeof rawCached === "number" && Number.isFinite(rawCached) ? rawCached : undefined;
+                // Preserve undefined when omitted for reasoning tokens!
+                const rawReasoning = effectiveRawUsage?.completion_tokens_details?.reasoning_tokens ??
+                    effectiveRawUsage?.reasoning_tokens;
+                const reasoningTokens = typeof rawReasoning === "number" && Number.isFinite(rawReasoning) ? rawReasoning : undefined;
+                usageMark = (0, usageMark_1.resolveUsageMark)({
+                    model,
+                    estimatedPromptTokens: estPrompt,
+                    estimatedCompletionTokens: estCompletion,
+                    actualPromptTokens: actPrompt,
+                    actualCompletionTokens: actCompletion,
+                    actualTotalTokens: actTotal,
+                    cachedTokens,
+                    reasoningTokens,
+                }, this.calibrationTracker);
+                promptTokens = usageMark.promptTokens;
+                completionTokens = usageMark.completionTokens;
+                estimated = usageMark.source !== "provider";
+            }
+            catch (err) {
+                if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                    console.debug("[DAXIOM] UsageMark resolution failed; failing open to legacy estimation", err);
+                }
+                promptTokens = (0, contextBudget_1.estimateMessagesTokens)(messages);
+                completionTokens = (0, contextBudget_1.estimateTokens)(turn.content);
+                estimated = true;
+            }
         }
         else {
-            promptTokens = (0, contextBudget_1.estimateMessagesTokens)(messages);
-            completionTokens = (0, contextBudget_1.estimateTokens)(turn.content);
-            estimated = true;
+            // Legacy behavior when DAXIOM_USAGE_MARK=0 or unset
+            if (effectiveRawUsage &&
+                typeof effectiveRawUsage.prompt_tokens === "number" &&
+                typeof effectiveRawUsage.completion_tokens === "number") {
+                promptTokens = effectiveRawUsage.prompt_tokens;
+                completionTokens = effectiveRawUsage.completion_tokens;
+            }
+            else {
+                promptTokens = (0, contextBudget_1.estimateMessagesTokens)(messages);
+                completionTokens = (0, contextBudget_1.estimateTokens)(turn.content);
+                estimated = true;
+            }
+        }
+        // Extract reasoning tokens if exposed
+        const reasoningTokens = effectiveRawUsage?.completion_tokens_details?.reasoning_tokens ??
+            effectiveRawUsage?.reasoning_tokens;
+        // Track tool-call turn completion tokens
+        const hasToolCalls = Boolean(turn.toolCalls && turn.toolCalls.length > 0);
+        const totalCompletionSideTokens = completionTokens + (reasoningTokens || 0);
+        if (hasToolCalls) {
+            this.toolCallTurnCompletions.push(totalCompletionSideTokens);
         }
         const modelInfo = (0, models_1.getModelByApiId)(model);
         let costUsd = 0;
-        if (typeof rawUsage?.cost === "number" && Number.isFinite(rawUsage.cost)) {
-            costUsd = rawUsage.cost;
+        if (typeof effectiveRawUsage?.cost === "number" && Number.isFinite(effectiveRawUsage.cost)) {
+            costUsd = effectiveRawUsage.cost;
         }
         else if (modelInfo?.completionPricePerToken) {
             costUsd = completionTokens * modelInfo.completionPricePerToken;
@@ -3372,9 +3700,56 @@ class UsageTracker {
             costUsd,
             timestamp: Date.now(),
             estimated,
+            usageMark,
         };
         this.records.push(record);
+        // Diagnostic logging under DEBUG_TOKEN_BUDGET=1
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            this.logDiagnostics(model, messages, turn, phase, effectiveRawUsage, promptTokens, completionTokens, reasoningTokens, hasToolCalls, usageMark);
+        }
         return record;
+    }
+    logDiagnostics(model, messages, turn, phase, rawUsage, promptTokens, completionTokens, reasoningTokens, hasToolCalls, usageMark) {
+        const isDebug = process.env.DEBUG_TOKEN_BUDGET === "1";
+        if (!isDebug) {
+            return;
+        }
+        const cachedTokens = rawUsage?.prompt_tokens_details?.cached_tokens ??
+            rawUsage?.cached_tokens;
+        const cacheReport = typeof cachedTokens === "number"
+            ? `${cachedTokens} tokens`
+            : "cached_tokens not reported by provider";
+        const reasoningReport = typeof reasoningTokens === "number"
+            ? `${reasoningTokens} tokens`
+            : "reasoning tokens not reported by provider / embedded in output";
+        const toolBreakdown = analyzeToolResultTokens(messages);
+        const p95 = this.getP95ToolCallTokens();
+        const phaseBudget = phase ? tokenBudget_1.PHASE_BUDGET[phase] ?? 1024 : 1024;
+        const envCeiling = (0, tokenBudget_1.getEnvCeiling)();
+        console.log(`\n[DEBUG_TOKEN_BUDGET] ── Turn Telemetry (${phase ?? "unknown"}) ──`);
+        console.log(`  Model: ${model} | FinishReason: ${turn.finishReason ?? "unknown"} | HasToolCalls: ${hasToolCalls}`);
+        console.log(`  Tokens: prompt=${promptTokens} (${cacheReport}), completion=${completionTokens}, reasoning=${reasoningReport}`);
+        console.log(`  Tool-Call Turns p95 Output Tokens: ${p95}`);
+        console.log(`  MaxTokens Investigation: phaseBudget=${phaseBudget}, envCeiling=${envCeiling ?? "unset"}, reservationFloor=512`);
+        if (usageMark) {
+            const pFact = usageMark.promptCorrectionFactor !== undefined ? usageMark.promptCorrectionFactor.toFixed(3) : "none";
+            const cFact = usageMark.completionCorrectionFactor !== undefined ? usageMark.completionCorrectionFactor.toFixed(3) : "none";
+            const pErr = usageMark.absolutePromptError !== undefined ? ` (absErr=${usageMark.absolutePromptError})` : "";
+            const cErr = usageMark.absoluteCompletionError !== undefined ? ` (absErr=${usageMark.absoluteCompletionError})` : "";
+            console.log(`  UsageMark [${usageMark.source}] (confidence=${usageMark.confidence}): ` +
+                `prompt=${usageMark.promptTokens} (calFactor=${pFact}${pErr}), ` +
+                `completion=${usageMark.completionTokens} (calFactor=${cFact}${cErr}), ` +
+                `total=${usageMark.totalTokens}`);
+        }
+        if (toolBreakdown.total > 0) {
+            const pct = (n) => ((n / toolBreakdown.total) * 100).toFixed(1);
+            console.log(`  Tool-Result Distribution (total ${toolBreakdown.total} tokens): ` +
+                `run_command=${toolBreakdown.run_command} (${pct(toolBreakdown.run_command)}%), ` +
+                `read_file=${toolBreakdown.read_file} (${pct(toolBreakdown.read_file)}%), ` +
+                `search=${toolBreakdown.search} (${pct(toolBreakdown.search)}%), ` +
+                `list=${toolBreakdown.list} (${pct(toolBreakdown.list)}%), ` +
+                `other=${toolBreakdown.other} (${pct(toolBreakdown.other)}%)`);
+        }
     }
     /** Retrieve the complete session summary aggregated overall, by phase, and by model. */
     getSessionSummary() {
@@ -3416,6 +3791,7 @@ class UsageTracker {
             byPhase,
             byModel,
             recordCount: this.records.length,
+            p95ToolCallCompletionTokens: this.getP95ToolCallTokens(),
         };
     }
     /**
@@ -3475,6 +3851,595 @@ function getMaxSessionUsd() {
 
 /***/ }),
 /* 17 */
+/***/ ((__unused_webpack_module, exports) => {
+
+
+/**
+ * UsageMark: Hybrid Token Estimation and Calibration Layer (Phase 5).
+ *
+ * Implements a 3-tier hierarchy for token accounting:
+ *   1. Provider-reported usage (Ground Truth, source="provider", confidence="high")
+ *   2. Calibrated local estimate (source="calibrated-estimate", confidence="medium")
+ *   3. Raw local heuristic estimate (source="estimate", confidence="low")
+ *
+ * Feature Flag: DAXIOM_USAGE_MARK (default: OFF).
+ * When disabled (0, false, off), legacy behavior is preserved with zero overhead.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.defaultCalibrationTracker = exports.CalibrationTracker = exports.MAX_CORRECTION_FACTOR = exports.MIN_CORRECTION_FACTOR = exports.DEFAULT_CALIBRATION_ALPHA = void 0;
+exports.isUsageMarkEnabled = isUsageMarkEnabled;
+exports.getCalibrationIdentity = getCalibrationIdentity;
+exports.clamp = clamp;
+exports.computeRelativeError = computeRelativeError;
+exports.resolveUsageMark = resolveUsageMark;
+// ---------------------------------------------------------------------------
+// Feature Flag & Configuration
+// ---------------------------------------------------------------------------
+/**
+ * Check whether UsageMark hybrid token estimation is enabled.
+ * Accepts: '1', 'true', 'on' (case-insensitive) as enabled.
+ * Defaults to disabled ('0', 'false', 'off', or unset).
+ */
+function isUsageMarkEnabled() {
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const val = proc?.env?.DAXIOM_USAGE_MARK?.trim().toLowerCase();
+    return val === "1" || val === "true" || val === "on";
+}
+/**
+ * Calibration parameters and bounds.
+ *
+ * DESIGN TARGET: Default alpha (0.2) provides conservative exponential smoothing,
+ * preventing a single anomalous payload from drastically skewing estimates.
+ *
+ * DESIGN TARGET: Bounds [0.5, 2.0] restrict the correction factor to a 2x window,
+ * ensuring stability against pathological edge cases.
+ */
+exports.DEFAULT_CALIBRATION_ALPHA = 0.2; // DESIGN TARGET
+exports.MIN_CORRECTION_FACTOR = 0.5; // DESIGN TARGET
+exports.MAX_CORRECTION_FACTOR = 2.0; // DESIGN TARGET
+// ---------------------------------------------------------------------------
+// Calibration Identity & Bounded Tracker
+// ---------------------------------------------------------------------------
+/**
+ * Construct an isolated calibration identity key for a provider + model pair.
+ * Ensures models from different providers (or different models from the same provider)
+ * never share or poison each other's calibration factors.
+ */
+function getCalibrationIdentity(provider, model) {
+    const p = (provider || "default").trim().toLowerCase();
+    const m = (model || "unknown").trim().toLowerCase();
+    return `${p}::${m}`;
+}
+/**
+ * Clamp a number to [min, max].
+ */
+function clamp(val, min, max) {
+    return Math.max(min, Math.min(max, val));
+}
+/**
+ * Safely compute relative error: |estimated - actual| / actual.
+ * Returns undefined if actual is 0, non-positive, or non-finite (avoid division by zero).
+ */
+function computeRelativeError(estimated, actual) {
+    if (!Number.isFinite(actual) || actual <= 0) {
+        return undefined;
+    }
+    if (!Number.isFinite(estimated) || estimated < 0) {
+        return undefined;
+    }
+    return Math.abs(estimated - actual) / actual;
+}
+/**
+ * Calibration Tracker: maintains bounded exponential moving average factors
+ * segregated by provider + model identity.
+ */
+class CalibrationTracker {
+    states = new Map();
+    totalObs = 0;
+    alpha;
+    minFactor;
+    maxFactor;
+    constructor(alpha = exports.DEFAULT_CALIBRATION_ALPHA, minFactor = exports.MIN_CORRECTION_FACTOR, maxFactor = exports.MAX_CORRECTION_FACTOR) {
+        this.alpha = alpha;
+        this.minFactor = minFactor;
+        this.maxFactor = maxFactor;
+    }
+    /** Reset all calibration states. */
+    reset() {
+        this.states.clear();
+        this.totalObs = 0;
+    }
+    /** Retrieve the current calibration state for an identity, or undefined if uncalibrated. */
+    getState(provider, model) {
+        const key = getCalibrationIdentity(provider, model);
+        const s = this.states.get(key);
+        return s ? { ...s } : undefined;
+    }
+    /** Explicitly inject or override calibration state (useful for tests and initialization). */
+    setState(provider, model, state) {
+        const key = getCalibrationIdentity(provider, model);
+        const existing = this.states.get(key) ?? {
+            promptFactor: 1.0,
+            completionFactor: 1.0,
+            sampleCount: 0,
+            lastUpdated: Date.now(),
+        };
+        this.states.set(key, {
+            promptFactor: state.promptFactor ?? existing.promptFactor,
+            completionFactor: state.completionFactor ?? existing.completionFactor,
+            sampleCount: state.sampleCount ?? existing.sampleCount,
+            lastUpdated: state.lastUpdated ?? Date.now(),
+        });
+    }
+    /**
+     * Update calibration factors based on a completed observation with provider usage.
+     * Rejects invalid, non-positive, or malformed observations (minimum data requirements).
+     */
+    update(observation) {
+        try {
+            const { provider, model, estimatedPromptTokens, estimatedCompletionTokens, actualPromptTokens, actualCompletionTokens, } = observation;
+            if (!model) {
+                return;
+            }
+            const key = getCalibrationIdentity(provider, model);
+            const state = this.states.get(key) ?? {
+                promptFactor: 1.0,
+                completionFactor: 1.0,
+                sampleCount: 0,
+                lastUpdated: Date.now(),
+            };
+            let updated = false;
+            // Minimum Data Requirement: only update prompt factor if both estimated and actual are strictly positive numbers
+            if (typeof estimatedPromptTokens === "number" &&
+                Number.isFinite(estimatedPromptTokens) &&
+                estimatedPromptTokens > 0 &&
+                typeof actualPromptTokens === "number" &&
+                Number.isFinite(actualPromptTokens) &&
+                actualPromptTokens > 0) {
+                const observedRatio = actualPromptTokens / estimatedPromptTokens;
+                const newPromptFactor = state.promptFactor * (1 - this.alpha) + observedRatio * this.alpha;
+                state.promptFactor = clamp(newPromptFactor, this.minFactor, this.maxFactor);
+                updated = true;
+            }
+            // Minimum Data Requirement: only update completion factor if both estimated and actual are strictly positive numbers
+            if (typeof estimatedCompletionTokens === "number" &&
+                Number.isFinite(estimatedCompletionTokens) &&
+                estimatedCompletionTokens > 0 &&
+                typeof actualCompletionTokens === "number" &&
+                Number.isFinite(actualCompletionTokens) &&
+                actualCompletionTokens > 0) {
+                const observedRatio = actualCompletionTokens / estimatedCompletionTokens;
+                const newCompletionFactor = state.completionFactor * (1 - this.alpha) + observedRatio * this.alpha;
+                state.completionFactor = clamp(newCompletionFactor, this.minFactor, this.maxFactor);
+                updated = true;
+            }
+            if (updated) {
+                state.sampleCount += 1;
+                state.lastUpdated = Date.now();
+                this.states.set(key, state);
+                this.totalObs += 1;
+            }
+        }
+        catch {
+            // Fail open: calibration failure must never crash the harness
+        }
+    }
+    /** Retrieve summary statistics for all tracked identities. */
+    getStats() {
+        const identities = {};
+        for (const [k, v] of this.states.entries()) {
+            identities[k] = { ...v };
+        }
+        return {
+            identities,
+            totalObservations: this.totalObs,
+        };
+    }
+}
+exports.CalibrationTracker = CalibrationTracker;
+/** Global default calibration tracker. */
+exports.defaultCalibrationTracker = new CalibrationTracker();
+// ---------------------------------------------------------------------------
+// UsageMark Resolution Hierarchy
+// ---------------------------------------------------------------------------
+/**
+ * Resolve a UsageMark from an observation and optional calibration tracker.
+ *
+ * Decision Tree:
+ *   1. Is valid provider usage present?
+ *      YES -> Source: 'provider', confidence: 'high'. Use provider numbers directly.
+ *             Update calibration tracker with observed ratio.
+ *      NO  -> Is calibration history available for this identity?
+ *             YES -> Source: 'calibrated-estimate', confidence: 'medium'.
+ *                    Apply bounded correction factor.
+ *             NO  -> Source: 'estimate', confidence: 'low'.
+ *                    Use raw local heuristic estimate.
+ */
+function resolveUsageMark(observation, tracker = exports.defaultCalibrationTracker) {
+    try {
+        const { requestId, provider, model, estimatedPromptTokens, estimatedCompletionTokens, actualPromptTokens, actualCompletionTokens, actualTotalTokens, cachedTokens, reasoningTokens, } = observation;
+        const estPrompt = Math.max(0, Math.round(Number.isFinite(estimatedPromptTokens) ? estimatedPromptTokens : 0));
+        const estCompl = Math.max(0, Math.round(Number.isFinite(estimatedCompletionTokens) ? estimatedCompletionTokens : 0));
+        const estTotal = observation.estimatedTotalTokens !== undefined && Number.isFinite(observation.estimatedTotalTokens)
+            ? Math.max(0, Math.round(observation.estimatedTotalTokens))
+            : estPrompt + estCompl;
+        // Validate provider actual usage
+        const hasValidActualPrompt = typeof actualPromptTokens === "number" &&
+            Number.isFinite(actualPromptTokens) &&
+            actualPromptTokens >= 0;
+        const hasValidActualCompl = typeof actualCompletionTokens === "number" &&
+            Number.isFinite(actualCompletionTokens) &&
+            actualCompletionTokens >= 0;
+        const hasProviderUsage = hasValidActualPrompt && hasValidActualCompl;
+        if (hasProviderUsage) {
+            // ── Level 1: Provider Ground Truth ─────────────────────────────────
+            const promptTok = actualPromptTokens;
+            const complTok = actualCompletionTokens;
+            const totalTok = typeof actualTotalTokens === "number" && Number.isFinite(actualTotalTokens) && actualTotalTokens >= 0
+                ? actualTotalTokens
+                : promptTok + complTok;
+            // Update calibration tracker
+            tracker.update(observation);
+            const calState = tracker.getState(provider, model);
+            const promptFactor = calState?.promptFactor ?? 1.0;
+            const complFactor = calState?.completionFactor ?? 1.0;
+            const absPromptErr = Math.abs(estPrompt - promptTok);
+            const relPromptErr = computeRelativeError(estPrompt, promptTok);
+            const absComplErr = Math.abs(estCompl - complTok);
+            const relComplErr = computeRelativeError(estCompl, complTok);
+            const absTotalErr = Math.abs(estTotal - totalTok);
+            const relTotalErr = computeRelativeError(estTotal, totalTok);
+            return {
+                promptTokens: promptTok,
+                completionTokens: complTok,
+                totalTokens: totalTok,
+                source: "provider",
+                confidence: "high",
+                cachedTokens,
+                reasoningTokens,
+                requestId,
+                provider,
+                model,
+                estimatedPromptTokens: estPrompt,
+                estimatedCompletionTokens: estCompl,
+                estimatedTotalTokens: estTotal,
+                actualPromptTokens: promptTok,
+                actualCompletionTokens: complTok,
+                actualTotalTokens: totalTok,
+                promptCorrectionFactor: promptFactor,
+                completionCorrectionFactor: complFactor,
+                absolutePromptError: absPromptErr,
+                relativePromptError: relPromptErr,
+                absoluteCompletionError: absComplErr,
+                relativeCompletionError: relComplErr,
+                absoluteTotalError: absTotalErr,
+                relativeTotalError: relTotalErr,
+            };
+        }
+        // Provider usage is absent or malformed.
+        // Check if we have calibration history for this provider + model identity.
+        const calState = tracker.getState(provider, model);
+        if (calState && calState.sampleCount > 0) {
+            // ── Level 2: Calibrated Local Estimate ─────────────────────────────
+            const promptTok = Math.max(1, Math.round(estPrompt * calState.promptFactor));
+            const complTok = estCompl > 0
+                ? Math.max(1, Math.round(estCompl * calState.completionFactor))
+                : 0;
+            const totalTok = promptTok + complTok;
+            return {
+                promptTokens: promptTok,
+                completionTokens: complTok,
+                totalTokens: totalTok,
+                source: "calibrated-estimate",
+                confidence: "medium",
+                cachedTokens: undefined, // Provider omitted -> strictly undefined
+                reasoningTokens: undefined,
+                requestId,
+                provider,
+                model,
+                estimatedPromptTokens: estPrompt,
+                estimatedCompletionTokens: estCompl,
+                estimatedTotalTokens: estTotal,
+                actualPromptTokens: undefined,
+                actualCompletionTokens: undefined,
+                actualTotalTokens: undefined,
+                promptCorrectionFactor: calState.promptFactor,
+                completionCorrectionFactor: calState.completionFactor,
+            };
+        }
+        // ── Level 3: Raw Local Heuristic Estimate ────────────────────────────
+        return {
+            promptTokens: estPrompt,
+            completionTokens: estCompl,
+            totalTokens: estTotal,
+            source: "estimate",
+            confidence: "low",
+            cachedTokens: undefined,
+            reasoningTokens: undefined,
+            requestId,
+            provider,
+            model,
+            estimatedPromptTokens: estPrompt,
+            estimatedCompletionTokens: estCompl,
+            estimatedTotalTokens: estTotal,
+            actualPromptTokens: undefined,
+            actualCompletionTokens: undefined,
+            actualTotalTokens: undefined,
+            promptCorrectionFactor: 1.0,
+            completionCorrectionFactor: 1.0,
+        };
+    }
+    catch {
+        // Fail open: return raw heuristic estimate on any unexpected failure
+        const estPrompt = Math.max(0, Math.round(observation.estimatedPromptTokens || 0));
+        const estCompl = Math.max(0, Math.round(observation.estimatedCompletionTokens || 0));
+        return {
+            promptTokens: estPrompt,
+            completionTokens: estCompl,
+            totalTokens: estPrompt + estCompl,
+            source: "estimate",
+            confidence: "low",
+            model: observation.model || "unknown",
+            estimatedPromptTokens: estPrompt,
+            estimatedCompletionTokens: estCompl,
+            estimatedTotalTokens: estPrompt + estCompl,
+        };
+    }
+}
+
+
+/***/ }),
+/* 18 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PromptPrefixTracker = void 0;
+exports.isStablePromptPrefixEnabled = isStablePromptPrefixEnabled;
+exports.canonicalJsonStringify = canonicalJsonStringify;
+exports.canonicalizeToolDefinitions = canonicalizeToolDefinitions;
+exports.formatDynamicTaskContext = formatDynamicTaskContext;
+exports.partitionPrompt = partitionPrompt;
+const crypto = __importStar(__webpack_require__(10));
+const contextBudget_1 = __webpack_require__(15);
+/**
+ * Feature flag for Phase 4: Stable Prompt Prefix.
+ * When ON, the system prompt and tool definitions are kept strictly immutable
+ * across turns, while dynamic working memory and task state are attached
+ * as an ephemeral message at the tail of the request.
+ */
+function isStablePromptPrefixEnabled() {
+    const val = process.env.DAXIOM_STABLE_PROMPT_PREFIX ??
+        process.env.DAXIOM_STABLE_CACHE_PREFIX;
+    return val === "1" || val === "true";
+}
+/**
+ * Recursively stringifies an object with keys sorted alphabetically.
+ * Ensures deterministic serialization across different object key insertion orders.
+ */
+function canonicalJsonStringify(value) {
+    if (value === null || typeof value !== "object") {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return "[" + value.map((item) => canonicalJsonStringify(item)).join(",") + "]";
+    }
+    const obj = value;
+    const sortedKeys = Object.keys(obj).sort();
+    const entries = [];
+    for (const key of sortedKeys) {
+        const val = obj[key];
+        if (val !== undefined) {
+            entries.push(`${JSON.stringify(key)}:${canonicalJsonStringify(val)}`);
+        }
+    }
+    return "{" + entries.join(",") + "}";
+}
+/**
+ * Canonicalizes tool definitions to ensure deterministic property ordering.
+ * Tool order in the array is preserved to maintain semantic intent.
+ */
+function canonicalizeToolDefinitions(tools) {
+    if (!tools || tools.length === 0) {
+        return undefined;
+    }
+    return tools.map((tool) => ({
+        type: tool.type,
+        function: {
+            name: tool.function.name,
+            description: tool.function.description,
+            parameters: tool.function.parameters
+                ? JSON.parse(canonicalJsonStringify(tool.function.parameters))
+                : undefined,
+        },
+    }));
+}
+/**
+ * Tracks prefix stability and invalidation reasons across consecutive requests.
+ */
+class PromptPrefixTracker {
+    lastHash = null;
+    lastSystemPrompt = null;
+    lastToolsSerialized = null;
+    lastModel = null;
+    lastProvider = null;
+    requestCount = 0;
+    hashChangeCount = 0;
+    recordRequest(currentHash, systemPrompt, toolsSerialized, model, provider, stats) {
+        this.requestCount++;
+        let reason;
+        if (this.lastHash === null) {
+            reason = "initial";
+        }
+        else if (currentHash !== this.lastHash) {
+            this.hashChangeCount++;
+            if (this.lastSystemPrompt !== systemPrompt) {
+                reason = "system_prompt";
+            }
+            else if (this.lastToolsSerialized !== toolsSerialized) {
+                reason = "tool_schema";
+            }
+            else if (this.lastModel !== model) {
+                reason = "model";
+            }
+            else if (this.lastProvider !== provider) {
+                reason = "provider";
+            }
+            else {
+                reason = "capability_profile";
+            }
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                console.debug(`[StablePromptPrefix] PREFIX_CHANGED reason=${reason} oldHash=${this.lastHash.slice(0, 12)} newHash=${currentHash.slice(0, 12)}`);
+            }
+        }
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            console.debug(`[StablePromptPrefix] request #${this.requestCount} prefixHash=${currentHash.slice(0, 12)} ` +
+                `prefixBytes=${stats.prefixBytes} prefixTokens=${stats.prefixEstimatedTokens} ` +
+                `suffixBytes=${stats.suffixBytes} suffixTokens=${stats.suffixEstimatedTokens} ` +
+                `totalTokens=${stats.totalEstimatedTokens}`);
+        }
+        this.lastHash = currentHash;
+        this.lastSystemPrompt = systemPrompt;
+        this.lastToolsSerialized = toolsSerialized;
+        this.lastModel = model;
+        this.lastProvider = provider;
+        return { ...stats, invalidationReason: reason };
+    }
+    get statsSummary() {
+        return {
+            totalRequests: this.requestCount,
+            hashChanges: this.hashChangeCount,
+            stabilityRate: this.requestCount > 1
+                ? ((this.requestCount - 1 - this.hashChangeCount) / (this.requestCount - 1)) * 100
+                : 100,
+        };
+    }
+    reset() {
+        this.lastHash = null;
+        this.lastSystemPrompt = null;
+        this.lastToolsSerialized = null;
+        this.lastModel = null;
+        this.lastProvider = null;
+        this.requestCount = 0;
+        this.hashChangeCount = 0;
+    }
+}
+exports.PromptPrefixTracker = PromptPrefixTracker;
+/**
+ * Combines dynamic working memory and orchestrator phase info into a single formatted block.
+ */
+function formatDynamicTaskContext(workingMemorySection, phaseBlock) {
+    const parts = [];
+    if (workingMemorySection && workingMemorySection.trim()) {
+        parts.push(workingMemorySection.trim());
+    }
+    if (phaseBlock && phaseBlock.trim()) {
+        parts.push(phaseBlock.trim());
+    }
+    return parts.join("\n\n");
+}
+/**
+ * Partitions a prompt request into a deterministic stable prefix and a dynamic suffix.
+ * The conversation history is preserved immutably.
+ */
+function partitionPrompt(options) {
+    const canonicalTools = canonicalizeToolDefinitions(options.tools);
+    const toolsSerialized = canonicalTools ? canonicalJsonStringify(canonicalTools) : "[]";
+    const prefixObject = {
+        model: options.model,
+        provider: options.provider ?? "default",
+        system: options.stableSystemPrompt,
+        tools: canonicalTools ?? [],
+    };
+    const serialized = canonicalJsonStringify(prefixObject);
+    const hash = crypto.createHash("sha256").update(serialized, "utf8").digest("hex");
+    const prefixBytes = Buffer.byteLength(serialized, "utf8");
+    const systemTokens = (0, contextBudget_1.estimateTokens)(options.stableSystemPrompt);
+    const toolsTokens = canonicalTools ? Math.ceil(toolsSerialized.length / 3.5) : 0;
+    const prefixEstimatedTokens = systemTokens + toolsTokens + 4; // overhead
+    const stablePrefix = {
+        messages: [{ role: "system", content: options.stableSystemPrompt }],
+        tools: canonicalTools,
+        model: options.model,
+        provider: options.provider ?? "default",
+        serialized,
+        hash,
+        bytes: prefixBytes,
+        estimatedTokens: prefixEstimatedTokens,
+    };
+    // Build outgoingMessages: immutable copy of history
+    const outgoingMessages = [...options.history];
+    // If dynamicContext is present and the last message in history is not already a user message,
+    // append it as an ephemeral user message at the tail.
+    if (options.dynamicContext && options.dynamicContext.trim().length > 0) {
+        const lastMsg = outgoingMessages[outgoingMessages.length - 1];
+        if (lastMsg && lastMsg.role !== "user") {
+            outgoingMessages.push({
+                role: "user",
+                content: `[CURRENT TASK CONTEXT]\n${options.dynamicContext.trim()}`,
+            });
+        }
+    }
+    // Calculate suffix statistics
+    const suffixMessages = outgoingMessages.slice(1);
+    const suffixSerialized = JSON.stringify(suffixMessages);
+    const suffixBytes = Buffer.byteLength(suffixSerialized, "utf8");
+    const suffixEstimatedTokens = (0, contextBudget_1.estimateMessagesTokens)(suffixMessages);
+    const totalEstimatedTokens = prefixEstimatedTokens + suffixEstimatedTokens;
+    let stats = {
+        prefixHash: hash,
+        prefixBytes,
+        prefixEstimatedTokens,
+        suffixBytes,
+        suffixEstimatedTokens,
+        totalEstimatedTokens,
+    };
+    if (options.tracker) {
+        stats = options.tracker.recordRequest(hash, options.stableSystemPrompt, toolsSerialized, options.model, options.provider ?? "default", stats);
+    }
+    return {
+        stablePrefix,
+        outgoingMessages,
+        stats,
+    };
+}
+
+
+/***/ }),
+/* 19 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -3592,7 +4557,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 18 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3651,7 +4616,7 @@ const models_1 = __webpack_require__(5);
 Object.defineProperty(exports, "DEFAULT_MAX_TOKENS", ({ enumerable: true, get: function () { return models_1.DEFAULT_MAX_TOKENS; } }));
 Object.defineProperty(exports, "getMaxTokens", ({ enumerable: true, get: function () { return models_1.getMaxTokens; } }));
 Object.defineProperty(exports, "resolveMaxTokens", ({ enumerable: true, get: function () { return models_1.resolveMaxTokens; } }));
-const modes_1 = __webpack_require__(19);
+const modes_1 = __webpack_require__(21);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -3799,7 +4764,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 19 */
+/* 21 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -3836,7 +4801,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 20 */
+/* 22 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -3857,22 +4822,22 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createWebFetchTool = exports.webFetchTool = exports.createWebSearchTool = exports.webSearchTool = exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(21);
-const listFiles_1 = __webpack_require__(22);
-const readFile_1 = __webpack_require__(27);
-const readActiveEditor_1 = __webpack_require__(28);
-const readSelection_1 = __webpack_require__(29);
-const searchWorkspace_1 = __webpack_require__(30);
-const createFile_1 = __webpack_require__(32);
-const editFile_1 = __webpack_require__(33);
-const renameFile_1 = __webpack_require__(35);
-const deleteFile_1 = __webpack_require__(36);
-const multiEdit_1 = __webpack_require__(37);
-const runCommand_1 = __webpack_require__(38);
-const gitClone_1 = __webpack_require__(41);
-const fetchGithubIssue_1 = __webpack_require__(43);
-const webSearch_1 = __webpack_require__(44);
-const webFetch_1 = __webpack_require__(46);
+const registry_1 = __webpack_require__(23);
+const listFiles_1 = __webpack_require__(24);
+const readFile_1 = __webpack_require__(29);
+const readActiveEditor_1 = __webpack_require__(30);
+const readSelection_1 = __webpack_require__(31);
+const searchWorkspace_1 = __webpack_require__(32);
+const createFile_1 = __webpack_require__(34);
+const editFile_1 = __webpack_require__(35);
+const renameFile_1 = __webpack_require__(37);
+const deleteFile_1 = __webpack_require__(38);
+const multiEdit_1 = __webpack_require__(39);
+const runCommand_1 = __webpack_require__(40);
+const gitClone_1 = __webpack_require__(45);
+const fetchGithubIssue_1 = __webpack_require__(47);
+const webSearch_1 = __webpack_require__(48);
+const webFetch_1 = __webpack_require__(50);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -3901,19 +4866,19 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(21);
+var registry_2 = __webpack_require__(23);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-var webSearch_2 = __webpack_require__(44);
+var webSearch_2 = __webpack_require__(48);
 Object.defineProperty(exports, "webSearchTool", ({ enumerable: true, get: function () { return webSearch_2.webSearchTool; } }));
 Object.defineProperty(exports, "createWebSearchTool", ({ enumerable: true, get: function () { return webSearch_2.createWebSearchTool; } }));
-var webFetch_2 = __webpack_require__(46);
+var webFetch_2 = __webpack_require__(50);
 Object.defineProperty(exports, "webFetchTool", ({ enumerable: true, get: function () { return webFetch_2.webFetchTool; } }));
 Object.defineProperty(exports, "createWebFetchTool", ({ enumerable: true, get: function () { return webFetch_2.createWebFetchTool; } }));
-__exportStar(__webpack_require__(24), exports);
+__exportStar(__webpack_require__(26), exports);
 
 
 /***/ }),
-/* 21 */
+/* 23 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -3965,7 +4930,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 22 */
+/* 24 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4005,9 +4970,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(23);
-const fsutil_2 = __webpack_require__(23);
-const workspaceSafety_1 = __webpack_require__(25);
+const fsutil_1 = __webpack_require__(25);
+const fsutil_2 = __webpack_require__(25);
+const workspaceSafety_1 = __webpack_require__(27);
 const MAX_ENTRIES = parseInt(process.env.LIST_FILES_MAX_ENTRIES || "150", 10);
 exports.listFilesTool = {
     name: "list_files",
@@ -4087,7 +5052,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 23 */
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4140,7 +5105,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(24);
+const types_1 = __webpack_require__(26);
 const fs = __importStar(__webpack_require__(12));
 const path = __importStar(__webpack_require__(13));
 /** Default directory names ignored during file walking and searching. */
@@ -4348,7 +5313,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 24 */
+/* 26 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4369,7 +5334,7 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 25 */
+/* 27 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4411,7 +5376,7 @@ exports.isBroadWorkspace = isBroadWorkspace;
 exports.checkBroadWorkspaceWarning = checkBroadWorkspaceWarning;
 exports.resetBroadWorkspaceWarning = resetBroadWorkspaceWarning;
 const path = __importStar(__webpack_require__(13));
-const os = __importStar(__webpack_require__(26));
+const os = __importStar(__webpack_require__(28));
 let broadWorkspaceWarned = false;
 /**
  * Returns true if the path is considered "too broad" (home, Desktop, Documents, Downloads, root).
@@ -4459,19 +5424,19 @@ function resetBroadWorkspaceWarning() {
 
 
 /***/ }),
-/* 26 */
+/* 28 */
 /***/ ((module) => {
 
 module.exports = require("os");
 
 /***/ }),
-/* 27 */
+/* 29 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(23);
+const fsutil_1 = __webpack_require__(25);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -4532,7 +5497,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 28 */
+/* 30 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4572,7 +5537,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(23);
+const fsutil_1 = __webpack_require__(25);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -4599,7 +5564,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 29 */
+/* 31 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4670,7 +5635,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 30 */
+/* 32 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4711,10 +5676,10 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const fs = __importStar(__webpack_require__(12));
 const path = __importStar(__webpack_require__(13));
-const readline = __importStar(__webpack_require__(31));
-const fsutil_1 = __webpack_require__(23);
-const types_1 = __webpack_require__(24);
-const workspaceSafety_1 = __webpack_require__(25);
+const readline = __importStar(__webpack_require__(33));
+const fsutil_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(26);
+const workspaceSafety_1 = __webpack_require__(27);
 const MAX_MATCHES_PER_FILE = 5;
 const CONCURRENCY_LIMIT = 8;
 const MAX_DEPTH = 8;
@@ -5026,13 +5991,13 @@ exports.searchWorkspaceTool = {
 
 
 /***/ }),
-/* 31 */
+/* 33 */
 /***/ ((module) => {
 
 module.exports = require("readline");
 
 /***/ }),
-/* 32 */
+/* 34 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5072,8 +6037,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -5132,15 +6097,15 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 33 */
+/* 35 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
-const editCore_1 = __webpack_require__(34);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
+const editCore_1 = __webpack_require__(36);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -5267,7 +6232,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 34 */
+/* 36 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5313,8 +6278,8 @@ exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
 const crypto = __importStar(__webpack_require__(10));
-const fsutil_1 = __webpack_require__(23);
-const types_1 = __webpack_require__(24);
+const fsutil_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(26);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -5482,7 +6447,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 35 */
+/* 37 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5522,8 +6487,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -5576,7 +6541,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 36 */
+/* 38 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5616,8 +6581,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -5674,14 +6639,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 37 */
+/* 39 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(24);
-const editCore_1 = __webpack_require__(34);
+const types_1 = __webpack_require__(26);
+const editCore_1 = __webpack_require__(36);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -5796,17 +6761,20 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 38 */
+/* 40 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(39);
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
+const child_process_1 = __webpack_require__(41);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
 const contextBudget_1 = __webpack_require__(15);
-const processManager_1 = __webpack_require__(40);
+const contextBudget_2 = __webpack_require__(15);
+const processManager_1 = __webpack_require__(42);
+const changes_1 = __webpack_require__(43);
+const commandDigest_1 = __webpack_require__(44);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_COMMAND_OUTPUT_CHARS || "6000", 10);
 exports.runCommandTool = {
@@ -5845,85 +6813,175 @@ exports.runCommandTool = {
                 throw new types_1.ToolDeniedError(`Running "${command}" was declined by the user.`);
             }
         }
-        // Ensure any staged changes are applied to disk so shell commands (test, build, lint, git) see them
-        if (ctx.changeManager?.hasStaged()) {
+        const isStagedSync = process.env.DAXIOM_STAGED_DISK_SYNC === "1";
+        const isVerification = (0, changes_1.isVerificationCommand)(command);
+        const hasStaged = Boolean(ctx.changeManager?.hasStaged());
+        let ranAgainstStaged = false;
+        // When flag is OFF, preserve exact legacy behavior: apply staged changes permanently to disk
+        if (!isStagedSync && hasStaged && ctx.changeManager) {
             await ctx.changeManager.applyChangeSet();
         }
         const cwd = ctx.workspaceRoot.fsPath;
-        console.log(`[run_command] command="${command}" cwd="${cwd}"`);
-        let cancelled = false;
-        let unregister;
-        const { stdout, stderr, code, timedOut } = await new Promise((resolve) => {
-            const child = (0, child_process_1.exec)(command, { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
-                unregister?.();
-                const execErr = err;
-                const timedOut = !!execErr && execErr.signal === "SIGTERM" && !cancelled;
-                const code = execErr && typeof execErr.code === "number"
-                    ? execErr.code
-                    : execErr
-                        ? 1
-                        : 0;
-                resolve({ stdout: out, stderr: errOut, code, timedOut });
-            });
-            unregister = processManager_1.ProcessManager.getInstance().register(child, command);
-            if (ctx.signal) {
-                if (ctx.signal.aborted) {
-                    cancelled = true;
-                    processManager_1.ProcessManager.getInstance().killProcess(child, "SIGKILL");
-                    resolve({ stdout: "", stderr: "Command was cancelled", code: 1, timedOut: false });
-                    return;
-                }
-                const onAbort = () => {
-                    cancelled = true;
-                    processManager_1.ProcessManager.getInstance().killProcess(child, "SIGKILL");
-                };
-                ctx.signal.addEventListener("abort", onAbort, { once: true });
-                child.once("close", () => {
-                    ctx.signal?.removeEventListener("abort", onAbort);
+        const runProcess = async () => {
+            console.log(`[run_command] command="${command}" cwd="${cwd}"`);
+            let cancelled = false;
+            let unregister;
+            const res = await new Promise((resolve) => {
+                const child = (0, child_process_1.exec)(command, { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, out, errOut) => {
                     unregister?.();
+                    const execErr = err;
+                    const timedOut = !!execErr && execErr.signal === "SIGTERM" && !cancelled;
+                    const code = execErr && typeof execErr.code === "number"
+                        ? execErr.code
+                        : execErr
+                            ? 1
+                            : 0;
+                    resolve({ stdout: out, stderr: errOut, code, timedOut, cancelled });
+                });
+                unregister = processManager_1.ProcessManager.getInstance().register(child, command);
+                if (ctx.signal) {
+                    if (ctx.signal.aborted) {
+                        cancelled = true;
+                        processManager_1.ProcessManager.getInstance().killProcess(child, "SIGKILL");
+                        resolve({ stdout: "", stderr: "Command was cancelled", code: 1, timedOut: false, cancelled: true });
+                        return;
+                    }
+                    const onAbort = () => {
+                        cancelled = true;
+                        processManager_1.ProcessManager.getInstance().killProcess(child, "SIGKILL");
+                    };
+                    ctx.signal.addEventListener("abort", onAbort, { once: true });
+                    child.once("close", () => {
+                        ctx.signal?.removeEventListener("abort", onAbort);
+                        unregister?.();
+                    });
+                }
+                else {
+                    child.once("close", () => unregister?.());
+                }
+                // Ensure the process is killed if the timeout elapses.
+                child.on("error", () => {
+                    unregister?.();
+                    resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false, cancelled });
+                });
+            });
+            return res;
+        };
+        let execOutput;
+        if (isStagedSync && isVerification && hasStaged && ctx.changeManager) {
+            try {
+                execOutput = await ctx.changeManager.withMaterialized(runProcess);
+                ranAgainstStaged = true;
+            }
+            catch (err) {
+                if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                    console.log(`[DAXIOM_STAGED_DISK_SYNC] withMaterialized failed, failing open: ${err.message}`);
+                }
+                execOutput = await runProcess();
+            }
+        }
+        else {
+            execOutput = await runProcess();
+        }
+        const isCancelled = Boolean(execOutput.cancelled || ctx.signal?.aborted);
+        // -----------------------------------------------------------------------
+        // Phase 3: Command output digest (DAXIOM_COMMAND_DIGEST=1)
+        // When OFF: behaviour is identical to the code below (existing head/tail).
+        // When ON:  full raw output is written to .daxiom/scratch/cmd-<id>.log and
+        //           a compact digest replaces the raw stdout/stderr sections.
+        // -----------------------------------------------------------------------
+        const isDigestEnabled = process.env.DAXIOM_COMMAND_DIGEST === "1" ||
+            process.env.DAXIOM_COMMAND_DIGEST === "true";
+        if (isDigestEnabled && !isCancelled && ctx.workspaceRoot) {
+            let digestResult;
+            try {
+                digestResult = (0, commandDigest_1.digestCommandOutput)({
+                    command,
+                    stdout: execOutput.stdout,
+                    stderr: execOutput.stderr,
+                    exitCode: execOutput.code,
+                    timedOut: execOutput.timedOut,
+                    cancelled: execOutput.cancelled,
+                    workspaceRoot: cwd,
+                    maxChars: MAX_OUTPUT_CHARS,
                 });
             }
-            else {
-                child.once("close", () => unregister?.());
+            catch {
+                // Fail open: if digest throws for any reason, fall through to legacy path
+                digestResult = null;
             }
-            // Ensure the process is killed if the timeout elapses.
-            child.on("error", () => {
-                unregister?.();
-                resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false });
-            });
-        });
-        const isCancelled = Boolean(cancelled || ctx.signal?.aborted);
+            if (digestResult) {
+                // Measurement logging (visible under DEBUG_TOKEN_BUDGET=1)
+                if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                    const rawTokens = (0, contextBudget_2.estimateTokens)(execOutput.stdout + execOutput.stderr);
+                    const digestTokens = (0, contextBudget_2.estimateTokens)(digestResult.digest);
+                    const reductionPct = rawTokens > 0
+                        ? Math.round((1 - digestTokens / rawTokens) * 100)
+                        : 0;
+                    console.log(`[DAXIOM_COMMAND_DIGEST] format=${digestResult.detectedFormat}` +
+                        ` raw_bytes=${digestResult.rawBytes}` +
+                        ` raw_tokens≈${rawTokens}` +
+                        ` digest_tokens≈${digestTokens}` +
+                        ` reduction=${reductionPct}%` +
+                        (digestResult.scratchRelPath ? ` scratch=${digestResult.scratchRelPath}` : ""));
+                }
+                const digestSections = [
+                    `$ ${command}`,
+                    execOutput.timedOut
+                        ? `exit code: ${execOutput.code} (timed out)`
+                        : `exit code: ${execOutput.code}`,
+                ];
+                if (digestResult.digest.trim()) {
+                    digestSections.push(digestResult.digest);
+                }
+                if (ranAgainstStaged) {
+                    digestSections.push("(ran against staged edits)");
+                }
+                return {
+                    content: digestSections.join("\n\n"),
+                    isError: execOutput.code !== 0,
+                    summary: `\`${command}\` exited ${execOutput.code}${execOutput.timedOut ? " (timeout)" : ""}`,
+                };
+            }
+            // Fall through to legacy path if digestResult is null
+        }
+        // -----------------------------------------------------------------------
+        // Legacy path: existing truncateHeadTail behavior (flag OFF, or fail-open)
+        // -----------------------------------------------------------------------
         const sections = [
             `$ ${command}`,
             isCancelled
                 ? "exit code: cancelled"
-                : `exit code: ${code}${timedOut ? " (timed out)" : ""}`,
+                : `exit code: ${execOutput.code}${execOutput.timedOut ? " (timed out)" : ""}`,
         ];
-        if (stdout.trim()) {
-            sections.push(`stdout:\n${(0, contextBudget_1.truncateHeadTail)(stdout, MAX_OUTPUT_CHARS)}`);
+        if (execOutput.stdout.trim()) {
+            sections.push(`stdout:\n${(0, contextBudget_1.truncateHeadTail)(execOutput.stdout, MAX_OUTPUT_CHARS)}`);
         }
-        if (stderr.trim()) {
-            sections.push(`stderr:\n${(0, contextBudget_1.truncateHeadTail)(stderr, MAX_OUTPUT_CHARS)}`);
+        if (execOutput.stderr.trim()) {
+            sections.push(`stderr:\n${(0, contextBudget_1.truncateHeadTail)(execOutput.stderr, MAX_OUTPUT_CHARS)}`);
+        }
+        if (ranAgainstStaged) {
+            sections.push("(ran against staged edits)");
         }
         return {
             content: sections.join("\n\n"),
-            isError: code !== 0 || isCancelled,
+            isError: execOutput.code !== 0 || isCancelled,
             summary: isCancelled
                 ? `\`${command}\` cancelled`
-                : `\`${command}\` exited ${code}${timedOut ? " (timeout)" : ""}`,
+                : `\`${command}\` exited ${execOutput.code}${execOutput.timedOut ? " (timeout)" : ""}`,
         };
     },
 };
 
 
 /***/ }),
-/* 39 */
+/* 41 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 40 */
+/* 42 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -6060,7 +7118,1378 @@ exports.ProcessManager = ProcessManager;
 
 
 /***/ }),
-/* 41 */
+/* 43 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ChangeManager = void 0;
+exports.isVerificationCommand = isVerificationCommand;
+const vscode = __importStar(__webpack_require__(1));
+const path = __importStar(__webpack_require__(13));
+const fs = __importStar(__webpack_require__(12));
+const fsutil_1 = __webpack_require__(25);
+/**
+ * Recognizes standard test, build, lint, and verification commands.
+ */
+function isVerificationCommand(cmd, repoTestCmd) {
+    if (!cmd || typeof cmd !== "string") {
+        return false;
+    }
+    const trimmed = cmd.trim();
+    if (repoTestCmd && trimmed.includes(repoTestCmd)) {
+        return true;
+    }
+    return /\b(npm\s+(?:run\s+)?(?:test|build|lint)|tsc|jest|vitest|pytest|cargo\s+test|go\s+test|yarn\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|bun\s+(?:run\s+)?(?:test|build|lint)|make\s+test)\b/i.test(trimmed);
+}
+/**
+ * Authoritative in-memory staging overlay for all file mutations.
+ *
+ * All mutation tools stage their operations in ChangeManager first.
+ * Read tools inspect the effective virtual overlay, seeing pending edits.
+ * Physical disk writes occur strictly when the ChangeSet is accepted and applied.
+ */
+class ChangeManager {
+    static materializationMutex = Promise.resolve();
+    staged = new Map(); // relPath -> content
+    originals = new Map(); // relPath -> original text
+    created = new Set(); // relPath
+    deleted = new Set(); // relPath
+    renames = new Map(); // oldRelPath -> newRelPath
+    workspaceRoot;
+    constructor(workspaceRoot) {
+        if (typeof workspaceRoot === "string") {
+            this.workspaceRoot = vscode.Uri.file(workspaceRoot);
+        }
+        else {
+            this.workspaceRoot = workspaceRoot;
+        }
+        this.recoverStaleJournals();
+    }
+    getWorkspaceFsPath() {
+        return this.workspaceRoot ? path.resolve(this.workspaceRoot.fsPath) : process.cwd();
+    }
+    normalize(filePath) {
+        const s = filePath.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+        return s === "." ? "" : s;
+    }
+    resolveUri(relPath) {
+        if (this.workspaceRoot) {
+            return vscode.Uri.joinPath(this.workspaceRoot, relPath);
+        }
+        return vscode.Uri.file(path.resolve(relPath));
+    }
+    /**
+     * Get all paths currently staged for creation (excluding those later deleted).
+     */
+    getCreatedPaths() {
+        return Array.from(this.created).filter((p) => !this.deleted.has(p));
+    }
+    /**
+     * Get all paths currently staged for deletion.
+     */
+    getDeletedPaths() {
+        return Array.from(this.deleted);
+    }
+    /**
+     * Get map of oldPath -> newPath for currently staged renames.
+     */
+    getRenamedPaths() {
+        return new Map(this.renames);
+    }
+    /**
+     * Authoritative overlay method: takes a list of physical relative paths
+     * and returns the effective relative paths by adding staged creations/renames
+     * and removing staged deletions/old rename paths.
+     */
+    getEffectivePaths(physicalPaths = []) {
+        const set = new Set();
+        for (const p of physicalPaths) {
+            const norm = this.normalize(p);
+            if (!norm || this.deleted.has(norm) || this.renames.has(norm)) {
+                continue;
+            }
+            set.add(norm);
+        }
+        for (const p of this.created) {
+            if (!this.deleted.has(p)) {
+                set.add(this.normalize(p));
+            }
+        }
+        for (const [oldRel, newRel] of this.renames.entries()) {
+            if (!this.deleted.has(newRel)) {
+                set.add(this.normalize(newRel));
+            }
+        }
+        for (const p of this.staged.keys()) {
+            if (!this.deleted.has(p)) {
+                set.add(this.normalize(p));
+            }
+        }
+        return Array.from(set).sort();
+    }
+    /**
+     * Directory overlay method:
+     * Takes a relative directory path and physical [name, FileType] entries,
+     * removes staged deletions/renames, and inserts staged creations/renames.
+     */
+    getEffectiveDirectoryEntries(dirRel, physicalEntries) {
+        const normDir = this.normalize(dirRel);
+        const prefix = normDir ? `${normDir}/` : "";
+        const entryMap = new Map();
+        // 1. Add physical entries, excluding deleted or rename sources
+        for (const [name, type] of physicalEntries) {
+            const itemRel = normDir ? `${normDir}/${name}` : name;
+            if (this.deleted.has(itemRel) || this.renames.has(itemRel)) {
+                continue;
+            }
+            entryMap.set(name, type);
+        }
+        // 2. Overlay staged creations, renames, and edits
+        const allStagedPaths = new Set();
+        for (const p of this.created) {
+            allStagedPaths.add(p);
+        }
+        for (const newP of this.renames.values()) {
+            allStagedPaths.add(newP);
+        }
+        for (const p of this.staged.keys()) {
+            allStagedPaths.add(p);
+        }
+        for (const p of allStagedPaths) {
+            if (this.deleted.has(p)) {
+                continue;
+            }
+            if (normDir) {
+                if (!p.startsWith(prefix)) {
+                    continue;
+                }
+                const relUnderDir = p.slice(prefix.length);
+                const slashIdx = relUnderDir.indexOf("/");
+                if (slashIdx === -1) {
+                    entryMap.set(relUnderDir, vscode.FileType.File);
+                }
+                else {
+                    const subDirName = relUnderDir.slice(0, slashIdx);
+                    if (!entryMap.has(subDirName)) {
+                        entryMap.set(subDirName, vscode.FileType.Directory);
+                    }
+                }
+            }
+            else {
+                const slashIdx = p.indexOf("/");
+                if (slashIdx === -1) {
+                    entryMap.set(p, vscode.FileType.File);
+                }
+                else {
+                    const subDirName = p.slice(0, slashIdx);
+                    if (!entryMap.has(subDirName)) {
+                        entryMap.set(subDirName, vscode.FileType.Directory);
+                    }
+                }
+            }
+        }
+        const result = Array.from(entryMap.entries());
+        result.sort((a, b) => {
+            const dirDiff = (b[1] & vscode.FileType.Directory) - (a[1] & vscode.FileType.Directory);
+            return dirDiff !== 0 ? dirDiff : a[0].localeCompare(b[0]);
+        });
+        return result;
+    }
+    /**
+     * Read the effective content of a file: returns the staged virtual version
+     * if modified/created, or reads from physical disk if not staged.
+     */
+    async readEffective(filePath) {
+        const rel = this.normalize(filePath);
+        if (this.deleted.has(rel)) {
+            throw new Error(`File is deleted in staged changes: ${rel}`);
+        }
+        if (this.staged.has(rel)) {
+            return this.staged.get(rel);
+        }
+        // Read from disk and cache original
+        const uri = this.resolveUri(rel);
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const text = (0, fsutil_1.decode)(bytes);
+        if (!this.originals.has(rel)) {
+            this.originals.set(rel, text);
+        }
+        return text;
+    }
+    /**
+     * Check if a specific file (or any file if no path given) has staged changes.
+     */
+    hasStaged(filePath) {
+        if (filePath) {
+            const rel = this.normalize(filePath);
+            return (this.staged.has(rel) ||
+                this.created.has(rel) ||
+                this.deleted.has(rel) ||
+                this.renames.has(rel));
+        }
+        return (this.staged.size > 0 ||
+            this.created.size > 0 ||
+            this.deleted.size > 0 ||
+            this.renames.size > 0);
+    }
+    /**
+     * Stage an edit to an existing file.
+     */
+    stageEdit(filePath, newContent) {
+        const rel = this.normalize(filePath);
+        if (this.deleted.has(rel)) {
+            throw new Error(`Cannot edit deleted file: ${rel}`);
+        }
+        this.staged.set(rel, newContent);
+    }
+    /**
+     * Stage the creation of a new file.
+     */
+    stageCreate(filePath, content) {
+        const rel = this.normalize(filePath);
+        this.deleted.delete(rel);
+        this.created.add(rel);
+        this.staged.set(rel, content);
+        if (!this.originals.has(rel)) {
+            this.originals.set(rel, "");
+        }
+    }
+    /**
+     * Stage the deletion of a file.
+     */
+    stageDelete(filePath) {
+        const rel = this.normalize(filePath);
+        this.staged.delete(rel);
+        this.created.delete(rel);
+        this.deleted.add(rel);
+    }
+    /**
+     * Stage renaming or moving a file.
+     */
+    async stageRename(oldPath, newPath) {
+        const oldRel = this.normalize(oldPath);
+        const newRel = this.normalize(newPath);
+        const content = await this.readEffective(oldRel);
+        this.stageDelete(oldRel);
+        this.stageCreate(newRel, content);
+        this.renames.set(oldRel, newRel);
+    }
+    /**
+     * Generate structured ChangeSet entries with unified diffs.
+     */
+    getChangeSet() {
+        const entries = [];
+        // Created files
+        for (const rel of this.created) {
+            if (this.deleted.has(rel)) {
+                continue;
+            }
+            const stagedContent = this.staged.get(rel) ?? "";
+            entries.push({
+                path: rel,
+                type: "create",
+                originalContent: "",
+                stagedContent,
+                diff: formatUnifiedDiff(rel, "", stagedContent),
+            });
+        }
+        // Edited files (excluding newly created)
+        for (const [rel, stagedContent] of this.staged.entries()) {
+            if (this.created.has(rel) || this.deleted.has(rel)) {
+                continue;
+            }
+            let originalContent = this.originals.get(rel);
+            if (originalContent === undefined) {
+                try {
+                    const uri = this.resolveUri(rel);
+                    const bytes = fs.readFileSync(uri.fsPath);
+                    originalContent = (0, fsutil_1.decode)(bytes);
+                    this.originals.set(rel, originalContent);
+                }
+                catch {
+                    originalContent = "";
+                }
+            }
+            entries.push({
+                path: rel,
+                type: "edit",
+                originalContent,
+                stagedContent,
+                diff: formatUnifiedDiff(rel, originalContent, stagedContent),
+            });
+        }
+        // Deleted files (excluding renames and creations)
+        for (const rel of this.deleted) {
+            if (this.created.has(rel) || this.renames.has(rel)) {
+                continue;
+            }
+            const originalContent = this.originals.get(rel) ?? "";
+            entries.push({
+                path: rel,
+                type: "delete",
+                originalContent,
+                stagedContent: "",
+                diff: formatUnifiedDiff(rel, originalContent, ""),
+            });
+        }
+        // Renamed files
+        for (const [oldRel, newRel] of this.renames.entries()) {
+            const originalContent = this.originals.get(oldRel) ?? "";
+            const stagedContent = this.staged.get(newRel) ?? "";
+            entries.push({
+                path: newRel,
+                oldPath: oldRel,
+                type: "rename",
+                originalContent,
+                stagedContent,
+                diff: `rename from ${oldRel}\nrename to ${newRel}\n` +
+                    formatUnifiedDiff(newRel, originalContent, stagedContent),
+            });
+        }
+        return entries;
+    }
+    /**
+     * Atomically apply all staged changes to physical disk with transactional rollback.
+     *
+     * 1. Validate all paths (traversal / escaping workspace).
+     * 2. Validate all stale hashes / external modifications.
+     * 3. Capture snapshot of pre-apply disk state for all affected paths.
+     * 4. Apply deletions, creations, and edits.
+     * 5. If ANY write fails, rollback all changes to pre-apply state, preserve staged state,
+     *    and throw a structured failure.
+     */
+    async applyChangeSet() {
+        const affected = new Set();
+        for (const rel of this.deleted) {
+            affected.add(rel);
+        }
+        for (const rel of this.created) {
+            affected.add(rel);
+        }
+        for (const rel of this.staged.keys()) {
+            affected.add(rel);
+        }
+        for (const [oldRel, newRel] of this.renames.entries()) {
+            affected.add(oldRel);
+            affected.add(newRel);
+        }
+        if (affected.size === 0) {
+            return;
+        }
+        const snapshots = [];
+        const rootPath = this.workspaceRoot ? path.resolve(this.workspaceRoot.fsPath) : undefined;
+        for (const rel of affected) {
+            const uri = this.resolveUri(rel);
+            // 1. Path validation: ensure path does not escape workspace root
+            if (rootPath) {
+                const resolved = path.resolve(uri.fsPath);
+                if (!resolved.startsWith(rootPath + path.sep) && resolved !== rootPath) {
+                    throw new Error(`Invalid path: "${rel}" traverses outside workspace.`);
+                }
+            }
+            // Check physical existence and capture content
+            let exists = false;
+            let content;
+            try {
+                content = await vscode.workspace.fs.readFile(uri);
+                exists = true;
+            }
+            catch {
+                exists = false;
+            }
+            // 2. Validate stale state if original was cached (and not newly created)
+            if (this.originals.has(rel) && !this.created.has(rel) && exists && content) {
+                const diskText = (0, fsutil_1.decode)(content);
+                const recordedOrig = this.originals.get(rel);
+                if (diskText !== recordedOrig) {
+                    throw new Error(`Stale file detected: "${rel}" was modified externally since it was staged.`);
+                }
+            }
+            snapshots.push({ relPath: rel, uri, exists, content });
+        }
+        // Step 4: Apply changes with rollback tracking
+        const appliedSnapshots = [];
+        try {
+            // 4a. Process deletions
+            for (const rel of this.deleted) {
+                const snap = snapshots.find((s) => s.relPath === rel);
+                if (snap && snap.exists) {
+                    appliedSnapshots.push(snap);
+                    await vscode.workspace.fs.delete(snap.uri, { recursive: true, useTrash: false });
+                }
+            }
+            // 4b. Process creates and edits
+            for (const [rel, newContent] of this.staged.entries()) {
+                if (this.deleted.has(rel)) {
+                    continue;
+                }
+                const snap = snapshots.find((s) => s.relPath === rel);
+                if (snap) {
+                    appliedSnapshots.push(snap);
+                }
+                const uri = this.resolveUri(rel);
+                await vscode.workspace.fs.writeFile(uri, (0, fsutil_1.encode)(newContent));
+            }
+            // If we reach here, all writes succeeded! Clear staged state.
+            this.clear();
+        }
+        catch (applyErr) {
+            // Step 5: Rollback on any failure
+            const rollbackErrors = [];
+            // Rollback applied changes in reverse order
+            for (let i = appliedSnapshots.length - 1; i >= 0; i--) {
+                const snap = appliedSnapshots[i];
+                try {
+                    if (snap.exists && snap.content) {
+                        // Restore original content
+                        await vscode.workspace.fs.writeFile(snap.uri, snap.content);
+                    }
+                    else if (!snap.exists) {
+                        // File was created in this run; remove it
+                        try {
+                            await vscode.workspace.fs.delete(snap.uri, { recursive: false, useTrash: false });
+                        }
+                        catch (delErr) {
+                            // Ignore if already deleted or doesn't exist
+                        }
+                    }
+                }
+                catch (rbErr) {
+                    rollbackErrors.push(`Failed to rollback ${snap.relPath}: ${rbErr.message || String(rbErr)}`);
+                }
+            }
+            // Preserve ChangeManager staged state: DO NOT call this.clear()!
+            const errorMsg = `ChangeSet application failed: ${applyErr.message || String(applyErr)}.` +
+                (rollbackErrors.length > 0
+                    ? ` Rollback encountered errors: ${rollbackErrors.join("; ")}`
+                    : " All changes safely rolled back to pre-apply state.");
+            const structuredErr = new Error(errorMsg);
+            structuredErr.originalError = applyErr;
+            structuredErr.rollbackErrors = rollbackErrors;
+            structuredErr.code = "CHANGESET_APPLY_FAILED";
+            throw structuredErr;
+        }
+    }
+    /**
+     * Reject all staged changes: clears overlay with zero disk modifications.
+     */
+    rejectAll() {
+        this.clear();
+    }
+    /**
+     * Clear all staged and cached state.
+     */
+    clear() {
+        this.staged.clear();
+        this.originals.clear();
+        this.created.clear();
+        this.deleted.clear();
+        this.renames.clear();
+    }
+    /**
+     * Crash recovery: on first use or recovery check, detect stale materialization journals,
+     * restore recorded original state, and remove the journal.
+     */
+    recoverStaleJournals() {
+        try {
+            const rootPath = this.getWorkspaceFsPath();
+            const journalDir = path.join(rootPath, ".daxiom", "journal");
+            if (!fs.existsSync(journalDir)) {
+                return;
+            }
+            const files = fs.readdirSync(journalDir);
+            for (const file of files) {
+                if (!file.endsWith(".json")) {
+                    continue;
+                }
+                const journalPath = path.join(journalDir, file);
+                try {
+                    const raw = fs.readFileSync(journalPath, "utf-8");
+                    const journal = JSON.parse(raw);
+                    if (journal && Array.isArray(journal.entries)) {
+                        for (let i = journal.entries.length - 1; i >= 0; i--) {
+                            const entry = journal.entries[i];
+                            if (!entry.exists) {
+                                if (fs.existsSync(entry.absPath)) {
+                                    fs.unlinkSync(entry.absPath);
+                                }
+                                this.cleanEmptyParents(path.dirname(entry.absPath), journal.workspaceRoot);
+                            }
+                            else if (entry.originalContent !== undefined) {
+                                fs.mkdirSync(path.dirname(entry.absPath), { recursive: true });
+                                fs.writeFileSync(entry.absPath, entry.originalContent, "utf-8");
+                                if (entry.originalMode !== undefined) {
+                                    try {
+                                        fs.chmodSync(entry.absPath, entry.originalMode);
+                                    }
+                                    catch { }
+                                }
+                            }
+                        }
+                    }
+                    fs.unlinkSync(journalPath);
+                    if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                        console.log(`[ChangeManager] Crash recovery: restored state from stale journal ${file}`);
+                    }
+                }
+                catch {
+                    // If a journal is corrupt, fail open
+                    try {
+                        fs.unlinkSync(journalPath);
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch {
+            // Fail open
+        }
+    }
+    /**
+     * Execute an operation against a temporary physical materialization of staged edits.
+     * Serialized with a mutex. Restores original disk state in finally block.
+     */
+    async withMaterialized(fn) {
+        const isFlagOn = process.env.DAXIOM_STAGED_DISK_SYNC === "1";
+        if (!isFlagOn || !this.hasStaged()) {
+            return await fn();
+        }
+        const previousLock = ChangeManager.materializationMutex;
+        let releaseLock;
+        ChangeManager.materializationMutex = new Promise((resolve) => {
+            releaseLock = resolve;
+        });
+        await previousLock;
+        try {
+            return await this.performMaterialized(fn);
+        }
+        finally {
+            releaseLock();
+        }
+    }
+    async performMaterialized(fn) {
+        const rootPath = this.getWorkspaceFsPath();
+        const affected = new Set();
+        for (const rel of this.deleted)
+            affected.add(rel);
+        for (const rel of this.created)
+            affected.add(rel);
+        for (const rel of this.staged.keys())
+            affected.add(rel);
+        for (const [oldRel, newRel] of this.renames.entries()) {
+            affected.add(oldRel);
+            affected.add(newRel);
+        }
+        // Safety check: verify affected files have not been externally modified since staged
+        for (const rel of affected) {
+            if (this.originals.has(rel) && !this.created.has(rel)) {
+                const absPath = this.resolveUri(rel).fsPath;
+                if (fs.existsSync(absPath)) {
+                    const currentDisk = fs.readFileSync(absPath, "utf-8");
+                    const expectedOrig = this.originals.get(rel);
+                    if (currentDisk !== expectedOrig) {
+                        console.warn(`[ChangeManager] Unsafe external modification detected on "${rel}". Aborting materialization to prevent overwrite.`);
+                        return await fn(); // Fail open: do not overwrite
+                    }
+                }
+            }
+        }
+        const journalDir = path.join(rootPath, ".daxiom", "journal");
+        fs.mkdirSync(journalDir, { recursive: true });
+        const journalId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const journalFile = path.join(journalDir, `${journalId}.json`);
+        const entries = [];
+        // Capture pre-materialization snapshot for journal
+        for (const rel of affected) {
+            const absPath = this.resolveUri(rel).fsPath;
+            const exists = fs.existsSync(absPath);
+            let originalContent;
+            let originalMode;
+            if (exists) {
+                originalContent = fs.readFileSync(absPath, "utf-8");
+                try {
+                    originalMode = fs.statSync(absPath).mode;
+                }
+                catch { }
+            }
+            let action = "edit";
+            let writtenContent;
+            if (this.deleted.has(rel)) {
+                action = "delete";
+            }
+            else if (this.created.has(rel)) {
+                action = "create";
+                writtenContent = this.staged.get(rel) ?? "";
+            }
+            else if (this.renames.has(rel)) {
+                action = "rename";
+            }
+            else if (Array.from(this.renames.values()).includes(rel)) {
+                action = "rename";
+                writtenContent = this.staged.get(rel) ?? "";
+            }
+            else if (this.staged.has(rel)) {
+                action = "edit";
+                writtenContent = this.staged.get(rel);
+            }
+            entries.push({
+                relPath: rel,
+                absPath,
+                exists,
+                originalContent,
+                originalMode,
+                writtenContent,
+                action,
+            });
+        }
+        const journalData = {
+            id: journalId,
+            timestamp: Date.now(),
+            workspaceRoot: rootPath,
+            entries,
+        };
+        fs.writeFileSync(journalFile, JSON.stringify(journalData, null, 2), "utf-8");
+        // Apply materialization to disk
+        try {
+            // 1. Deletions (and rename old paths)
+            for (const rel of this.deleted) {
+                const absPath = this.resolveUri(rel).fsPath;
+                if (fs.existsSync(absPath)) {
+                    fs.unlinkSync(absPath);
+                }
+            }
+            for (const oldRel of this.renames.keys()) {
+                const absPath = this.resolveUri(oldRel).fsPath;
+                if (fs.existsSync(absPath)) {
+                    fs.unlinkSync(absPath);
+                }
+            }
+            // 2. Creates, edits, rename new paths
+            for (const [rel, content] of this.staged.entries()) {
+                if (this.deleted.has(rel))
+                    continue;
+                const absPath = this.resolveUri(rel).fsPath;
+                fs.mkdirSync(path.dirname(absPath), { recursive: true });
+                fs.writeFileSync(absPath, content, "utf-8");
+            }
+        }
+        catch (matErr) {
+            // If writing staged edits failed, restore immediately and fail open
+            this.restoreJournal(journalData, journalFile, journalDir);
+            throw matErr;
+        }
+        let result;
+        let execError = null;
+        try {
+            result = await fn();
+        }
+        catch (err) {
+            execError = err;
+        }
+        finally {
+            this.restoreJournal(journalData, journalFile, journalDir);
+        }
+        if (execError) {
+            throw execError;
+        }
+        return result;
+    }
+    restoreJournal(journal, journalFile, journalDir) {
+        for (let i = journal.entries.length - 1; i >= 0; i--) {
+            const entry = journal.entries[i];
+            // Check conflict rule: did the command modify the materialized file?
+            if (entry.writtenContent !== undefined && fs.existsSync(entry.absPath)) {
+                try {
+                    const currentDisk = fs.readFileSync(entry.absPath, "utf-8");
+                    if (currentDisk !== entry.writtenContent) {
+                        const safeName = entry.relPath.replace(/[/\\?%*:|"<>]/g, "_");
+                        const backupFile = path.join(journalDir, `conflict-${journal.id}-${safeName}.bak`);
+                        fs.writeFileSync(backupFile, currentDisk, "utf-8");
+                        console.warn(`[ChangeManager] Conflict detected: "${entry.relPath}" was modified by verification command. Preserved backup at ${backupFile}`);
+                    }
+                }
+                catch { }
+            }
+            // Restore original state
+            try {
+                if (!entry.exists) {
+                    if (fs.existsSync(entry.absPath)) {
+                        fs.unlinkSync(entry.absPath);
+                    }
+                    this.cleanEmptyParents(path.dirname(entry.absPath), journal.workspaceRoot);
+                }
+                else if (entry.originalContent !== undefined) {
+                    fs.mkdirSync(path.dirname(entry.absPath), { recursive: true });
+                    fs.writeFileSync(entry.absPath, entry.originalContent, "utf-8");
+                    if (entry.originalMode !== undefined) {
+                        try {
+                            fs.chmodSync(entry.absPath, entry.originalMode);
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (rstErr) {
+                console.error(`[ChangeManager] Error restoring "${entry.relPath}":`, rstErr);
+            }
+        }
+        // Clean up journal file
+        try {
+            if (fs.existsSync(journalFile)) {
+                fs.unlinkSync(journalFile);
+            }
+        }
+        catch { }
+    }
+    cleanEmptyParents(dir, root) {
+        let current = path.resolve(dir);
+        const resolvedRoot = path.resolve(root);
+        while (current.startsWith(resolvedRoot) && current !== resolvedRoot) {
+            try {
+                if (fs.existsSync(current) && fs.readdirSync(current).length === 0) {
+                    fs.rmdirSync(current);
+                    current = path.dirname(current);
+                }
+                else {
+                    break;
+                }
+            }
+            catch {
+                break;
+            }
+        }
+    }
+}
+exports.ChangeManager = ChangeManager;
+/**
+ * Generate a standard unified diff representation between original and new text.
+ */
+function formatUnifiedDiff(filePath, original, modified) {
+    const origLines = original ? original.split("\n") : [];
+    const modLines = modified ? modified.split("\n") : [];
+    const header = `--- a/${filePath}\n+++ b/${filePath}\n`;
+    // Simple line-by-line diff
+    const diffLines = [];
+    let i = 0;
+    let j = 0;
+    while (i < origLines.length || j < modLines.length) {
+        if (i < origLines.length && j < modLines.length) {
+            if (origLines[i] === modLines[j]) {
+                // Unchanged
+                i++;
+                j++;
+            }
+            else {
+                // Find next match or emit deletion/addition
+                diffLines.push(`-${origLines[i]}`);
+                diffLines.push(`+${modLines[j]}`);
+                i++;
+                j++;
+            }
+        }
+        else if (i < origLines.length) {
+            diffLines.push(`-${origLines[i]}`);
+            i++;
+        }
+        else if (j < modLines.length) {
+            diffLines.push(`+${modLines[j]}`);
+            j++;
+        }
+    }
+    if (diffLines.length === 0) {
+        return `${header}@@ -1,1 +1,1 @@\n (no changes)\n`;
+    }
+    return `${header}@@ -1,${origLines.length || 1} +1,${modLines.length || 1} @@\n${diffLines.join("\n")}\n`;
+}
+
+
+/***/ }),
+/* 44 */
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+
+/**
+ * Phase 3: Command output digest for run_command results.
+ *
+ * Pure helper module — imports only from Node.js standard library.
+ * No imports from other harness modules; this entire file counts as part of runCommand.ts
+ * for the phase module-count limit.
+ *
+ * Detects well-known test/build/lint output formats and produces compact actionable
+ * digests while always persisting full raw output to a scratch file so the model
+ * can retrieve complete details when needed.
+ *
+ * Falls back to the existing truncateHeadTail behavior for unrecognized formats.
+ * Never makes output less informative than the current behavior.
+ */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.writeScratch = writeScratch;
+exports.digestCommandOutput = digestCommandOutput;
+const path = __importStar(__webpack_require__(13));
+const fs = __importStar(__webpack_require__(12));
+const crypto = __importStar(__webpack_require__(10));
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+/**
+ * Total combined chars (stdout + stderr) at or below which output is considered
+ * "short and useful" — left essentially unchanged.
+ */
+const SHORT_OUTPUT_CHARS = 2_000;
+/**
+ * Maximum scratch files to keep in .daxiom/scratch/ before pruning oldest.
+ */
+const MAX_SCRATCH_FILES = 50;
+/**
+ * Maximum number of diagnostic lines (tsc errors, pytest failures, etc.) to
+ * include in a digest before truncating.
+ */
+const MAX_DIAGNOSTIC_LINES = 25;
+/**
+ * Maximum number of Jest/pytest failure blocks in the digest.
+ */
+const MAX_FAILURE_BLOCKS = 5;
+/**
+ * Maximum lines per failure block in the digest.
+ */
+const MAX_BLOCK_LINES = 25;
+// ---------------------------------------------------------------------------
+// Internal: head/tail truncation (mirrors contextBudget.truncateHeadTail)
+// Duplicated here to keep this module pure (no harness imports).
+// ---------------------------------------------------------------------------
+function truncateHeadTail(text, maxChars, headChars = 2_000, tailChars = 3_500) {
+    if (text.length <= maxChars) {
+        return text;
+    }
+    let headLen = headChars;
+    let tailLen = tailChars;
+    if (headLen + tailLen >= maxChars) {
+        const ratio = headLen / (headLen + tailLen);
+        headLen = Math.floor(maxChars * ratio * 0.9);
+        tailLen = Math.floor(maxChars * (1 - ratio) * 0.9);
+    }
+    const head = text.slice(0, headLen);
+    const tail = text.slice(text.length - tailLen);
+    const middle = text.slice(headLen, text.length - tailLen);
+    const omittedLineCount = (middle.match(/\n/g) || []).length;
+    return `${head}\n… [${omittedLineCount} lines omitted] …\n${tail}`;
+}
+// ---------------------------------------------------------------------------
+// Internal: scratch file management
+// ---------------------------------------------------------------------------
+/**
+ * Write full raw output to a scratch file.
+ * Returns the workspace-relative path on success, or undefined on failure.
+ * Fails open — never throws.
+ */
+function writeScratch(workspaceRoot, command, stdout, stderr) {
+    try {
+        const scratchDir = path.join(workspaceRoot, ".daxiom", "scratch");
+        fs.mkdirSync(scratchDir, { recursive: true });
+        pruneScratchFiles(scratchDir);
+        const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+        const fileName = `cmd-${id}.log`;
+        const absPath = path.join(scratchDir, fileName);
+        // Ensure the scratch path stays inside the workspace (safety check)
+        const relToRoot = path.relative(workspaceRoot, absPath);
+        if (relToRoot.startsWith("..") || path.isAbsolute(relToRoot)) {
+            return undefined;
+        }
+        const parts = [`$ ${command}`, ""];
+        if (stdout.trim()) {
+            parts.push("stdout:", stdout);
+        }
+        if (stderr.trim()) {
+            parts.push("stderr:", stderr);
+        }
+        fs.writeFileSync(absPath, parts.join("\n"), "utf-8");
+        return path.join(".daxiom", "scratch", fileName);
+    }
+    catch {
+        return undefined; // Fail open
+    }
+}
+/**
+ * Prune scratch files when there are too many, removing the oldest.
+ * Only removes files matching the `cmd-*.log` pattern — safe by construction.
+ * Fails open — never throws.
+ */
+function pruneScratchFiles(scratchDir) {
+    try {
+        const entries = fs
+            .readdirSync(scratchDir)
+            .filter((f) => f.startsWith("cmd-") && f.endsWith(".log"))
+            .map((f) => {
+            try {
+                return { name: f, mtime: fs.statSync(path.join(scratchDir, f)).mtimeMs };
+            }
+            catch {
+                return null;
+            }
+        })
+            .filter((e) => e !== null)
+            .sort((a, b) => a.mtime - b.mtime);
+        while (entries.length >= MAX_SCRATCH_FILES) {
+            const oldest = entries.shift();
+            if (oldest) {
+                try {
+                    fs.unlinkSync(path.join(scratchDir, oldest.name));
+                }
+                catch {
+                    // Ignore per-file unlink errors
+                }
+            }
+        }
+    }
+    catch {
+        // Ignore directory-level errors — fail open
+    }
+}
+// ---------------------------------------------------------------------------
+// Internal: format detection
+// ---------------------------------------------------------------------------
+function detectFormat(command, stdout, stderr) {
+    const originalLen = stdout.length + stderr.length;
+    // Short output — leave unchanged
+    if (originalLen <= SHORT_OUTPUT_CHARS) {
+        return "short";
+    }
+    const cmdLower = command.toLowerCase().trim();
+    const combined = stdout + "\n" + stderr;
+    // Vitest (check before jest — vitest output has distinct markers)
+    if (cmdLower.includes("vitest") ||
+        /\bTest Files\b/i.test(combined) ||
+        // Vitest uses Unicode check/cross marks differently from jest
+        (/\bDuration\b/i.test(combined) && /\bTest Files\b/i.test(combined))) {
+        return "vitest";
+    }
+    // Jest
+    if (cmdLower.includes("jest") ||
+        /\bTest Suites?:/i.test(combined) ||
+        /\bTests?:\s+\d+\s+(?:failed|passed)/i.test(combined) ||
+        // Jest failure bullets appear as "  ● TestName"
+        /^\s{0,2}●\s/m.test(stdout)) {
+        return "jest";
+    }
+    // TypeScript compiler
+    if (
+    // Command is literally "tsc" or has "tsc " flags
+    /\btsc\b/.test(cmdLower) ||
+        /error TS\d+:/i.test(combined) ||
+        /Found \d+ error/i.test(combined)) {
+        return "tsc";
+    }
+    // ESLint
+    if (cmdLower.includes("eslint") ||
+        /\d+ errors?,\s*\d+ warnings?/i.test(combined) ||
+        // ESLint problem format: "  15:3  error  ..."
+        /^\s+\d+:\d+\s+(error|warning)\s+/m.test(combined)) {
+        return "eslint";
+    }
+    // pytest
+    if (cmdLower.includes("pytest") ||
+        /={4,}\s+(?:FAILURES?|ERRORS?)\s+={4,}/i.test(combined) ||
+        /^FAILED\s+\S+::/m.test(combined) ||
+        /\d+ (?:failed|passed).*in \d+(?:\.\d+)?s/i.test(combined)) {
+        return "pytest";
+    }
+    return "unknown";
+}
+// ---------------------------------------------------------------------------
+// Internal: format-specific digestors
+// ---------------------------------------------------------------------------
+/** Extract Jest/Vitest digest. */
+function digestJestLike(stdout, stderr, scratchPath, label = "Jest") {
+    const combined = stdout + "\n" + stderr;
+    const lines = combined.split("\n");
+    const sections = [];
+    // Test summary lines
+    const testSummaryMatch = combined.match(/\bTests?:\s+[^\n]+/i);
+    const suiteSummaryMatch = combined.match(/\bTest (?:Suites?|Files?):\s+[^\n]+/i);
+    if (suiteSummaryMatch)
+        sections.push(suiteSummaryMatch[0].trim());
+    if (testSummaryMatch)
+        sections.push(testSummaryMatch[0].trim());
+    // Duration
+    const durationMatch = combined.match(/\bDuration\s*[:\s]+[^\n]+/i);
+    if (durationMatch)
+        sections.push(durationMatch[0].trim());
+    // Collect failure blocks (lines starting with "  ● " or vitest FAIL marker)
+    const failedBlocks = [];
+    let inBlock = false;
+    let block = [];
+    let blockLineCount = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const isNewBlock = /^\s{0,4}●\s/.test(line) || /^─{4,}/.test(line);
+        if (isNewBlock && !inBlock) {
+            inBlock = true;
+            block = [line];
+            blockLineCount = 1;
+        }
+        else if (inBlock) {
+            const isEndOfBlock = (line.trim() === "" && blockLineCount > 3 && lines[i + 1]?.trim() === "") ||
+                (/^\s{0,4}●\s/.test(line) && blockLineCount > 2);
+            if (isEndOfBlock || blockLineCount >= MAX_BLOCK_LINES) {
+                failedBlocks.push(block.join("\n").trimEnd());
+                if (failedBlocks.length >= MAX_FAILURE_BLOCKS) {
+                    inBlock = false;
+                    break;
+                }
+                inBlock = false;
+                block = [];
+                blockLineCount = 0;
+                // Start a new block if this is a new bullet
+                if (/^\s{0,4}●\s/.test(line)) {
+                    inBlock = true;
+                    block = [line];
+                    blockLineCount = 1;
+                }
+            }
+            else {
+                block.push(line);
+                blockLineCount++;
+            }
+        }
+    }
+    if (inBlock && block.length > 0) {
+        failedBlocks.push(block.join("\n").trimEnd());
+    }
+    if (failedBlocks.length > 0) {
+        sections.push("\nFailing tests:\n" + failedBlocks.join("\n\n"));
+    }
+    // FAIL/PASS file list
+    const failFiles = lines
+        .filter((l) => /^\s*FAIL\s/.test(l))
+        .map((l) => l.trim())
+        .slice(0, 10);
+    if (failFiles.length > 0) {
+        sections.push("Failed suites:\n" + failFiles.join("\n"));
+    }
+    if (sections.length === 0) {
+        // No structure found — use tail lines for context
+        const tail = lines.slice(-20).join("\n").trim();
+        if (tail)
+            sections.push(tail);
+    }
+    if (scratchPath) {
+        sections.push(`\nFull output: ${scratchPath}`);
+    }
+    return sections.filter(Boolean).join("\n");
+}
+/** Extract TypeScript compiler digest. */
+function digestTsc(stdout, stderr, scratchPath) {
+    const combined = (stdout + "\n" + stderr).trim();
+    const sections = [];
+    // Success case
+    if (/Found 0 errors/.test(combined)) {
+        sections.push("TypeScript: 0 errors (compilation successful)");
+        if (scratchPath)
+            sections.push(`Full output: ${scratchPath}`);
+        return sections.join("\n");
+    }
+    // Error count
+    const errCountMatch = combined.match(/Found (\d+) errors?/i);
+    if (errCountMatch) {
+        sections.push(`TypeScript: ${errCountMatch[0]}`);
+    }
+    // Diagnostic lines: file.ts(line,col): error TSxxxx: message
+    const diagnosticRe = /^(.+\.(?:ts|tsx|js|jsx))\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.+)$/gm;
+    const diagnostics = [];
+    let match;
+    while ((match = diagnosticRe.exec(combined)) !== null) {
+        diagnostics.push(`${match[1]}(${match[2]},${match[3]}): ${match[4]} ${match[5]}: ${match[6]}`);
+        if (diagnostics.length >= MAX_DIAGNOSTIC_LINES) {
+            diagnostics.push(`… (${MAX_DIAGNOSTIC_LINES}+ diagnostics; see full output for complete list)`);
+            break;
+        }
+    }
+    if (diagnostics.length > 0) {
+        sections.push("\nDiagnostics:\n" + diagnostics.join("\n"));
+    }
+    else if (!errCountMatch) {
+        // Unrecognized tsc output — include last 30 lines
+        const lines = combined.split("\n");
+        sections.push(lines.slice(-30).join("\n"));
+    }
+    if (scratchPath) {
+        sections.push(`\nFull output: ${scratchPath}`);
+    }
+    return sections.filter(Boolean).join("\n");
+}
+/** Extract ESLint digest. */
+function digestEslint(stdout, stderr, scratchPath) {
+    const combined = (stdout + "\n" + stderr).trim();
+    const lines = combined.split("\n");
+    const sections = [];
+    // Summary: "X errors, Y warnings"
+    const summaryMatch = combined.match(/(\d+)\s+errors?,\s*(\d+)\s+warnings?/i);
+    if (summaryMatch) {
+        sections.push(`ESLint: ${summaryMatch[0]}`);
+    }
+    // Extract file + problem lines
+    // ESLint output format:
+    //   /path/to/file.ts
+    //     15:3  error  'x' is not defined  no-undef
+    const problemLines = [];
+    let currentFile = "";
+    for (const line of lines) {
+        // File path line (no leading whitespace, has file extension)
+        if (/^[^\s].*\.(ts|tsx|js|jsx|vue|mjs|cjs|svelte)$/i.test(line.trim())) {
+            currentFile = line.trim();
+            continue;
+        }
+        // Problem line: "  15:3  error  message  rule-name"
+        const problemMatch = line.match(/^\s+(\d+:\d+)\s+(error|warning)\s+(.+?)\s{2,}(\S+)\s*$/);
+        if (problemMatch) {
+            const prefix = currentFile ? `${currentFile} ` : "";
+            problemLines.push(`${prefix}${problemMatch[1]}  ${problemMatch[2]}  ${problemMatch[3]}  (${problemMatch[4]})`);
+            if (problemLines.length >= MAX_DIAGNOSTIC_LINES) {
+                problemLines.push(`… (truncated; see full output)`);
+                break;
+            }
+        }
+    }
+    if (problemLines.length > 0) {
+        sections.push("\nProblems:\n" + problemLines.join("\n"));
+    }
+    else if (!summaryMatch) {
+        // Unrecognized ESLint output — tail lines
+        sections.push(lines.slice(-20).join("\n").trim());
+    }
+    if (scratchPath) {
+        sections.push(`\nFull output: ${scratchPath}`);
+    }
+    return sections.filter(Boolean).join("\n");
+}
+/** Extract pytest digest. */
+function digestPytest(stdout, stderr, scratchPath) {
+    const combined = (stdout + "\n" + stderr).trim();
+    const lines = combined.split("\n");
+    const sections = [];
+    // Summary: "=== X failed, Y passed in Zs ==="
+    const summaryMatch = combined.match(/={4,}\s+(.+?(?:failed|passed|error).+?)\s+={4,}/i);
+    if (summaryMatch) {
+        sections.push(`pytest: ${summaryMatch[1].trim()}`);
+    }
+    // FAILED test lines
+    const failedTests = lines
+        .filter((l) => /^FAILED\s/.test(l.trim()))
+        .map((l) => l.trim())
+        .slice(0, 20);
+    if (failedTests.length > 0) {
+        sections.push("\nFailed tests:\n" + failedTests.join("\n"));
+    }
+    // Failure detail blocks (between "___ test_name ___" lines)
+    const failureBlocks = [];
+    let inBlock = false;
+    let blockLines = [];
+    let blockCount = 0;
+    for (const line of lines) {
+        if (/^_{4,}\s+\S.*\s+_{4,}/.test(line)) {
+            if (inBlock && blockLines.length > 0) {
+                failureBlocks.push(blockLines.join("\n").trimEnd());
+                blockCount++;
+                if (blockCount >= MAX_FAILURE_BLOCKS) {
+                    inBlock = false;
+                    break;
+                }
+                blockLines = [];
+            }
+            inBlock = true;
+            blockLines = [line];
+        }
+        else if (inBlock) {
+            if (/^={4,}/.test(line)) {
+                // End of failures section
+                failureBlocks.push(blockLines.join("\n").trimEnd());
+                inBlock = false;
+            }
+            else if (blockLines.length < MAX_BLOCK_LINES) {
+                blockLines.push(line);
+            }
+        }
+    }
+    if (inBlock && blockLines.length > 0) {
+        failureBlocks.push(blockLines.join("\n").trimEnd());
+    }
+    if (failureBlocks.length > 0) {
+        sections.push("\nFailure details:\n" + failureBlocks.join("\n\n"));
+    }
+    else if (!summaryMatch && failedTests.length === 0) {
+        // Unrecognized pytest output
+        sections.push(lines.slice(-20).join("\n").trim());
+    }
+    if (scratchPath) {
+        sections.push(`\nFull output: ${scratchPath}`);
+    }
+    return sections.filter(Boolean).join("\n");
+}
+/**
+ * Unknown format fallback: mirrors the existing truncateHeadTail behavior
+ * from runCommand.ts, but additionally includes the scratch-file path.
+ * This must never make output less informative than the current behavior.
+ */
+function digestUnknown(stdout, stderr, maxChars, scratchPath) {
+    const sections = [];
+    if (stdout.trim()) {
+        sections.push(`stdout:\n${truncateHeadTail(stdout, maxChars)}`);
+    }
+    if (stderr.trim()) {
+        sections.push(`stderr:\n${truncateHeadTail(stderr, maxChars)}`);
+    }
+    if (scratchPath) {
+        sections.push(`Full output: ${scratchPath}`);
+    }
+    return sections.join("\n\n");
+}
+/** Short output: return essentially unchanged, optionally adding scratch path. */
+function digestShort(stdout, stderr, scratchPath, originalChars) {
+    const sections = [];
+    if (stdout.trim()) {
+        sections.push(`stdout:\n${stdout}`);
+    }
+    if (stderr.trim()) {
+        sections.push(`stderr:\n${stderr}`);
+    }
+    // Only add scratch path for outputs above a tiny threshold (avoids noise for
+    // one-liner commands like `echo "ok"`)
+    if (scratchPath && originalChars > 200) {
+        sections.push(`Full output: ${scratchPath}`);
+    }
+    return sections.join("\n\n");
+}
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+/**
+ * Digest command output into a compact, actionable tool-result body.
+ *
+ * Always writes full raw output to a scratch file for model retrieval.
+ * Falls back to existing head/tail truncation for unrecognized formats.
+ * Fails open on any internal error.
+ *
+ * Callers must check DAXIOM_COMMAND_DIGEST themselves; this function always
+ * performs digesting regardless of the flag.
+ */
+function digestCommandOutput(input) {
+    const { command, stdout, stderr, workspaceRoot, maxChars = 6_000, } = input;
+    const originalChars = stdout.length + stderr.length;
+    const rawBytes = Buffer.byteLength(stdout + stderr, "utf-8");
+    // Always write scratch file first (so model can retrieve full output)
+    const scratchRelPath = writeScratch(workspaceRoot, command, stdout, stderr);
+    const format = detectFormat(command, stdout, stderr);
+    let digest;
+    try {
+        switch (format) {
+            case "short":
+                digest = digestShort(stdout, stderr, scratchRelPath, originalChars);
+                break;
+            case "jest":
+                digest = digestJestLike(stdout, stderr, scratchRelPath, "Jest");
+                break;
+            case "vitest":
+                digest = digestJestLike(stdout, stderr, scratchRelPath, "Vitest");
+                break;
+            case "tsc":
+                digest = digestTsc(stdout, stderr, scratchRelPath);
+                break;
+            case "eslint":
+                digest = digestEslint(stdout, stderr, scratchRelPath);
+                break;
+            case "pytest":
+                digest = digestPytest(stdout, stderr, scratchRelPath);
+                break;
+            case "unknown":
+            default:
+                digest = digestUnknown(stdout, stderr, maxChars, scratchRelPath);
+                break;
+        }
+    }
+    catch {
+        // Safety net: if any parser throws, fall back to unknown/head-tail behavior
+        digest = digestUnknown(stdout, stderr, maxChars, scratchRelPath);
+    }
+    return {
+        digest,
+        scratchRelPath,
+        rawBytes,
+        originalChars,
+        digestChars: digest.length,
+        detectedFormat: format,
+    };
+}
+
+
+/***/ }),
+/* 45 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6104,10 +8533,10 @@ exports.resetExecFileForTesting = resetExecFileForTesting;
 exports.extractRepoNameFromUrl = extractRepoNameFromUrl;
 const path = __importStar(__webpack_require__(13));
 const fs = __importStar(__webpack_require__(12));
-const child_process_1 = __webpack_require__(39);
-const types_1 = __webpack_require__(24);
-const fsutil_1 = __webpack_require__(23);
-const workspace_1 = __webpack_require__(42);
+const child_process_1 = __webpack_require__(41);
+const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(25);
+const workspace_1 = __webpack_require__(46);
 let execFileImpl = child_process_1.execFile;
 function setExecFileForTesting(fn) {
     execFileImpl = fn;
@@ -6226,7 +8655,7 @@ exports.gitCloneTool = {
 
 
 /***/ }),
-/* 42 */
+/* 46 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6271,7 +8700,7 @@ exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
 const path = __importStar(__webpack_require__(13));
 const fs = __importStar(__webpack_require__(12));
-const types_1 = __webpack_require__(24);
+const types_1 = __webpack_require__(26);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -6340,14 +8769,14 @@ async function resolvePathInWorkspace(input, root, confirm) {
 
 
 /***/ }),
-/* 43 */
+/* 47 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchGithubIssueTool = void 0;
 exports.fetchGithubIssue = fetchGithubIssue;
-const child_process_1 = __webpack_require__(39);
+const child_process_1 = __webpack_require__(41);
 /**
  * Fetch issue details authoritatively using `gh` CLI with REST API fallback.
  */
@@ -6501,14 +8930,14 @@ exports.fetchGithubIssueTool = {
 
 
 /***/ }),
-/* 44 */
+/* 48 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.webSearchTool = void 0;
 exports.createWebSearchTool = createWebSearchTool;
-const WebSearchProvider_1 = __webpack_require__(45);
+const WebSearchProvider_1 = __webpack_require__(49);
 /**
  * Native web search tool for DAXIOM.
  * Enables the agent to query current external documentation, APIs, and guides.
@@ -6611,7 +9040,7 @@ exports.webSearchTool = createWebSearchTool();
 
 
 /***/ }),
-/* 45 */
+/* 49 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -7114,7 +9543,7 @@ function getSearchProvider(explicitName) {
 
 
 /***/ }),
-/* 46 */
+/* 50 */
 /***/ ((__unused_webpack_module, exports) => {
 
 

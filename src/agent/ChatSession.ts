@@ -1,4 +1,4 @@
-import { LLMClient, type LLMClientOptions } from "../llm/LLMClient";
+import { LLMClient, type LLMClientOptions, type StreamOptions } from "../llm/LLMClient";
 import type { ChatMessage, ContentPart, ToolCall } from "../llm/types";
 import type { Tool, ToolContext } from "../tools/types";
 import { ToolRegistry } from "../tools/registry";
@@ -19,9 +19,21 @@ import {
 } from "../shared/models";
 
 import { TaskMemory, type TaskMemoryData } from "./TaskMemory";
-import { type CallPhase, getPhaseModelOverride } from "../llm/tokenBudget";
+import {
+  type CallPhase,
+  getPhaseModelOverride,
+  getPhaseMaxTokens,
+  getEnvCeiling,
+} from "../llm/tokenBudget";
 import { compactHistory, getInputTokenBudget } from "../llm/contextBudget";
 import { UsageTracker } from "../llm/usageTracker";
+import {
+  isStablePromptPrefixEnabled,
+  partitionPrompt,
+  formatDynamicTaskContext,
+  PromptPrefixTracker,
+} from "./promptPrefix";
+import { isUsageMarkEnabled } from "../llm/usageMark";
 
 /** Product name shown to the user and used in the agent's self-identity. */
 export const AGENT_NAME = "Axiom";
@@ -99,15 +111,13 @@ export function isReadOnlyTool(name: string, tool?: Tool): boolean {
   return true;
 }
 
-export function buildSystemPrompt(
+export function buildStableSystemPrompt(
   modelDisplay: string,
   workspaceName: string | undefined,
   root: string | undefined,
   allowMutations: boolean,
-  workingMemorySection?: string,
-  orchestrator?: Orchestrator,
+  repoProfile?: RepoProfile | null,
 ): string {
-  // 1. Stable prefix: identical between turns for maximum prompt-cache hit rate
   const ws = root
     ? `You are operating inside the user's VS Code workspace.
 Workspace: ${workspaceName ?? "(unnamed)"}
@@ -131,7 +141,7 @@ disabled and will be refused. Do the following:
 - Present it as a clear, numbered plan and stop. Do not attempt to modify anything.
 - Tell the user to switch to Auto Edit mode to apply the plan.`;
 
-  const stablePrefix = `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
+  let prompt = `You are ${AGENT_NAME}, an autonomous AI coding assistant embedded in VS Code.
 
 Your name is ${AGENT_NAME}. You are currently powered by the "${modelDisplay}" model,
 served through an OpenAI-compatible API. If the user asks which model or AI you are,
@@ -167,6 +177,47 @@ REPOSITORY CLONING & PATH NAVIGATION GUIDANCE:
 - When the user gives a repository URL and it is not already in the workspace, use \`git_clone\` first, then work inside the cloned folder.
 - Never guess file paths; always verify directory layout with \`list_files\` at the exact path first.
 - Never run a workspace-wide search when a specific repository folder is known — always pass the narrow \`path\` parameter to \`search_workspace\` and \`list_files\`.`;
+
+  if (repoProfile) {
+    const profileLines: string[] = [];
+    if (repoProfile.testCommand) {
+      profileLines.push(`Test command: \`${repoProfile.testCommand}\``);
+    }
+    if (repoProfile.buildCommand) {
+      profileLines.push(`Build command: \`${repoProfile.buildCommand}\``);
+    }
+    if (repoProfile.lintCommand) {
+      profileLines.push(`Lint command: \`${repoProfile.lintCommand}\``);
+    }
+    if (repoProfile.defaultBranch) {
+      profileLines.push(`Default branch: ${repoProfile.defaultBranch}`);
+    }
+    if (repoProfile.keyDirectories?.length) {
+      profileLines.push(`Key directories: ${repoProfile.keyDirectories.join(", ")}`);
+    }
+    if (profileLines.length > 0) {
+      prompt += `\n\nRepository info (session-cached):\n${profileLines.join("\n")}`;
+    }
+  }
+
+  return prompt;
+}
+
+export function buildSystemPrompt(
+  modelDisplay: string,
+  workspaceName: string | undefined,
+  root: string | undefined,
+  allowMutations: boolean,
+  workingMemorySection?: string,
+  orchestrator?: Orchestrator,
+): string {
+  // 1. Stable prefix: identical between turns for maximum prompt-cache hit rate
+  const stablePrefix = buildStableSystemPrompt(
+    modelDisplay,
+    workspaceName,
+    root,
+    allowMutations,
+  );
 
   // 2. Dynamic/volatile suffix: placed at the end so it never invalidates the stable prefix cache
   const memoryBlock = workingMemorySection ? `\n\n${workingMemorySection}` : "";
@@ -272,6 +323,8 @@ export class ChatSession {
     string,
     { content: string; ok: boolean; summary: string }
   >();
+  /** Tracker for prompt prefix stability and invalidation reasons. */
+  private readonly prefixTracker = new PromptPrefixTracker();
 
   constructor(
     private readonly client: LLMClient,
@@ -329,6 +382,15 @@ export class ChatSession {
   }
 
   private systemPrompt(): string {
+    if (isStablePromptPrefixEnabled()) {
+      return buildStableSystemPrompt(
+        this.modelDisplay,
+        this.workspaceName,
+        this.ctx.workspaceRoot?.fsPath,
+        this.allowMutations,
+        this.repoProfile,
+      );
+    }
     return buildSystemPrompt(
       this.modelDisplay,
       this.workspaceName,
@@ -337,6 +399,23 @@ export class ChatSession {
       this.taskMemory.formatForSystemPrompt(),
       this.orchestrator ?? undefined,
     );
+  }
+
+  /** Format dynamic task phase and verification gate information for ephemeral injection. */
+  private formatOrchestratorPhase(): string {
+    if (!this.orchestrator) {
+      return "";
+    }
+    let phaseBlock = `Current task phase: ${PHASE_LABELS[this.orchestrator.phase]}`;
+    if (
+      this.orchestrator.testCommand &&
+      (this.orchestrator.phase === "EDITING" || this.orchestrator.phase === "VERIFYING")
+    ) {
+      phaseBlock +=
+        `\nVerification gate: You MUST run \`${this.orchestrator.testCommand}\` after editing ` +
+        `files to verify correctness. Do not declare the task done without attempting this.`;
+    }
+    return phaseBlock;
   }
 
   /** Refresh the system message in place after a live model/mode change or memory update. */
@@ -423,6 +502,11 @@ export class ChatSession {
     return this.usageTracker;
   }
 
+  /** Prompt prefix stability tracker for inspection and testing. */
+  get stablePrefixTracker(): PromptPrefixTracker {
+    return this.prefixTracker;
+  }
+
   private getActiveModel(): string {
     if (typeof this.client?.getModel === "function") {
       return this.client.getModel();
@@ -435,6 +519,7 @@ export class ChatSession {
     this.taskMemory.clear();
     this.loopDetector.reset();
     this.usageTracker.reset();
+    this.prefixTracker.reset();
     this.readOnlyToolCache.clear();
     this.orchestrator = null;
     this.messages = [{ role: "system", content: this.systemPrompt() }];
@@ -476,6 +561,7 @@ export class ChatSession {
     // Fresh orchestrator for this task (phase starts at EXPLORING)
     this.orchestrator = new Orchestrator(DEFAULT_BUDGET, this.repoProfile);
     this.loopDetector.reset();
+    this.prefixTracker.reset();
 
     // Retain user request in active task memory and refresh system prompt
     this.taskMemory.recordUserRequest(userText);
@@ -516,7 +602,39 @@ export class ChatSession {
 
         const inputBudget = getInputTokenBudget();
         this.messages = compactHistory(this.messages, inputBudget);
-        const outgoingMessages = this.messages;
+        let outgoingMessages = this.messages;
+
+        if (isStablePromptPrefixEnabled()) {
+          try {
+            const dynamicContext = formatDynamicTaskContext(
+              this.taskMemory.formatForSystemPrompt(),
+              this.formatOrchestratorPhase(),
+            );
+
+            const partition = partitionPrompt({
+              stableSystemPrompt:
+                typeof this.messages[0]?.content === "string"
+                  ? this.messages[0].content
+                  : "",
+              tools: toolDefs,
+              model: phaseModelOverride ?? currentModel,
+              provider: this.client.getBaseUrl(),
+              history: this.messages,
+              dynamicContext,
+              tracker: this.prefixTracker,
+            });
+
+            outgoingMessages = partition.outgoingMessages;
+          } catch (err) {
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+              console.debug(
+                "[StablePromptPrefix] Failed to partition prompt prefix; falling back to legacy layout",
+                err,
+              );
+            }
+            outgoingMessages = this.messages;
+          }
+        }
 
         const gen = this.client.stream(outgoingMessages, {
           signal: controller.signal,
@@ -532,24 +650,106 @@ export class ChatSession {
           cb.onAssistantDelta(id, next.value.delta);
           next = await gen.next();
         }
-        const turn = next.value;
+        let turn = next.value;
 
         if (started) {
           cb.onAssistantDone(id);
         }
 
-        // Guard: an assistant turn with neither text nor tool calls must NOT be
-        // pushed to history — OpenRouter (and most providers) will reject any
-        // subsequent request that replays such an empty message with:
-        //   "model output error: model output must contain either output text or tool calls"
+        // Empty turn handling & optional single retry
         if (!turn.content && turn.toolCalls.length === 0) {
-          const emptyMsg =
-            "The model returned an empty response (no text and no tool calls). " +
-            "This can happen when the token budget is exhausted or the provider " +
-            "drops the turn. Please retry your request.";
-          cb.onError(emptyMsg);
-          cb.onStatus("Finished");
-          return;
+          const shouldRetryEmpty =
+            process.env.DAXIOM_EMPTY_TURN_RETRY === "1" ||
+            process.env.DAXIOM_EMPTY_TURN_RETRY === "true";
+
+          if (shouldRetryEmpty) {
+            // When UsageMark is enabled, record request A before executing retry request B
+            // to ensure accurate non-double-counted multi-request accounting (Section 21)
+            if (isUsageMarkEnabled()) {
+              this.usageTracker.recordUsage(
+                currentModel,
+                outgoingMessages,
+                turn,
+                callPhase,
+              );
+            }
+
+            const isLength = turn.finishReason === "length";
+            const baseTokens = getPhaseMaxTokens(callPhase, phaseModelOverride ?? currentModel);
+            const envCeil = getEnvCeiling();
+            let retryMaxTokens = baseTokens * 2;
+            if (envCeil !== undefined) {
+              retryMaxTokens = Math.min(retryMaxTokens, envCeil);
+            }
+
+            const retryMessages: ChatMessage[] = isLength
+              ? outgoingMessages
+              : [
+                  ...outgoingMessages,
+                  {
+                    role: "user",
+                    content:
+                      "Your previous response was empty. Please provide your response or call a tool to proceed.",
+                  },
+                ];
+
+            const retryStreamOpts: StreamOptions = {
+              signal: controller.signal,
+              tools: toolDefs,
+              phase: callPhase,
+              model: phaseModelOverride,
+              onRetry: () => cb.onStatus("Rate limited \u2014 retrying\u2026"),
+            };
+
+            if (isLength) {
+              retryStreamOpts.maxTokens = retryMaxTokens;
+            }
+
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+              console.debug(
+                `[EmptyTurnRetry] Retrying empty turn (finishReason=${turn.finishReason}, isLength=${isLength}, maxTokens=${retryStreamOpts.maxTokens ?? baseTokens})`,
+              );
+            }
+
+            let retryStarted = false;
+            const retryId = started ? `a${++this.counter}` : id;
+            const ensureRetryStarted = () => {
+              if (!retryStarted) {
+                retryStarted = true;
+                cb.onAssistantStart(retryId);
+              }
+            };
+
+            const retryGen = this.client.stream(retryMessages, retryStreamOpts);
+            let retryNext = await retryGen.next();
+            while (!retryNext.done) {
+              ensureRetryStarted();
+              cb.onAssistantDelta(retryId, retryNext.value.delta);
+              retryNext = await retryGen.next();
+            }
+            if (retryStarted) {
+              cb.onAssistantDone(retryId);
+            }
+            const retryTurn = retryNext.value;
+
+            if (retryTurn.content || retryTurn.toolCalls.length > 0) {
+              turn = retryTurn;
+            }
+          }
+
+          // Guard: an assistant turn with neither text nor tool calls must NOT be
+          // pushed to history — OpenRouter (and most providers) will reject any
+          // subsequent request that replays such an empty message with:
+          //   "model output error: model output must contain either output text or tool calls"
+          if (!turn.content && turn.toolCalls.length === 0) {
+            const emptyMsg =
+              "The model returned an empty response (no text and no tool calls). " +
+              "This can happen when the token budget is exhausted or the provider " +
+              "drops the turn. Please retry your request.";
+            cb.onError(emptyMsg);
+            cb.onStatus("Finished");
+            return;
+          }
         }
 
         if (turn.content) {

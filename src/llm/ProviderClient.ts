@@ -33,12 +33,13 @@ import {
   type ProviderConfig,
 } from "./providers";
 import { fetchWithRetry } from "./http";
-import { type CallPhase, getPhaseMaxTokens } from "./tokenBudget";
+import { type CallPhase, getPhaseMaxTokens, getReasoningFloor } from "./tokenBudget";
 import {
   getAffordableTokens,
   fetchKeyInfo,
   fetchModelPrices,
   invalidateKeyInfoCache,
+  AFFORDABILITY_SAFETY_MARGIN,
   MIN_RETRY_AFFORDABLE_TOKENS,
 } from "./affordability";
 import { classify402 } from "./classify402";
@@ -326,6 +327,7 @@ async function clampForReservation(
   apiKey: string,
   baseUrl: string,
   requestedMaxTokens: number,
+  floor = 0,
 ): Promise<number> {
   try {
     const [keyInfo, prices] = await Promise.all([
@@ -344,19 +346,38 @@ async function clampForReservation(
     if (!completionPrice || completionPrice <= 0) {
       return requestedMaxTokens; // no pricing data
     }
+
+    if (floor > 0) {
+      const totalAffordable = Math.floor(
+        (keyInfo.limitRemaining * AFFORDABILITY_SAFETY_MARGIN) / completionPrice,
+      );
+      if (totalAffordable < floor) {
+        throw new Error(
+          `OpenRouter balance is too low: can only afford ${totalAffordable} tokens ` +
+            `(minimum required for reasoning is ${floor}). ` +
+            `Please add credits at https://openrouter.ai/settings/credits.`,
+        );
+      }
+    }
+
     const fraction = getMaxReservationFraction();
     const affordableBudget = keyInfo.limitRemaining * fraction;
     const maxAffordableTokens = Math.floor(affordableBudget / completionPrice);
+    const minGuarded = floor > 0 ? floor : MIN_GUARDED_MAX_TOKENS;
+
     if (maxAffordableTokens < requestedMaxTokens) {
       if (process.env.DEBUG_TOKEN_BUDGET === "1") {
         console.debug(
-          `[Reservation] Lowering max_tokens from ${requestedMaxTokens} → ${Math.max(MIN_GUARDED_MAX_TOKENS, maxAffordableTokens)} ` +
+          `[Reservation] Lowering max_tokens from ${requestedMaxTokens} → ${Math.max(minGuarded, maxAffordableTokens)} ` +
           `(balance $${keyInfo.limitRemaining.toFixed(4)}, fraction ${fraction}, price $${completionPrice}/tok)`,
         );
       }
     }
-    return Math.max(MIN_GUARDED_MAX_TOKENS, Math.min(requestedMaxTokens, maxAffordableTokens));
-  } catch {
+    return Math.max(minGuarded, Math.min(requestedMaxTokens, maxAffordableTokens));
+  } catch (err) {
+    if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+      throw err;
+    }
     return requestedMaxTokens; // Fail open
   }
 }
@@ -380,13 +401,26 @@ async function* streamFromProvider(
 
   // Affordability pre-clamp (existing behavior)
   if (provider.baseUrl.includes("openrouter.ai") && apiKey) {
+    const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
     try {
       const affordable = await getAffordableTokens(targetModel, apiKey, provider.baseUrl);
-      if (Number.isFinite(affordable) && affordable > 0) {
-        effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+      if (Number.isFinite(affordable)) {
+        if (floor > 0 && affordable < floor) {
+          throw new Error(
+            `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+              `(minimum required for reasoning is ${floor}). ` +
+              `Please add credits at https://openrouter.ai/settings/credits.`,
+          );
+        }
+        if (affordable > 0) {
+          effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+        }
       }
-    } catch {
-      // Fail open on affordability errors
+    } catch (err) {
+      if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+        throw err;
+      }
+      // Fail open on other affordability errors
     }
 
     // Phase 4: reservation fraction guard
@@ -395,6 +429,7 @@ async function* streamFromProvider(
       apiKey,
       provider.baseUrl,
       effectiveMaxTokens,
+      floor,
     );
   }
 
@@ -439,10 +474,12 @@ async function* streamFromProvider(
       if (classified.kind === "max_tokens_unaffordable") {
         // ── Existing behavior: single retry with floor(N * 0.9) ──────────
         const affordable = classified.affordableTokens!;
-        if (affordable < MIN_RETRY_AFFORDABLE_TOKENS) {
+        const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
+        const minRequired = floor > 0 ? floor : MIN_RETRY_AFFORDABLE_TOKENS;
+        if (affordable < minRequired) {
           throw new Error(
             `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
-              `(minimum required is ${MIN_RETRY_AFFORDABLE_TOKENS}). ` +
+              `(minimum required is ${minRequired}). ` +
               `Please add credits at https://openrouter.ai/settings/credits.` +
               `${classified.message ? ` Detail: ${classified.message}` : ""}`,
           );
@@ -592,6 +629,7 @@ async function* streamFromProvider(
   let content = "";
   const toolAcc = new ToolCallAccumulator();
   let finishReason: string | null = null;
+  let providerUsage: AssistantTurn["usage"] | undefined;
 
   try {
     while (true) {
@@ -612,7 +650,10 @@ async function* streamFromProvider(
 
         for (const chunk of parseSseEvent(rawEvent)) {
           if (chunk === DONE_SENTINEL) {
-            return { content, toolCalls: toolAcc.finalize(), finishReason };
+            return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+          }
+          if ((chunk as ChatCompletionChunk).usage) {
+            providerUsage = (chunk as ChatCompletionChunk).usage;
           }
           const choice = (chunk as ChatCompletionChunk).choices?.[0];
           if (!choice) {
@@ -636,7 +677,7 @@ async function* streamFromProvider(
     reader.releaseLock();
   }
 
-  return { content, toolCalls: toolAcc.finalize(), finishReason };
+  return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
 }
 
 // ---------------------------------------------------------------------------
