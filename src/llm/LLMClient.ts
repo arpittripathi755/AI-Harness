@@ -7,12 +7,19 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types";
-import { getModelMaxTokens, modelApi } from "../shared/models";
+import { DEFAULT_MAX_TOKENS, getModelMaxTokens, modelApi, resolveModelId } from "../shared/models";
 import { streamResponses } from "./responses";
 import { fetchWithRetry } from "./http";
-import type { ProviderClient } from "./ProviderClient";
-import { type CallPhase, getPhaseMaxTokens } from "./tokenBudget";
+import { ProviderClient } from "./ProviderClient";
+import { type CallPhase, getPhaseMaxTokens, getReasoningFloor } from "./tokenBudget";
 import { buildEndpointUrl } from "./endpointUtils";
+import {
+  getAffordableTokens,
+  invalidateKeyInfoCache,
+  MIN_RETRY_AFFORDABLE_TOKENS,
+  recordModelAffordability,
+} from "./affordability";
+import { classify402 } from "./classify402";
 
 export interface LLMClientOptions {
   baseUrl: string;
@@ -48,6 +55,16 @@ export class LLMClient {
     this.model = opts.model;
     this.maxTokens = opts.maxTokens;
     this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+    if (this.opts.baseUrl.includes("openrouter.ai") || opts.apiKey?.startsWith("sk-or-v1-")) {
+      this.providerClient = new ProviderClient(
+        {
+          name: "OpenRouter",
+          baseUrl: this.opts.baseUrl,
+          model: this.model,
+        },
+        opts.apiKey,
+      );
+    }
   }
 
   /**
@@ -95,7 +112,18 @@ export class LLMClient {
   setEndpoint(baseUrl: string, apiKey: string): void {
     this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
     this.opts.apiKey = apiKey;
-    this.providerClient?.setBaseUrl(baseUrl);
+    if (this.providerClient) {
+      this.providerClient.setBaseUrl(baseUrl);
+    } else if (this.opts.baseUrl.includes("openrouter.ai") || apiKey?.startsWith("sk-or-v1-")) {
+      this.providerClient = new ProviderClient(
+        {
+          name: "OpenRouter",
+          baseUrl: this.opts.baseUrl,
+          model: this.model,
+        },
+        apiKey,
+      );
+    }
   }
 
   getModel(): string {
@@ -113,11 +141,18 @@ export class LLMClient {
    * - NVIDIA NIM (api.nvidia.com) uses its hosted catalog IDs.
    */
   private resolveModelForEndpoint(model: string, baseUrl: string): string {
+    const isOpenRouterEndpoint = baseUrl.includes("openrouter.ai");
+    if (isOpenRouterEndpoint) {
+      return resolveModelId(model);
+    }
+
     const isNvidiaEndpoint = baseUrl.includes("api.nvidia.com");
     if (isNvidiaEndpoint) {
       if (
         model === "ultra" ||
+        model === "nemotron" ||
         model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+        model === "lightning-ai/nvidia/nemotron-3-ultra-550b-a55b" ||
         model === "nvidia/nemotron-3-ultra-550b-a55b"
       ) {
         return "nvidia/nemotron-3-ultra-550b-a55b";
@@ -125,6 +160,7 @@ export class LLMClient {
       if (
         model === "deepseek-flash" ||
         model === "deepseek-v4-pro" ||
+        model === "deepseek/deepseek-v4.1-flash" ||
         model === "deepseek-ai/deepseek-v4.1-flash"
       ) {
         return "deepseek-ai/deepseek-v4.1-flash";
@@ -136,10 +172,13 @@ export class LLMClient {
       if (
         model === "deepseek-v4-pro" ||
         model === "deepseek-flash" ||
+        model === "deepseek/deepseek-v4.1-flash" ||
         model === "deepseek-ai/deepseek-v4.1-flash" ||
         model === "nvidia/nemotron-3-ultra-550b-a55b" ||
         model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
-        model === "ultra"
+        model === "lightning-ai/nvidia/nemotron-3-ultra-550b-a55b" ||
+        model === "ultra" ||
+        model === "nemotron"
       ) {
         return "deepseek-chat";
       }
@@ -150,12 +189,16 @@ export class LLMClient {
       if (model === "deepseek-flash" || model === "deepseek-v4-pro") {
         return "deepseek-ai/deepseek-v4.1-flash";
       }
-      if (model === "ultra" || model === "nvidia/nemotron-3-ultra-550b-a55b") {
+      if (
+        model === "ultra" ||
+        model === "nemotron" ||
+        model === "nvidia/nemotron-3-ultra-550b-a55b"
+      ) {
         return "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
       }
     }
 
-    return model;
+    return resolveModelId(model);
   }
 
   /**
@@ -168,10 +211,17 @@ export class LLMClient {
     { signal, tools, onRetry, maxTokens, phase, model }: StreamOptions = {},
   ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
     const activeModel = model ?? this.model;
-    const rawTokens = maxTokens ?? this.maxTokens;
-    const effectiveMaxTokens = phase
-      ? getPhaseMaxTokens(phase, activeModel, rawTokens)
-      : rawTokens;
+    let effectiveMaxTokens: number;
+    if (phase) {
+      // Only pass override if caller explicitly specified maxTokens
+      effectiveMaxTokens = getPhaseMaxTokens(phase, activeModel, maxTokens);
+      if (this.maxTokens !== undefined) {
+        effectiveMaxTokens = Math.min(effectiveMaxTokens, this.maxTokens);
+      }
+    } else {
+      const base = maxTokens ?? this.maxTokens ?? DEFAULT_MAX_TOKENS;
+      effectiveMaxTokens = getModelMaxTokens(activeModel, base);
+    }
 
     // Delegate to ProviderClient when one is active (dual-provider path)
     if (this.providerClient) {
@@ -204,20 +254,42 @@ export class LLMClient {
       this.opts.baseUrl,
     );
 
+    // Affordability pre-clamp for OpenRouter
+    if (this.opts.baseUrl.includes("openrouter.ai") && this.opts.apiKey) {
+      const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
+      try {
+        const affordable = await getAffordableTokens(effectiveModel, this.opts.apiKey, this.opts.baseUrl);
+        if (Number.isFinite(affordable)) {
+          if (floor > 0 && affordable < floor) {
+            throw new Error(
+              `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                `(minimum required for reasoning is ${floor}). ` +
+                `Please add credits at https://openrouter.ai/settings/credits.`,
+            );
+          }
+          if (affordable > 0) {
+            effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+          }
+        }
+      } catch (err) {
+        if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+          throw err;
+        }
+      }
+    }
+
     const body: ChatCompletionRequest = {
       model: effectiveModel,
       messages,
       stream: true,
-      max_tokens: phase
-        ? effectiveMaxTokens
-        : getModelMaxTokens(activeModel, effectiveMaxTokens),
+      max_tokens: effectiveMaxTokens,
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
       body.tool_choice = "auto";
     }
 
-    const response = await fetchWithRetry(
+    let response = await fetchWithRetry(
       buildEndpointUrl(this.opts.baseUrl, "chat/completions"),
       {
         method: "POST",
@@ -230,12 +302,58 @@ export class LLMClient {
       { signal, onRetry },
     );
 
-    if (!response.ok || !response.body) {
+    if (response.status === 402 || (!response.ok && !response.body)) {
       const detail = await safeReadText(response);
-      throw new Error(
-        `Request failed (${response.status} ${response.statusText})` +
-          (detail ? `: ${detail}` : ""),
-      );
+      if (response.status === 402) {
+        invalidateKeyInfoCache();
+        const classified = classify402(detail, response.headers, this.opts.apiKey);
+        if (classified.kind === "max_tokens_unaffordable") {
+          const affordable = classified.affordableTokens!;
+          recordModelAffordability(effectiveModel, affordable, this.opts.apiKey);
+          const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
+          const minRequired = floor > 0 ? floor : MIN_RETRY_AFFORDABLE_TOKENS;
+          if (affordable < minRequired) {
+            throw new Error(
+              `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                `(minimum required is ${minRequired}). ` +
+                `Please add credits at https://openrouter.ai/settings/credits.` +
+                `${classified.message ? ` Detail: ${classified.message}` : ""}`,
+            );
+          }
+          const retryTokens = Math.floor(affordable * 0.9);
+          const retryBody: ChatCompletionRequest = { ...body, max_tokens: retryTokens };
+          const retryResponse = await fetchWithRetry(
+            buildEndpointUrl(this.opts.baseUrl, "chat/completions"),
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${this.opts.apiKey}`,
+              },
+              body: JSON.stringify(retryBody),
+            },
+            { signal, onRetry, retries: 0 },
+          );
+          if (retryResponse.ok && retryResponse.body) {
+            response = retryResponse;
+          } else {
+            const retryDetail = await safeReadText(retryResponse);
+            throw new Error(
+              `Request failed (402 Payment Required) after retry: ${retryDetail.replace(this.opts.apiKey, "[REDACTED]") || retryResponse.statusText}`,
+            );
+          }
+        }
+      }
+      if (!response.ok || !response.body) {
+        throw new Error(
+          `Request failed (${response.status} ${response.statusText})` +
+            (detail ? `: ${detail}` : ""),
+        );
+      }
+    }
+
+    if (!response.body) {
+      throw new Error("Response body is empty");
     }
 
     const reader = response.body.getReader();

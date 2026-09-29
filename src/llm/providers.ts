@@ -5,6 +5,7 @@ import {
   getMaxTokens,
   getModelMaxTokens,
   getModelDisplayName,
+  resolveModelId,
 } from "../shared/models";
 
 /** The canonical DeepSeek evaluation model used across DAXIOM. */
@@ -16,6 +17,7 @@ export {
   getMaxTokens,
   getModelMaxTokens,
   getModelDisplayName,
+  resolveModelId,
 };
 
 /** A provider configuration record. */

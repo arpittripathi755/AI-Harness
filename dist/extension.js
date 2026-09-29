@@ -1420,8 +1420,11 @@ exports.LLMClient = void 0;
 const models_1 = __webpack_require__(5);
 const responses_1 = __webpack_require__(6);
 const http_1 = __webpack_require__(7);
+const ProviderClient_1 = __webpack_require__(53);
 const tokenBudget_1 = __webpack_require__(8);
 const endpointUtils_1 = __webpack_require__(9);
+const affordability_1 = __webpack_require__(55);
+const classify402_1 = __webpack_require__(56);
 /**
  * Minimal OpenAI-compatible chat client built on native `fetch` — deliberately
  * NOT the Anthropic/openai SDK. Targets any endpoint exposing
@@ -1438,6 +1441,13 @@ class LLMClient {
         this.model = opts.model;
         this.maxTokens = opts.maxTokens;
         this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
+        if (this.opts.baseUrl.includes("openrouter.ai") || opts.apiKey?.startsWith("sk-or-v1-")) {
+            this.providerClient = new ProviderClient_1.ProviderClient({
+                name: "OpenRouter",
+                baseUrl: this.opts.baseUrl,
+                model: this.model,
+            }, opts.apiKey);
+        }
     }
     /**
      * Create an LLMClient that delegates streaming to a ProviderClient.
@@ -1476,7 +1486,16 @@ class LLMClient {
     setEndpoint(baseUrl, apiKey) {
         this.opts.baseUrl = this.normalizeEndpoint(baseUrl, apiKey);
         this.opts.apiKey = apiKey;
-        this.providerClient?.setBaseUrl(baseUrl);
+        if (this.providerClient) {
+            this.providerClient.setBaseUrl(baseUrl);
+        }
+        else if (this.opts.baseUrl.includes("openrouter.ai") || apiKey?.startsWith("sk-or-v1-")) {
+            this.providerClient = new ProviderClient_1.ProviderClient({
+                name: "OpenRouter",
+                baseUrl: this.opts.baseUrl,
+                model: this.model,
+            }, apiKey);
+        }
     }
     getModel() {
         return this.providerClient ? this.providerClient.model : this.model;
@@ -1491,15 +1510,22 @@ class LLMClient {
      * - NVIDIA NIM (api.nvidia.com) uses its hosted catalog IDs.
      */
     resolveModelForEndpoint(model, baseUrl) {
+        const isOpenRouterEndpoint = baseUrl.includes("openrouter.ai");
+        if (isOpenRouterEndpoint) {
+            return (0, models_1.resolveModelId)(model);
+        }
         const isNvidiaEndpoint = baseUrl.includes("api.nvidia.com");
         if (isNvidiaEndpoint) {
             if (model === "ultra" ||
+                model === "nemotron" ||
                 model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
+                model === "lightning-ai/nvidia/nemotron-3-ultra-550b-a55b" ||
                 model === "nvidia/nemotron-3-ultra-550b-a55b") {
                 return "nvidia/nemotron-3-ultra-550b-a55b";
             }
             if (model === "deepseek-flash" ||
                 model === "deepseek-v4-pro" ||
+                model === "deepseek/deepseek-v4.1-flash" ||
                 model === "deepseek-ai/deepseek-v4.1-flash") {
                 return "deepseek-ai/deepseek-v4.1-flash";
             }
@@ -1508,10 +1534,13 @@ class LLMClient {
         if (isDeepSeekEndpoint) {
             if (model === "deepseek-v4-pro" ||
                 model === "deepseek-flash" ||
+                model === "deepseek/deepseek-v4.1-flash" ||
                 model === "deepseek-ai/deepseek-v4.1-flash" ||
                 model === "nvidia/nemotron-3-ultra-550b-a55b" ||
                 model === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b" ||
-                model === "ultra") {
+                model === "lightning-ai/nvidia/nemotron-3-ultra-550b-a55b" ||
+                model === "ultra" ||
+                model === "nemotron") {
                 return "deepseek-chat";
             }
         }
@@ -1520,11 +1549,13 @@ class LLMClient {
             if (model === "deepseek-flash" || model === "deepseek-v4-pro") {
                 return "deepseek-ai/deepseek-v4.1-flash";
             }
-            if (model === "ultra" || model === "nvidia/nemotron-3-ultra-550b-a55b") {
+            if (model === "ultra" ||
+                model === "nemotron" ||
+                model === "nvidia/nemotron-3-ultra-550b-a55b") {
                 return "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b";
             }
         }
-        return model;
+        return (0, models_1.resolveModelId)(model);
     }
     /**
      * Stream one assistant turn. Yields `{type:'text'}` deltas as text arrives and
@@ -1533,10 +1564,18 @@ class LLMClient {
      */
     async *stream(messages, { signal, tools, onRetry, maxTokens, phase, model } = {}) {
         const activeModel = model ?? this.model;
-        const rawTokens = maxTokens ?? this.maxTokens;
-        const effectiveMaxTokens = phase
-            ? (0, tokenBudget_1.getPhaseMaxTokens)(phase, activeModel, rawTokens)
-            : rawTokens;
+        let effectiveMaxTokens;
+        if (phase) {
+            // Only pass override if caller explicitly specified maxTokens
+            effectiveMaxTokens = (0, tokenBudget_1.getPhaseMaxTokens)(phase, activeModel, maxTokens);
+            if (this.maxTokens !== undefined) {
+                effectiveMaxTokens = Math.min(effectiveMaxTokens, this.maxTokens);
+            }
+        }
+        else {
+            const base = maxTokens ?? this.maxTokens ?? models_1.DEFAULT_MAX_TOKENS;
+            effectiveMaxTokens = (0, models_1.getModelMaxTokens)(activeModel, base);
+        }
         // Delegate to ProviderClient when one is active (dual-provider path)
         if (this.providerClient) {
             return yield* this.providerClient.stream(messages, {
@@ -1562,19 +1601,39 @@ class LLMClient {
             });
         }
         const effectiveModel = this.resolveModelForEndpoint(activeModel, this.opts.baseUrl);
+        // Affordability pre-clamp for OpenRouter
+        if (this.opts.baseUrl.includes("openrouter.ai") && this.opts.apiKey) {
+            const floor = (phase === "tool_decision" || phase === "edit") ? (0, tokenBudget_1.getReasoningFloor)() : 0;
+            try {
+                const affordable = await (0, affordability_1.getAffordableTokens)(effectiveModel, this.opts.apiKey, this.opts.baseUrl);
+                if (Number.isFinite(affordable)) {
+                    if (floor > 0 && affordable < floor) {
+                        throw new Error(`OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                            `(minimum required for reasoning is ${floor}). ` +
+                            `Please add credits at https://openrouter.ai/settings/credits.`);
+                    }
+                    if (affordable > 0) {
+                        effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+                    }
+                }
+            }
+            catch (err) {
+                if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+                    throw err;
+                }
+            }
+        }
         const body = {
             model: effectiveModel,
             messages,
             stream: true,
-            max_tokens: phase
-                ? effectiveMaxTokens
-                : (0, models_1.getModelMaxTokens)(activeModel, effectiveMaxTokens),
+            max_tokens: effectiveMaxTokens,
         };
         if (tools && tools.length > 0) {
             body.tools = tools;
             body.tool_choice = "auto";
         }
-        const response = await (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(this.opts.baseUrl, "chat/completions"), {
+        let response = await (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(this.opts.baseUrl, "chat/completions"), {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -1582,10 +1641,48 @@ class LLMClient {
             },
             body: JSON.stringify(body),
         }, { signal, onRetry });
-        if (!response.ok || !response.body) {
+        if (response.status === 402 || (!response.ok && !response.body)) {
             const detail = await safeReadText(response);
-            throw new Error(`Request failed (${response.status} ${response.statusText})` +
-                (detail ? `: ${detail}` : ""));
+            if (response.status === 402) {
+                (0, affordability_1.invalidateKeyInfoCache)();
+                const classified = (0, classify402_1.classify402)(detail, response.headers, this.opts.apiKey);
+                if (classified.kind === "max_tokens_unaffordable") {
+                    const affordable = classified.affordableTokens;
+                    (0, affordability_1.recordModelAffordability)(effectiveModel, affordable, this.opts.apiKey);
+                    const floor = (phase === "tool_decision" || phase === "edit") ? (0, tokenBudget_1.getReasoningFloor)() : 0;
+                    const minRequired = floor > 0 ? floor : affordability_1.MIN_RETRY_AFFORDABLE_TOKENS;
+                    if (affordable < minRequired) {
+                        throw new Error(`OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                            `(minimum required is ${minRequired}). ` +
+                            `Please add credits at https://openrouter.ai/settings/credits.` +
+                            `${classified.message ? ` Detail: ${classified.message}` : ""}`);
+                    }
+                    const retryTokens = Math.floor(affordable * 0.9);
+                    const retryBody = { ...body, max_tokens: retryTokens };
+                    const retryResponse = await (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(this.opts.baseUrl, "chat/completions"), {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${this.opts.apiKey}`,
+                        },
+                        body: JSON.stringify(retryBody),
+                    }, { signal, onRetry, retries: 0 });
+                    if (retryResponse.ok && retryResponse.body) {
+                        response = retryResponse;
+                    }
+                    else {
+                        const retryDetail = await safeReadText(retryResponse);
+                        throw new Error(`Request failed (402 Payment Required) after retry: ${retryDetail.replace(this.opts.apiKey, "[REDACTED]") || retryResponse.statusText}`);
+                    }
+                }
+            }
+            if (!response.ok || !response.body) {
+                throw new Error(`Request failed (${response.status} ${response.statusText})` +
+                    (detail ? `: ${detail}` : ""));
+            }
+        }
+        if (!response.body) {
+            throw new Error("Response body is empty");
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -1833,6 +1930,17 @@ exports.MODELS = [
         supportsTools: true,
         supportsVision: false,
     },
+    // ==========================================
+    // NVIDIA Models (Verified on OpenRouter)
+    // ==========================================
+    {
+        displayName: "Nemotron 3 Ultra 550B",
+        apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
+        provider: "NVIDIA",
+        contextLength: 262144,
+        supportsTools: true,
+        supportsVision: false,
+    },
 ];
 /**
  * Default evaluation model — the canonical DeepSeek model.
@@ -1928,55 +2036,76 @@ function resolveModelId(apiModelId) {
     if (exports.MODELS.some((m) => m.apiModelId === trimmed)) {
         return trimmed;
     }
+    // Strip legacy provider namespace prefixes if present (e.g. lightning-ai/ or openrouter/)
+    let candidate = trimmed;
+    while (candidate.startsWith("lightning-ai/") || candidate.startsWith("openrouter/")) {
+        if (candidate.startsWith("lightning-ai/")) {
+            candidate = candidate.slice("lightning-ai/".length);
+        }
+        else if (candidate.startsWith("openrouter/")) {
+            candidate = candidate.slice("openrouter/".length);
+        }
+    }
+    if (exports.MODELS.some((m) => m.apiModelId === candidate)) {
+        return candidate;
+    }
+    // Aliases for NVIDIA models
+    if (candidate === "ultra" ||
+        candidate === "nemotron" ||
+        candidate === "nemotron-3-ultra-550b-a55b" ||
+        candidate === "nvidia-nemotron-3-ultra-550b-a55b" ||
+        candidate === "nvidia/nemotron-3-ultra-550b-a55b") {
+        return "nvidia/nemotron-3-ultra-550b-a55b";
+    }
     // Aliases for DeepSeek models
-    if (trimmed === "deepseek-v4.1-flash" ||
-        trimmed === "deepseek-ai/deepseek-v4.1-flash" ||
-        trimmed === "deepseek v4.1 flash") {
+    if (candidate === "deepseek-v4.1-flash" ||
+        candidate === "deepseek-ai/deepseek-v4.1-flash" ||
+        candidate === "deepseek v4.1 flash") {
         return "deepseek/deepseek-v4.1-flash";
     }
-    if (trimmed === "deepseek-flash" ||
-        trimmed === "deepseek-v4-flash" ||
-        trimmed === "deepseek-ai/deepseek-v4-flash") {
+    if (candidate === "deepseek-flash" ||
+        candidate === "deepseek-v4-flash" ||
+        candidate === "deepseek-ai/deepseek-v4-flash") {
         return "deepseek/deepseek-v4-flash";
     }
-    if (trimmed === "deepseek-v4-pro" ||
-        trimmed === "deepseek-ai/deepseek-v4-pro") {
+    if (candidate === "deepseek-v4-pro" ||
+        candidate === "deepseek-ai/deepseek-v4-pro") {
         return "deepseek/deepseek-v4-pro";
     }
-    if (trimmed === "deepseek-chat" ||
-        trimmed === "deepseek-v3" ||
-        trimmed === "deepseek-ai/deepseek-chat") {
+    if (candidate === "deepseek-chat" ||
+        candidate === "deepseek-v3" ||
+        candidate === "deepseek-ai/deepseek-chat") {
         return "deepseek/deepseek-chat";
     }
-    if (trimmed === "deepseek-r1" || trimmed === "deepseek-ai/deepseek-r1") {
+    if (candidate === "deepseek-r1" || candidate === "deepseek-ai/deepseek-r1") {
         return "deepseek/deepseek-r1";
     }
     // Aliases for Qwen models
-    if (trimmed === "qwen3-coder" ||
-        trimmed === "qwen-coder" ||
-        trimmed === "qwen/qwen3-coder-480b") {
+    if (candidate === "qwen3-coder" ||
+        candidate === "qwen-coder" ||
+        candidate === "qwen/qwen3-coder-480b") {
         return "qwen/qwen3-coder";
     }
-    if (trimmed === "qwen3-coder-plus") {
+    if (candidate === "qwen3-coder-plus") {
         return "qwen/qwen3-coder-plus";
     }
-    if (trimmed === "qwen3-coder-flash") {
+    if (candidate === "qwen3-coder-flash") {
         return "qwen/qwen3-coder-flash";
     }
-    if (trimmed === "qwen3.8-flash") {
+    if (candidate === "qwen3.8-flash") {
         return "qwen/qwen3.8-flash";
     }
-    if (trimmed === "qwen-2.5-72b" ||
-        trimmed === "qwen-2.5-72b-instruct" ||
-        trimmed === "qwen/qwen2.5-72b-instruct") {
+    if (candidate === "qwen-2.5-72b" ||
+        candidate === "qwen-2.5-72b-instruct" ||
+        candidate === "qwen/qwen2.5-72b-instruct") {
         return "qwen/qwen-2.5-72b-instruct";
     }
-    if (trimmed === "qwen-plus") {
+    if (candidate === "qwen-plus") {
         return "qwen/qwen-plus";
     }
     // If an explicit model name was supplied (e.g. any custom OpenRouter model slug),
-    // return it as-is so users are not restricted from using any valid OpenRouter model.
-    return trimmed;
+    // return candidate with prefixes stripped rather than falling back to default.
+    return candidate;
 }
 
 
@@ -5197,6 +5326,10 @@ function readWorkspaceEnvFallback(keyName) {
 }
 // ---- persisted settings (globalState) ----
 function getModelId(context) {
+    const stored = context.globalState.get(KEY_MODEL);
+    if (stored) {
+        return (0, models_1.resolveModelId)(stored);
+    }
     const envModel = process.env.MODEL?.trim() ||
         process.env.AI_MODEL?.trim() ||
         readWorkspaceEnvFallback("MODEL") ||
@@ -5204,11 +5337,7 @@ function getModelId(context) {
     if (envModel) {
         return (0, models_1.resolveModelId)(envModel);
     }
-    const stored = context.globalState.get(KEY_MODEL);
-    if (!stored || stored.includes("lightning-ai") || stored === "ultra" || stored.includes("nemotron")) {
-        return models_1.DEFAULT_MODEL_ID;
-    }
-    return (0, models_1.resolveModelId)(stored);
+    return models_1.DEFAULT_MODEL_ID;
 }
 async function setModelId(context, apiModelId) {
     await context.globalState.update(KEY_MODEL, (0, models_1.resolveModelId)(apiModelId));
@@ -5262,7 +5391,15 @@ async function setTerminalAutoRun(context, value) {
 /** Get the configured token output budget (persisted or environment variable fallback). */
 function getMaxTokensConfig(context) {
     const persisted = context?.globalState?.get(KEY_MAX_TOKENS);
-    return (0, models_1.getMaxTokens)(persisted);
+    if (persisted !== undefined) {
+        return (0, models_1.getMaxTokens)(persisted);
+    }
+    const envFallback = readWorkspaceEnvFallback("MAX_TOKENS") ||
+        readWorkspaceEnvFallback("AI_MAX_TOKENS");
+    if (envFallback) {
+        return (0, models_1.resolveMaxTokens)(envFallback);
+    }
+    return (0, models_1.getMaxTokens)();
 }
 /** Store a user-defined max token budget in globalState. */
 async function setMaxTokensConfig(context, value) {
@@ -10442,6 +10579,1141 @@ function createWebFetchTool(options = {}) {
     };
 }
 exports.webFetchTool = createWebFetchTool();
+
+
+/***/ }),
+/* 53 */
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+
+/**
+ * ProviderClient — dual-provider LLM client for DAXIOM.
+ *
+ * Architecture:
+ *   Agent Loop
+ *       │
+ *   ProviderClient (this file)
+ *       │
+ *   ┌───┴───┐
+ *   │       │
+ * OpenRouter  AWSBedrock
+ *   Adapter     Adapter
+ *
+ * The agent only calls ProviderClient.stream(). Provider-specific auth and
+ * model-ID mapping are isolated inside each adapter. Credentials are read
+ * from the AI_API_KEY environment variable — never hard-coded or logged.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ProviderClient = void 0;
+exports.detectProviders = detectProviders;
+exports.buildProviderClient = buildProviderClient;
+const providers_1 = __webpack_require__(54);
+const http_1 = __webpack_require__(7);
+const tokenBudget_1 = __webpack_require__(8);
+const endpointUtils_1 = __webpack_require__(9);
+const affordability_1 = __webpack_require__(55);
+const classify402_1 = __webpack_require__(56);
+const singleFlight_1 = __webpack_require__(57);
+// ---------------------------------------------------------------------------
+// Per-provider adapters (all private to this module)
+// ---------------------------------------------------------------------------
+/**
+ * Build request headers for OpenRouter.
+ * OpenRouter uses standard Bearer auth plus a required HTTP-Referer header.
+ */
+function openRouterHeaders(apiKey) {
+    return {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://github.com/daxiom",
+        "X-Title": "DAXIOM",
+    };
+}
+/**
+ * Build request headers for AWS Bedrock's OpenAI-compatible endpoint.
+ * Bedrock's /openai/v1 proxy accepts the same Bearer token format used by
+ * API Gateway / Bedrock API keys; no SigV4 signing required on this path.
+ */
+function awsBedrockHeaders(apiKey) {
+    return {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+    };
+}
+function buildHeaders(provider, apiKey) {
+    if (provider.baseUrl.includes("openrouter.ai")) {
+        return openRouterHeaders(apiKey);
+    }
+    if (provider.baseUrl.includes("bedrock-runtime")) {
+        return awsBedrockHeaders(apiKey);
+    }
+    // Generic OpenAI-compatible fallback
+    return {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+    };
+}
+// ---------------------------------------------------------------------------
+// Probe a provider with a minimal chat/completions request.
+// ---------------------------------------------------------------------------
+/**
+ * Make a lightweight authenticated request to determine whether a provider
+ * is accessible and the API key is accepted.
+ *
+ * Uses a non-streaming single-token request so we can inspect the HTTP status
+ * without consuming a full streaming response.
+ *
+ * Returns null on success, or an error string on failure.
+ */
+async function probeProvider(provider, apiKey, signal) {
+    const url = (0, endpointUtils_1.buildEndpointUrl)(provider.baseUrl, "chat/completions");
+    const body = JSON.stringify({
+        model: provider.model,
+        messages: [{ role: "user", content: "ping" }],
+        max_tokens: 1,
+        stream: false,
+    });
+    let response;
+    try {
+        response = await (0, http_1.fetchWithRetry)(url, {
+            method: "POST",
+            headers: buildHeaders(provider, apiKey),
+            body,
+        }, { retries: 0, signal });
+    }
+    catch (err) {
+        if (err?.name === "AbortError") {
+            return "Request aborted";
+        }
+        // Network-level error (ECONNREFUSED, DNS, etc.)
+        return `Network error: ${err?.message ?? String(err)}`;
+    }
+    if (response.ok) {
+        return null; // success
+    }
+    // Read body for details but NEVER include the API key in the error message
+    let detail = "";
+    try {
+        const text = await response.text();
+        detail = text.slice(0, 200).replace(apiKey, "[REDACTED]");
+    }
+    catch {
+        /* ignore read failures */
+    }
+    if (response.status === 401 || response.status === 403) {
+        return `${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.`;
+    }
+    if (response.status === 404 ||
+        detail.toLowerCase().includes("model not found") ||
+        detail.toLowerCase().includes("no endpoints found")) {
+        return `Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model.`;
+    }
+    if (response.status === 429) {
+        return `${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your credits.`;
+    }
+    return `${provider.name} request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`;
+}
+// ---------------------------------------------------------------------------
+// SSE streaming helpers (shared between adapters)
+// ---------------------------------------------------------------------------
+const DONE_SENTINEL = Symbol("done");
+function parseSseEvent(rawEvent) {
+    const out = [];
+    for (const line of rawEvent.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) {
+            continue;
+        }
+        const data = trimmed.slice("data:".length).trim();
+        if (data === "[DONE]") {
+            out.push(DONE_SENTINEL);
+            continue;
+        }
+        try {
+            out.push(JSON.parse(data));
+        }
+        catch {
+            /* skip keep-alive / non-JSON lines */
+        }
+    }
+    return out;
+}
+class ToolCallAccumulator {
+    byIndex = new Map();
+    add(fragments) {
+        for (const frag of fragments) {
+            const entry = this.byIndex.get(frag.index) ?? {
+                id: "",
+                name: "",
+                args: "",
+            };
+            if (frag.id) {
+                entry.id = frag.id;
+            }
+            if (frag.function?.name) {
+                entry.name = frag.function.name;
+            }
+            if (frag.function?.arguments) {
+                entry.args += frag.function.arguments;
+            }
+            this.byIndex.set(frag.index, entry);
+        }
+    }
+    finalize() {
+        return [...this.byIndex.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([index, e]) => ({
+            id: e.id || `call_${index}`,
+            type: "function",
+            function: { name: e.name, arguments: e.args || "{}" },
+        }))
+            .filter((c) => c.function.name);
+    }
+}
+async function safeReadText(response) {
+    try {
+        return (await response.text()).slice(0, 500);
+    }
+    catch {
+        return "";
+    }
+}
+/**
+ * Stream a chat/completions request for a given provider config.
+ * Yields StreamEvents (text deltas) and returns the completed AssistantTurn.
+ */
+// ---------------------------------------------------------------------------
+// Cancelable sleep helper (internal to this module)
+// ---------------------------------------------------------------------------
+function sleepCancelable(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+        }, ms);
+        const onAbort = () => {
+            cleanup();
+            reject(new DOMException("Aborted", "AbortError"));
+        };
+        const cleanup = () => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+        };
+        if (signal) {
+            signal.addEventListener("abort", onAbort);
+        }
+    });
+}
+// ---------------------------------------------------------------------------
+// Reservation fraction guard (Phase 4)
+// ---------------------------------------------------------------------------
+/** Default: request must not consume more than 50% of remaining balance. */
+const DEFAULT_MAX_RESERVATION_FRACTION = 0.5;
+const MIN_GUARDED_MAX_TOKENS = 512;
+function getMaxReservationFraction() {
+    const raw = process.env.MAX_RESERVATION_FRACTION;
+    if (!raw) {
+        return DEFAULT_MAX_RESERVATION_FRACTION;
+    }
+    const v = parseFloat(raw);
+    return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_MAX_RESERVATION_FRACTION;
+}
+/**
+ * Optionally lower maxTokens so the estimated reservation is within the
+ * configured fraction of the key's remaining balance.
+ * Fails open on any error — never throws.
+ */
+async function clampForReservation(apiModelId, apiKey, baseUrl, requestedMaxTokens, floor = 0) {
+    try {
+        const [keyInfo, prices] = await Promise.all([
+            (0, affordability_1.fetchKeyInfo)(apiKey, baseUrl),
+            (0, affordability_1.fetchModelPrices)(baseUrl),
+        ]);
+        if (!keyInfo || keyInfo.limitRemaining === null || keyInfo.limitRemaining <= 0) {
+            return requestedMaxTokens; // unlimited or unknown — leave as-is
+        }
+        const completionPrice = prices?.[apiModelId] ??
+            (prices
+                ? (Object.values(prices).reduce((a, b) => a + b, 0) /
+                    Math.max(Object.keys(prices).length, 1) || null)
+                : null);
+        if (!completionPrice || completionPrice <= 0) {
+            return requestedMaxTokens; // no pricing data
+        }
+        if (floor > 0) {
+            const totalAffordable = Math.floor((keyInfo.limitRemaining * affordability_1.AFFORDABILITY_SAFETY_MARGIN) / completionPrice);
+            if (totalAffordable < floor) {
+                throw new Error(`OpenRouter balance is too low: can only afford ${totalAffordable} tokens ` +
+                    `(minimum required for reasoning is ${floor}). ` +
+                    `Please add credits at https://openrouter.ai/settings/credits.`);
+            }
+        }
+        const fraction = getMaxReservationFraction();
+        const affordableBudget = keyInfo.limitRemaining * fraction;
+        const maxAffordableTokens = Math.floor(affordableBudget / completionPrice);
+        const minGuarded = floor > 0 ? floor : MIN_GUARDED_MAX_TOKENS;
+        if (maxAffordableTokens < requestedMaxTokens) {
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                console.debug(`[Reservation] Lowering max_tokens from ${requestedMaxTokens} → ${Math.max(minGuarded, maxAffordableTokens)} ` +
+                    `(balance $${keyInfo.limitRemaining.toFixed(4)}, fraction ${fraction}, price $${completionPrice}/tok)`);
+            }
+        }
+        return Math.max(minGuarded, Math.min(requestedMaxTokens, maxAffordableTokens));
+    }
+    catch (err) {
+        if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+            throw err;
+        }
+        return requestedMaxTokens; // Fail open
+    }
+}
+// ---------------------------------------------------------------------------
+// Core streaming function with gate + classify402 + in-flight retry
+// ---------------------------------------------------------------------------
+const MAX_IN_FLIGHT_RETRIES = 2;
+async function* streamFromProvider(provider, apiKey, messages, { signal, tools, maxTokens, phase, onRetry, model } = {}) {
+    const rawModel = model ?? provider.model;
+    const targetModel = provider.baseUrl.includes("openrouter.ai")
+        ? (0, providers_1.resolveModelId)(rawModel)
+        : rawModel;
+    let effectiveMaxTokens = phase
+        ? (0, tokenBudget_1.getPhaseMaxTokens)(phase, targetModel, maxTokens)
+        : (0, providers_1.getModelMaxTokens)(targetModel, maxTokens);
+    // Affordability pre-clamp (existing behavior)
+    if (provider.baseUrl.includes("openrouter.ai") && apiKey) {
+        const floor = (phase === "tool_decision" || phase === "edit") ? (0, tokenBudget_1.getReasoningFloor)() : 0;
+        try {
+            const affordable = await (0, affordability_1.getAffordableTokens)(targetModel, apiKey, provider.baseUrl);
+            if (Number.isFinite(affordable)) {
+                if (floor > 0 && affordable < floor) {
+                    throw new Error(`OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                        `(minimum required for reasoning is ${floor}). ` +
+                        `Please add credits at https://openrouter.ai/settings/credits.`);
+                }
+                if (affordable > 0) {
+                    effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+                }
+            }
+        }
+        catch (err) {
+            if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+                throw err;
+            }
+            // Fail open on other affordability errors
+        }
+        // Phase 4: reservation fraction guard
+        effectiveMaxTokens = await clampForReservation(targetModel, apiKey, provider.baseUrl, effectiveMaxTokens, floor);
+    }
+    const body = {
+        model: targetModel,
+        messages,
+        stream: true,
+        max_tokens: effectiveMaxTokens,
+    };
+    // TODO: Prompt Caching Breakpoint
+    // When OpenRouter / Anthropic structured cache_control markers (e.g. { type: "ephemeral" })
+    // are supported in request message content blocks, attach cache_control to the stable prefix
+    // message here to trigger provider-side KV prompt caching.
+    if (tools && tools.length > 0) {
+        body.tools = tools;
+        body.tool_choice = "auto";
+    }
+    // Phase 3: single-flight gate — acquire before sending the initial request.
+    // The gate is released as soon as we have a settled Response (ok or error),
+    // so the stream body can be consumed without holding the gate.
+    let response = await (0, singleFlight_1.withGate)(() => (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(provider.baseUrl, "chat/completions"), {
+        method: "POST",
+        headers: buildHeaders(provider, apiKey),
+        body: JSON.stringify(body),
+    }, { signal, onRetry }));
+    // Phase 1 + 2: classify 402s and handle in-flight budget retries
+    if (response.status === 402 || (!response.ok && !response.body)) {
+        const detail = await safeReadText(response);
+        if (response.status === 402) {
+            (0, affordability_1.invalidateKeyInfoCache)();
+            const classified = (0, classify402_1.classify402)(detail, response.headers, apiKey);
+            if (classified.kind === "max_tokens_unaffordable") {
+                // ── Existing behavior: single retry with floor(N * 0.9) ──────────
+                const affordable = classified.affordableTokens;
+                (0, affordability_1.recordModelAffordability)(targetModel, affordable, apiKey);
+                const floor = (phase === "tool_decision" || phase === "edit") ? (0, tokenBudget_1.getReasoningFloor)() : 0;
+                const minRequired = floor > 0 ? floor : affordability_1.MIN_RETRY_AFFORDABLE_TOKENS;
+                if (affordable < minRequired) {
+                    throw new Error(`OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+                        `(minimum required is ${minRequired}). ` +
+                        `Please add credits at https://openrouter.ai/settings/credits.` +
+                        `${classified.message ? ` Detail: ${classified.message}` : ""}`);
+                }
+                const retryTokens = Math.floor(affordable * 0.9);
+                const retryBody = { ...body, max_tokens: retryTokens };
+                const retryResponse = await (0, singleFlight_1.withGate)(() => (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(provider.baseUrl, "chat/completions"), {
+                    method: "POST",
+                    headers: buildHeaders(provider, apiKey),
+                    body: JSON.stringify(retryBody),
+                }, { signal, onRetry, retries: 0 }));
+                if (retryResponse.ok && retryResponse.body) {
+                    response = retryResponse;
+                }
+                else {
+                    const retryDetail = await safeReadText(retryResponse);
+                    const safeRetryDetail = retryDetail.replace(apiKey, "[REDACTED]");
+                    throw new Error(`${provider.name} request failed (402 Payment Required) after retry: ` +
+                        `${safeRetryDetail || retryResponse.statusText}`);
+                }
+            }
+            else if (classified.kind === "in_flight_budget") {
+                // ── New: in-flight budget retry with Retry-After + halved tokens ─
+                let currentMaxTokens = body.max_tokens ?? effectiveMaxTokens;
+                let lastResponse = response;
+                for (let attempt = 1; attempt <= MAX_IN_FLIGHT_RETRIES; attempt++) {
+                    const waitSecs = classified.retryAfterSeconds ?? 20;
+                    onRetry?.(waitSecs * 1000, attempt);
+                    // Show visible status (surfaced to UI via onRetry callback)
+                    console.log(`[DAXIOM] OpenRouter in-flight budget full; waiting ${waitSecs}s, ` +
+                        `then retrying (attempt ${attempt}/${MAX_IN_FLIGHT_RETRIES})...`);
+                    // Cancelable wait
+                    await sleepCancelable(waitSecs * 1000, signal);
+                    // Halve max_tokens on retry (min 512) to lower the reservation
+                    currentMaxTokens = Math.max(512, Math.floor(currentMaxTokens / 2));
+                    const retryBody = {
+                        ...body,
+                        max_tokens: currentMaxTokens,
+                    };
+                    lastResponse = await (0, singleFlight_1.withGate)(() => (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(provider.baseUrl, "chat/completions"), {
+                        method: "POST",
+                        headers: buildHeaders(provider, apiKey),
+                        body: JSON.stringify(retryBody),
+                    }, { signal, onRetry, retries: 0 }));
+                    if (lastResponse.ok && lastResponse.body) {
+                        response = lastResponse;
+                        break;
+                    }
+                    // Still failing — reclassify to see if it's still in-flight
+                    if (lastResponse.status === 402) {
+                        const retryDetail = await safeReadText(lastResponse);
+                        const retryClassified = (0, classify402_1.classify402)(retryDetail, lastResponse.headers, apiKey);
+                        if (retryClassified.kind === "in_flight_budget" && attempt < MAX_IN_FLIGHT_RETRIES) {
+                            // Update wait time from new response and loop again
+                            Object.assign(classified, { retryAfterSeconds: retryClassified.retryAfterSeconds });
+                            continue;
+                        }
+                    }
+                    if (attempt >= MAX_IN_FLIGHT_RETRIES) {
+                        // Exhausted retries — surface clear actionable message
+                        throw new Error(`OpenRouter in-flight budget cap reached after ${MAX_IN_FLIGHT_RETRIES} retries. ` +
+                            `Your account's in-flight limit is likely too low. ` +
+                            `Adding even a small amount of credit raises the ceiling: ` +
+                            `https://openrouter.ai/settings/credits . ` +
+                            `Your session is intact — re-run the last step to try again.`);
+                    }
+                }
+            }
+            else {
+                // ── Class 3: insufficient_credits — no retry ─────────────────────
+                throw new Error(`${provider.name} credit check failed (402 Payment Required). ` +
+                    `Please add credits at https://openrouter.ai/settings/credits.` +
+                    `${classified.message ? ` Detail: ${classified.message}` : ""}`);
+            }
+        }
+    }
+    if (!response.ok || !response.body) {
+        const detail = await safeReadText(response);
+        const safeDetail = detail.replace(apiKey, "[REDACTED]");
+        let errMessage = "";
+        try {
+            const parsed = JSON.parse(detail);
+            if (parsed.error?.message) {
+                errMessage = parsed.error.message.replace(apiKey, "[REDACTED]");
+            }
+        }
+        catch {
+            errMessage = safeDetail;
+        }
+        if (response.status === 401 || response.status === 403) {
+            throw new Error(`${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.${errMessage ? ` Detail: ${errMessage}` : ""}`);
+        }
+        if (response.status === 404 ||
+            errMessage.toLowerCase().includes("model not found") ||
+            errMessage.toLowerCase().includes("no endpoints found")) {
+            throw new Error(`Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model (run /models).${errMessage ? ` Detail: ${errMessage}` : ""}`);
+        }
+        if (response.status === 429) {
+            throw new Error(`${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your OpenRouter credits.${errMessage ? ` Detail: ${errMessage}` : ""}`);
+        }
+        throw new Error(`${provider.name} request failed (${response.status} ${response.statusText})` +
+            (errMessage ? `: ${errMessage}` : ""));
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    const toolAcc = new ToolCallAccumulator();
+    let finishReason = null;
+    let providerUsage;
+    try {
+        while (true) {
+            if (signal?.aborted) {
+                reader.cancel().catch(() => { });
+                break;
+            }
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            let boundary;
+            while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+                const rawEvent = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                for (const chunk of parseSseEvent(rawEvent)) {
+                    if (chunk === DONE_SENTINEL) {
+                        return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+                    }
+                    if (chunk.usage) {
+                        providerUsage = chunk.usage;
+                    }
+                    const choice = chunk.choices?.[0];
+                    if (!choice) {
+                        continue;
+                    }
+                    if (choice.finish_reason) {
+                        finishReason = choice.finish_reason;
+                    }
+                    const piece = choice.delta?.content;
+                    if (piece) {
+                        content += piece;
+                        yield { type: "text", delta: piece };
+                    }
+                    if (choice.delta?.tool_calls) {
+                        toolAcc.add(choice.delta.tool_calls);
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        reader.releaseLock();
+    }
+    return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+}
+// ---------------------------------------------------------------------------
+// ProviderClient — the single object the agent loop talks to
+// ---------------------------------------------------------------------------
+/**
+ * Manages a single active provider selected at startup with automatic
+ * fallback to the secondary provider on transient failures.
+ *
+ * The agent does NOT know which provider is active — it only calls `.stream()`.
+ */
+class ProviderClient {
+    /** The canonical model identifier (never changes). */
+    canonicalModel = providers_1.CANONICAL_MODEL;
+    activeProvider;
+    fallbackProvider;
+    apiKey;
+    /** Whether a provider switch occurred during the current session. */
+    didFallback = false;
+    constructor(activeProvider, apiKey, fallbackProvider = null) {
+        this.activeProvider = activeProvider;
+        this.apiKey = apiKey;
+        this.fallbackProvider = fallbackProvider;
+    }
+    get providerName() {
+        return this.activeProvider.name;
+    }
+    get providerBaseUrl() {
+        return this.activeProvider.baseUrl;
+    }
+    get model() {
+        return this.activeProvider.model;
+    }
+    /** Update the active model live in the current session. */
+    setModel(model) {
+        const resolved = this.activeProvider.baseUrl.includes("openrouter.ai")
+            ? (0, providers_1.resolveModelId)(model)
+            : model;
+        this.activeProvider = { ...this.activeProvider, model: resolved };
+        if (this.fallbackProvider) {
+            const fallbackResolved = this.fallbackProvider.baseUrl.includes("openrouter.ai")
+                ? (0, providers_1.resolveModelId)(model)
+                : model;
+            this.fallbackProvider = { ...this.fallbackProvider, model: fallbackResolved };
+        }
+    }
+    /** Update the provider endpoint live in the current session. */
+    setBaseUrl(baseUrl) {
+        let normalized = baseUrl.trim();
+        if (!normalized.endsWith("/")) {
+            normalized += "/";
+        }
+        let name = "Custom";
+        if (normalized.includes("openrouter.ai")) {
+            name = "OpenRouter";
+        }
+        else if (normalized.includes("bedrock-runtime")) {
+            name = "AWS Bedrock";
+        }
+        this.activeProvider = {
+            name,
+            baseUrl: normalized,
+            model: this.activeProvider.model,
+        };
+        this.fallbackProvider = null;
+        this.didFallback = false;
+    }
+    /**
+     * Stream one assistant turn, automatically falling back to the secondary
+     * provider on a transient network/provider failure.
+     *
+     * Fallback is conservative: once a switch occurs in a session it does not
+     * switch back, and tool executions are NOT duplicated.
+     */
+    async *stream(messages, opts = {}) {
+        try {
+            return yield* streamFromProvider(this.activeProvider, this.apiKey, messages, opts);
+        }
+        catch (primaryErr) {
+            // Do not attempt fallback for aborted requests or auth failures
+            if (opts.signal?.aborted) {
+                throw primaryErr;
+            }
+            const isAuthError = primaryErr?.message?.includes("401") ||
+                primaryErr?.message?.includes("403") ||
+                primaryErr?.message?.includes("Unauthorized") ||
+                primaryErr?.message?.includes("Forbidden") ||
+                primaryErr?.message?.includes("authentication failed");
+            const isModelNotFoundError = primaryErr?.message?.includes("404") ||
+                primaryErr?.message?.includes("Model not found") ||
+                primaryErr?.message?.includes("No endpoints found");
+            if (isAuthError || isModelNotFoundError || !this.fallbackProvider || this.didFallback) {
+                throw primaryErr;
+            }
+            // Switch providers and retry — once per session
+            console.error(`[DAXIOM] ${this.activeProvider.name} unavailable (${primaryErr.message}). ` +
+                `Falling back to ${this.fallbackProvider.name}...`);
+            this.didFallback = true;
+            const prev = this.activeProvider;
+            this.activeProvider = this.fallbackProvider;
+            this.fallbackProvider = prev; // Swap so subsequent failures hit the original
+            return yield* streamFromProvider(this.activeProvider, this.apiKey, messages, opts);
+        }
+    }
+}
+exports.ProviderClient = ProviderClient;
+// ---------------------------------------------------------------------------
+// Provider detection — called once at startup
+// ---------------------------------------------------------------------------
+/**
+ * Detect which providers are reachable with the given API key.
+ *
+ * Makes a lightweight authenticated probe to each provider in PROVIDER_PRIORITY
+ * order. Returns the detection result including provider statuses and the
+ * selected active ProviderClient.
+ *
+ * @param apiKey  The credential from AI_API_KEY.
+ * @param signal  Optional AbortSignal to cancel probing.
+ */
+async function detectProviders(apiKey, signal, customBaseUrl, customModel) {
+    const statuses = [];
+    const workingProviders = [];
+    let priorityList = [...providers_1.PROVIDER_PRIORITY];
+    if (customBaseUrl) {
+        let normalized = customBaseUrl.trim();
+        if (!normalized.endsWith("/")) {
+            normalized += "/";
+        }
+        let name = "Custom Provider";
+        if (normalized.includes("openrouter.ai")) {
+            name = "OpenRouter";
+        }
+        else if (normalized.includes("bedrock-runtime")) {
+            name = "AWS Bedrock";
+        }
+        const customProvider = {
+            name,
+            baseUrl: normalized,
+            model: customModel || providers_1.CANONICAL_MODEL,
+        };
+        priorityList = [
+            customProvider,
+            ...providers_1.PROVIDER_PRIORITY.filter((p) => p.baseUrl !== normalized),
+        ];
+    }
+    else if (customModel) {
+        priorityList = priorityList.map((p) => ({ ...p, model: customModel }));
+    }
+    for (const provider of priorityList) {
+        const err = await probeProvider(provider, apiKey, signal);
+        if (err === null) {
+            statuses.push({ name: provider.name, available: true });
+            workingProviders.push(provider);
+        }
+        else {
+            statuses.push({ name: provider.name, available: false, error: err });
+        }
+    }
+    if (workingProviders.length === 0) {
+        return { statuses, activeProvider: null };
+    }
+    return {
+        statuses,
+        activeProvider: workingProviders[0],
+    };
+}
+/**
+ * Build a ProviderClient from a detection result.
+ * Throws a descriptive error if no provider was available.
+ */
+function buildProviderClient(result, apiKey) {
+    if (!result.activeProvider) {
+        const details = result.statuses
+            .map((s) => `  • ${s.name}: ${s.error ?? "unknown error"}`)
+            .join("\n");
+        throw new Error(`No LLM provider is available. Check your AI_API_KEY and network:\n${details}`);
+    }
+    // Find a verified fallback (the next available provider after the primary)
+    const fallback = result.statuses
+        .filter((s) => s.available && s.name !== result.activeProvider.name)
+        .map((s) => providers_1.PROVIDER_PRIORITY.find((p) => p.name === s.name))
+        .find(Boolean) ?? null;
+    return new ProviderClient(result.activeProvider, apiKey, fallback ?? null);
+}
+
+
+/***/ }),
+/* 54 */
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.PROVIDER_PRIORITY = exports.AWS_BEDROCK_PROVIDER = exports.OPENROUTER_PROVIDER = exports.resolveModelId = exports.getModelDisplayName = exports.getModelMaxTokens = exports.getMaxTokens = exports.resolveMaxTokens = exports.DEFAULT_MAX_TOKENS = exports.CANONICAL_MODEL = void 0;
+const models_1 = __webpack_require__(5);
+Object.defineProperty(exports, "DEFAULT_MAX_TOKENS", ({ enumerable: true, get: function () { return models_1.DEFAULT_MAX_TOKENS; } }));
+Object.defineProperty(exports, "resolveMaxTokens", ({ enumerable: true, get: function () { return models_1.resolveMaxTokens; } }));
+Object.defineProperty(exports, "getMaxTokens", ({ enumerable: true, get: function () { return models_1.getMaxTokens; } }));
+Object.defineProperty(exports, "getModelMaxTokens", ({ enumerable: true, get: function () { return models_1.getModelMaxTokens; } }));
+Object.defineProperty(exports, "getModelDisplayName", ({ enumerable: true, get: function () { return models_1.getModelDisplayName; } }));
+Object.defineProperty(exports, "resolveModelId", ({ enumerable: true, get: function () { return models_1.resolveModelId; } }));
+/** The canonical DeepSeek evaluation model used across DAXIOM. */
+exports.CANONICAL_MODEL = models_1.DEFAULT_MODEL_ID;
+/**
+ * OpenRouter provider — uses the canonical model string directly.
+ * OpenRouter accepts "deepseek/deepseek-v4.1-flash" as-is.
+ */
+exports.OPENROUTER_PROVIDER = {
+    name: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1/",
+    model: exports.CANONICAL_MODEL,
+};
+/**
+ * AWS Bedrock provider — OpenAI-compatible proxy endpoint.
+ * The model identifier may require a provider-specific mapping; this is
+ * isolated here and never surfaces through the rest of the agent.
+ *
+ * AWS Bedrock's OpenAI-compatible layer accepts the same "provider/model"
+ * format that OpenRouter uses, so we keep it identical for now. If Bedrock
+ * requires a different identifier (e.g. an ARN), update ONLY this constant.
+ */
+exports.AWS_BEDROCK_PROVIDER = {
+    name: "AWS Bedrock",
+    baseUrl: "https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1/",
+    model: exports.CANONICAL_MODEL,
+};
+/** Ordered list of providers tried during startup detection. */
+exports.PROVIDER_PRIORITY = [
+    exports.OPENROUTER_PROVIDER,
+    exports.AWS_BEDROCK_PROVIDER,
+];
+
+
+/***/ }),
+/* 55 */
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+
+/**
+ * OpenRouter credit affordability-aware token clamping.
+ *
+ * Checks credit balance via https://openrouter.ai/api/v1/key and clamps completion budgets
+ * so requests succeed instead of failing with HTTP 402 ("can only afford N tokens").
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.AFFORDABILITY_CACHE_TTL_MS = exports.MIN_RETRY_AFFORDABLE_TOKENS = exports.MODELS_CACHE_TTL_MS = exports.KEY_CACHE_TTL_MS = exports.AFFORDABILITY_SAFETY_MARGIN = void 0;
+exports.recordModelAffordability = recordModelAffordability;
+exports.getRecordedAffordability = getRecordedAffordability;
+exports.clearAffordabilityCache = clearAffordabilityCache;
+exports.invalidateKeyInfoCache = invalidateKeyInfoCache;
+exports.invalidateModelsCache = invalidateModelsCache;
+exports.fetchModelPrices = fetchModelPrices;
+exports.getModelCompletionPrice = getModelCompletionPrice;
+exports.fetchKeyInfo = fetchKeyInfo;
+exports.getAffordableTokens = getAffordableTokens;
+const models_1 = __webpack_require__(5);
+exports.AFFORDABILITY_SAFETY_MARGIN = 0.9;
+exports.KEY_CACHE_TTL_MS = 60_000;
+exports.MODELS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+exports.MIN_RETRY_AFFORDABLE_TOKENS = 256;
+exports.AFFORDABILITY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let cachedKeyInfo = null;
+let cachedModelPrices = null;
+const recordedModelAffordability = new Map();
+function getCacheKey(apiModelId, apiKey) {
+    const trimmedKey = (apiKey || "").trim();
+    const resolved = (0, models_1.resolveModelId)(apiModelId);
+    return `${trimmedKey}::${resolved}`;
+}
+/**
+ * Record dynamic affordable token limit reported by OpenRouter (e.g. from 402 responses).
+ * Cached for 5 minutes per API key and model so subsequent requests do not re-send unaffordable token counts.
+ */
+function recordModelAffordability(apiModelId, tokens, apiKey) {
+    if (!Number.isFinite(tokens) || tokens <= 0) {
+        return;
+    }
+    const entry = { tokens: Math.floor(tokens), timestamp: Date.now() };
+    recordedModelAffordability.set(getCacheKey(apiModelId, apiKey), entry);
+}
+/**
+ * Get the cached dynamic affordable token limit for a model if recorded and still valid.
+ */
+function getRecordedAffordability(apiModelId, apiKey) {
+    const key = getCacheKey(apiModelId, apiKey);
+    let entry = recordedModelAffordability.get(key);
+    if (!entry && apiKey) {
+        const emptyKey = getCacheKey(apiModelId, "");
+        entry = recordedModelAffordability.get(emptyKey);
+    }
+    if (!entry && !apiKey) {
+        const resolved = (0, models_1.resolveModelId)(apiModelId);
+        for (const [k, v] of recordedModelAffordability.entries()) {
+            if (k.endsWith(`::${resolved}`)) {
+                entry = v;
+                break;
+            }
+        }
+    }
+    if (!entry) {
+        return undefined;
+    }
+    if (Date.now() - entry.timestamp > exports.AFFORDABILITY_CACHE_TTL_MS) {
+        recordedModelAffordability.delete(key);
+        return undefined;
+    }
+    return entry.tokens;
+}
+/**
+ * Clear all affordability caches (useful in tests and key rotations).
+ */
+function clearAffordabilityCache() {
+    recordedModelAffordability.clear();
+    cachedKeyInfo = null;
+    cachedModelPrices = null;
+}
+/**
+ * Invalidate the in-memory key-info cache (e.g. after receiving a 402 or key change).
+ */
+function invalidateKeyInfoCache() {
+    cachedKeyInfo = null;
+}
+/**
+ * Invalidate the in-memory model prices cache.
+ */
+function invalidateModelsCache() {
+    cachedModelPrices = null;
+}
+/**
+ * Fetch model catalog from OpenRouter /models and parse pricing.completion (USD per token).
+ * Cached in memory for 6 hours. Fails open by returning null (never throws).
+ */
+async function fetchModelPrices(baseUrl = "https://openrouter.ai/api/v1/") {
+    const now = Date.now();
+    if (cachedModelPrices && now - cachedModelPrices.timestamp < exports.MODELS_CACHE_TTL_MS) {
+        return cachedModelPrices.prices;
+    }
+    try {
+        const root = baseUrl.replace(/\/+$/, "");
+        const endpoint = `${root}/models`;
+        const response = await fetch(endpoint, {
+            method: "GET",
+            headers: {
+                "HTTP-Referer": "https://github.com/daxiom",
+                "X-Title": "DAXIOM",
+            },
+        });
+        if (!response.ok) {
+            return null;
+        }
+        const json = await response.json();
+        const data = Array.isArray(json?.data) ? json.data : [];
+        const prices = {};
+        for (const item of data) {
+            const id = typeof item?.id === "string" ? item.id.trim() : "";
+            const rawPrice = item?.pricing?.completion;
+            if (id && rawPrice !== undefined && rawPrice !== null) {
+                const num = typeof rawPrice === "number" ? rawPrice : Number(rawPrice);
+                if (Number.isFinite(num) && num > 0) {
+                    prices[id] = num;
+                }
+            }
+        }
+        cachedModelPrices = { prices, timestamp: now };
+        return prices;
+    }
+    catch {
+        // Fail open: never break requests due to pricing catalog lookup failure
+        return null;
+    }
+}
+/**
+ * Resolve completion price per token for a model:
+ * 1. Checks static model metadata first (completionPricePerToken).
+ * 2. If missing, queries OpenRouter runtime models catalog (pricing.completion).
+ * Returns null if not found or lookup failed.
+ */
+async function getModelCompletionPrice(apiModelId, baseUrl) {
+    const model = (0, models_1.getModelByApiId)(apiModelId);
+    if (model?.completionPricePerToken && model.completionPricePerToken > 0) {
+        return model.completionPricePerToken;
+    }
+    const prices = await fetchModelPrices(baseUrl);
+    if (!prices) {
+        return null;
+    }
+    const price = prices[apiModelId];
+    return typeof price === "number" && Number.isFinite(price) && price > 0 ? price : null;
+}
+/**
+ * Fetch key details from OpenRouter's /api/v1/key endpoint.
+ *
+ * Caches in memory for 60 seconds.
+ * On ANY error (network, non-200, invalid JSON), fails open by returning null (NEVER throws).
+ */
+async function fetchKeyInfo(apiKey, baseUrl = "https://openrouter.ai/api/v1/") {
+    const trimmedKey = apiKey?.trim();
+    if (!trimmedKey) {
+        return null;
+    }
+    const now = Date.now();
+    if (cachedKeyInfo &&
+        cachedKeyInfo.key === trimmedKey &&
+        now - cachedKeyInfo.info.timestamp < exports.KEY_CACHE_TTL_MS) {
+        return cachedKeyInfo.info;
+    }
+    try {
+        const root = baseUrl.replace(/\/+$/, "");
+        const endpoint = `${root}/key`;
+        const response = await fetch(endpoint, {
+            method: "GET",
+            headers: {
+                Authorization: `Bearer ${trimmedKey}`,
+                "HTTP-Referer": "https://github.com/daxiom",
+                "X-Title": "DAXIOM",
+            },
+        });
+        if (!response.ok) {
+            return null;
+        }
+        const json = await response.json();
+        const limitRemaining = json?.data?.limit_remaining !== undefined
+            ? json.data.limit_remaining
+            : json?.limit_remaining !== undefined
+                ? json.limit_remaining
+                : null;
+        const parsedLimit = typeof limitRemaining === "number" && Number.isFinite(limitRemaining)
+            ? limitRemaining
+            : null;
+        const info = {
+            limitRemaining: parsedLimit,
+            timestamp: now,
+        };
+        cachedKeyInfo = { key: trimmedKey, info };
+        return info;
+    }
+    catch {
+        // Fail open: never break requests due to telemetry / key probing failure
+        return null;
+    }
+}
+/**
+ * Calculate the maximum affordable output tokens for a model given available credits.
+ * Returns Infinity if unlimited, unknown, or if the model does not have completion pricing.
+ * Consults both calculated key-balance limits and provider-reported dynamic affordability.
+ */
+async function getAffordableTokens(apiModelId, apiKey, baseUrl) {
+    let calculated = Infinity;
+    const price = await getModelCompletionPrice(apiModelId, baseUrl);
+    if (price && price > 0) {
+        const keyInfo = await fetchKeyInfo(apiKey, baseUrl);
+        if (keyInfo && keyInfo.limitRemaining !== null) {
+            calculated = Math.floor((keyInfo.limitRemaining * exports.AFFORDABILITY_SAFETY_MARGIN) / price);
+        }
+    }
+    const recorded = getRecordedAffordability(apiModelId, apiKey);
+    if (recorded !== undefined && Number.isFinite(recorded)) {
+        calculated = Math.min(calculated, recorded);
+    }
+    if (Number.isFinite(calculated)) {
+        return calculated > 0 ? calculated : 0;
+    }
+    return Infinity;
+}
+
+
+/***/ }),
+/* 56 */
+/***/ ((__unused_webpack_module, exports) => {
+
+
+/**
+ * classify402 — Classify an OpenRouter 402 Payment Required response into
+ * one of three distinct categories so the caller can handle each correctly.
+ *
+ * Classes:
+ *   max_tokens_unaffordable  — "can only afford N tokens"; retry with lower max_tokens
+ *   in_flight_budget         — "in-flight budget exhausted"; wait Retry-After, then retry
+ *   insufficient_credits     — anything else; no retry, direct the user to add credits
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.classify402 = classify402;
+const MAX_IN_FLIGHT_WAIT_S = 130;
+const DEFAULT_IN_FLIGHT_WAIT_S = 20;
+/**
+ * Classify a 402 response body + headers.
+ *
+ * @param rawBody   Response body text (may be partial / truncated; up to 500 chars is enough).
+ * @param headers   The response headers map (case-insensitive via .get()).
+ * @param apiKey    Caller's API key used ONLY for redaction — never logged.
+ */
+function classify402(rawBody, headers, apiKey) {
+    // Redact the API key from everything we expose
+    const safeBody = rawBody.replace(apiKey, "[REDACTED]");
+    // Try to parse error message from JSON body
+    let errMsg = "";
+    let metadata = null;
+    try {
+        const parsed = JSON.parse(rawBody);
+        errMsg = parsed?.error?.message ?? "";
+        metadata = parsed?.error?.metadata ?? null;
+    }
+    catch {
+        errMsg = safeBody;
+    }
+    const safeErrMsg = errMsg.replace(apiKey, "[REDACTED]");
+    // ── Class 1: max_tokens_unaffordable ──────────────────────────────────────
+    // OpenRouter sends: "can only afford N tokens"
+    const affordMatch = errMsg.match(/can only afford (\d+)/i);
+    if (affordMatch) {
+        return {
+            kind: "max_tokens_unaffordable",
+            affordableTokens: parseInt(affordMatch[1], 10),
+            message: safeErrMsg,
+        };
+    }
+    // ── Class 2: in_flight_budget ─────────────────────────────────────────────
+    // metadata.reason === "in_flight_budget_exhausted"  OR  message contains "in-flight"
+    const isInFlight = metadata?.reason === "in_flight_budget_exhausted" ||
+        metadata?.limit_source === "openrouter_in_flight_budget" ||
+        errMsg.toLowerCase().includes("in-flight") ||
+        errMsg.toLowerCase().includes("in_flight") ||
+        safeBody.includes("in_flight_budget_exhausted");
+    if (isInFlight) {
+        const retryAfterHeader = headers.get("retry-after") ?? headers.get("Retry-After");
+        let retryAfterSeconds = DEFAULT_IN_FLIGHT_WAIT_S;
+        if (retryAfterHeader) {
+            const secs = Number(retryAfterHeader);
+            if (Number.isFinite(secs) && secs >= 0) {
+                retryAfterSeconds = Math.min(MAX_IN_FLIGHT_WAIT_S, Math.max(1, secs));
+            }
+        }
+        return {
+            kind: "in_flight_budget",
+            retryAfterSeconds,
+            message: safeErrMsg || "OpenRouter in-flight budget exhausted",
+        };
+    }
+    // ── Class 3: insufficient_credits ────────────────────────────────────────
+    return {
+        kind: "insufficient_credits",
+        message: safeErrMsg || safeBody || "Payment Required",
+    };
+}
+
+
+/***/ }),
+/* 57 */
+/***/ ((__unused_webpack_module, exports) => {
+
+
+/**
+ * Single-flight gate for LLM requests.
+ *
+ * Only ONE LLM HTTP request may be in-flight at a time per process.
+ * Every call to `withGate(fn)` queues behind any already-running call.
+ * The gate is released in a `finally` block so errors and aborts never
+ * leave the gate locked.
+ *
+ * Debug tracing (start/end timestamps and queue-wait time) is emitted when
+ * the DEBUG_TOKEN_BUDGET environment variable is set to "1".
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.withGate = withGate;
+exports._resetGateForTest = _resetGateForTest;
+let _activePromise = null;
+let _gateSeq = 0;
+const DEBUG = () => process.env.DEBUG_TOKEN_BUDGET === "1";
+/**
+ * Acquire the single-flight gate, run `fn`, and release it.
+ * Concurrent callers queue behind the current holder.
+ */
+async function withGate(fn) {
+    const seq = ++_gateSeq;
+    const waitStart = Date.now();
+    // Wait for any in-flight request to finish first
+    while (_activePromise !== null) {
+        try {
+            await _activePromise;
+        }
+        catch {
+            // Swallow — we only care that the gate is released, not the result
+        }
+    }
+    const waitMs = Date.now() - waitStart;
+    if (DEBUG() && waitMs > 5) {
+        console.debug(`[Gate #${seq}] acquired after ${waitMs}ms wait — ${new Date().toISOString()}`);
+    }
+    const startTime = Date.now();
+    let resolve;
+    const promise = new Promise((res) => {
+        resolve = res;
+    });
+    _activePromise = promise;
+    try {
+        const result = await fn();
+        if (DEBUG()) {
+            console.debug(`[Gate #${seq}] released after ${Date.now() - startTime}ms — ${new Date().toISOString()}`);
+        }
+        return result;
+    }
+    catch (err) {
+        if (DEBUG()) {
+            console.debug(`[Gate #${seq}] released (error) after ${Date.now() - startTime}ms — ${new Date().toISOString()}`);
+        }
+        throw err;
+    }
+    finally {
+        _activePromise = null;
+        resolve();
+    }
+}
+/** Reset the gate (for tests only). */
+function _resetGateForTest() {
+    _activePromise = null;
+    _gateSeq = 0;
+}
 
 
 /***/ })

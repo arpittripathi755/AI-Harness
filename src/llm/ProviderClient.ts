@@ -30,6 +30,7 @@ import {
   CANONICAL_MODEL,
   PROVIDER_PRIORITY,
   getModelMaxTokens,
+  resolveModelId,
   type ProviderConfig,
 } from "./providers";
 import { fetchWithRetry } from "./http";
@@ -42,6 +43,7 @@ import {
   invalidateKeyInfoCache,
   AFFORDABILITY_SAFETY_MARGIN,
   MIN_RETRY_AFFORDABLE_TOKENS,
+  recordModelAffordability,
 } from "./affordability";
 import { classify402 } from "./classify402";
 import { withGate } from "./singleFlight";
@@ -395,7 +397,10 @@ async function* streamFromProvider(
   messages: ChatMessage[],
   { signal, tools, maxTokens, phase, onRetry, model }: StreamOptions = {},
 ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
-  const targetModel = model ?? provider.model;
+  const rawModel = model ?? provider.model;
+  const targetModel = provider.baseUrl.includes("openrouter.ai")
+    ? resolveModelId(rawModel)
+    : rawModel;
   let effectiveMaxTokens = phase
     ? getPhaseMaxTokens(phase, targetModel, maxTokens)
     : getModelMaxTokens(targetModel, maxTokens);
@@ -475,6 +480,7 @@ async function* streamFromProvider(
       if (classified.kind === "max_tokens_unaffordable") {
         // ── Existing behavior: single retry with floor(N * 0.9) ──────────
         const affordable = classified.affordableTokens!;
+        recordModelAffordability(targetModel, affordable, apiKey);
         const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
         const minRequired = floor > 0 ? floor : MIN_RETRY_AFFORDABLE_TOKENS;
         if (affordable < minRequired) {
@@ -726,9 +732,15 @@ export class ProviderClient {
 
   /** Update the active model live in the current session. */
   setModel(model: string): void {
-    this.activeProvider = { ...this.activeProvider, model };
+    const resolved = this.activeProvider.baseUrl.includes("openrouter.ai")
+      ? resolveModelId(model)
+      : model;
+    this.activeProvider = { ...this.activeProvider, model: resolved };
     if (this.fallbackProvider) {
-      this.fallbackProvider = { ...this.fallbackProvider, model };
+      const fallbackResolved = this.fallbackProvider.baseUrl.includes("openrouter.ai")
+        ? resolveModelId(model)
+        : model;
+      this.fallbackProvider = { ...this.fallbackProvider, model: fallbackResolved };
     }
   }
 

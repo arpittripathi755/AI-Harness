@@ -85,6 +85,10 @@ function readWorkspaceEnvFallback(keyName: string): string | undefined {
 // ---- persisted settings (globalState) ----
 
 export function getModelId(context: vscode.ExtensionContext): string {
+  const stored = context.globalState.get<string>(KEY_MODEL);
+  if (stored) {
+    return resolveModelId(stored);
+  }
   const envModel =
     process.env.MODEL?.trim() ||
     process.env.AI_MODEL?.trim() ||
@@ -93,11 +97,7 @@ export function getModelId(context: vscode.ExtensionContext): string {
   if (envModel) {
     return resolveModelId(envModel);
   }
-  const stored = context.globalState.get<string>(KEY_MODEL);
-  if (!stored || stored.includes("lightning-ai") || stored === "ultra" || stored.includes("nemotron")) {
-    return DEFAULT_MODEL_ID;
-  }
-  return resolveModelId(stored);
+  return DEFAULT_MODEL_ID;
 }
 
 export async function setModelId(
@@ -173,7 +173,16 @@ export async function setTerminalAutoRun(
 /** Get the configured token output budget (persisted or environment variable fallback). */
 export function getMaxTokensConfig(context?: vscode.ExtensionContext): number {
   const persisted = context?.globalState?.get<number>(KEY_MAX_TOKENS);
-  return getMaxTokens(persisted);
+  if (persisted !== undefined) {
+    return getMaxTokens(persisted);
+  }
+  const envFallback =
+    readWorkspaceEnvFallback("MAX_TOKENS") ||
+    readWorkspaceEnvFallback("AI_MAX_TOKENS");
+  if (envFallback) {
+    return resolveMaxTokens(envFallback);
+  }
+  return getMaxTokens();
 }
 
 /** Store a user-defined max token budget in globalState. */

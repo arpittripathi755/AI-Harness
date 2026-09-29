@@ -222,6 +222,16 @@ async function main() {
     );
   }
 
+  const nvidiaModels = results.filter((r) => r.provider === "NVIDIA");
+  console.log("\n### NVIDIA\n");
+  console.log("| Model | OpenRouter ID | Context | In Catalog | Tool Support | Status |");
+  console.log("|---|---|---|---|---|---|");
+  for (const r of nvidiaModels) {
+    console.log(
+      `| ${r.model} | \`${r.apiModelId}\` | ${r.contextLength?.toLocaleString()} | ${r.inCatalog ? "YES" : "NO"} | ${r.catSupportsTools ? "YES" : "NO"} | ${r.daxiomAgent} |`
+    );
+  }
+
   console.log("\n### Incompatible Models Discovered on OpenRouter\n");
   console.log("| Model | OpenRouter ID | Status | Reason |");
   console.log("|---|---|---|---|");

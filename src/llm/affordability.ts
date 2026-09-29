@@ -5,12 +5,13 @@
  * so requests succeed instead of failing with HTTP 402 ("can only afford N tokens").
  */
 
-import { getModelByApiId } from "../shared/models";
+import { getModelByApiId, resolveModelId } from "../shared/models";
 
 export const AFFORDABILITY_SAFETY_MARGIN = 0.9;
 export const KEY_CACHE_TTL_MS = 60_000;
 export const MODELS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 export const MIN_RETRY_AFFORDABLE_TOKENS = 256;
+export const AFFORDABILITY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 export interface OpenRouterKeyInfo {
   limitRemaining: number | null;
@@ -19,6 +20,68 @@ export interface OpenRouterKeyInfo {
 
 let cachedKeyInfo: { key: string; info: OpenRouterKeyInfo } | null = null;
 let cachedModelPrices: { prices: Record<string, number>; timestamp: number } | null = null;
+
+interface RecordedAffordability {
+  tokens: number;
+  timestamp: number;
+}
+const recordedModelAffordability = new Map<string, RecordedAffordability>();
+
+function getCacheKey(apiModelId: string, apiKey?: string): string {
+  const trimmedKey = (apiKey || "").trim();
+  const resolved = resolveModelId(apiModelId);
+  return `${trimmedKey}::${resolved}`;
+}
+
+/**
+ * Record dynamic affordable token limit reported by OpenRouter (e.g. from 402 responses).
+ * Cached for 5 minutes per API key and model so subsequent requests do not re-send unaffordable token counts.
+ */
+export function recordModelAffordability(apiModelId: string, tokens: number, apiKey?: string): void {
+  if (!Number.isFinite(tokens) || tokens <= 0) {
+    return;
+  }
+  const entry: RecordedAffordability = { tokens: Math.floor(tokens), timestamp: Date.now() };
+  recordedModelAffordability.set(getCacheKey(apiModelId, apiKey), entry);
+}
+
+/**
+ * Get the cached dynamic affordable token limit for a model if recorded and still valid.
+ */
+export function getRecordedAffordability(apiModelId: string, apiKey?: string): number | undefined {
+  const key = getCacheKey(apiModelId, apiKey);
+  let entry = recordedModelAffordability.get(key);
+  if (!entry && apiKey) {
+    const emptyKey = getCacheKey(apiModelId, "");
+    entry = recordedModelAffordability.get(emptyKey);
+  }
+  if (!entry && !apiKey) {
+    const resolved = resolveModelId(apiModelId);
+    for (const [k, v] of recordedModelAffordability.entries()) {
+      if (k.endsWith(`::${resolved}`)) {
+        entry = v;
+        break;
+      }
+    }
+  }
+  if (!entry) {
+    return undefined;
+  }
+  if (Date.now() - entry.timestamp > AFFORDABILITY_CACHE_TTL_MS) {
+    recordedModelAffordability.delete(key);
+    return undefined;
+  }
+  return entry.tokens;
+}
+
+/**
+ * Clear all affordability caches (useful in tests and key rotations).
+ */
+export function clearAffordabilityCache(): void {
+  recordedModelAffordability.clear();
+  cachedKeyInfo = null;
+  cachedModelPrices = null;
+}
 
 /**
  * Invalidate the in-memory key-info cache (e.g. after receiving a 402 or key change).
@@ -176,24 +239,32 @@ export async function fetchKeyInfo(
 /**
  * Calculate the maximum affordable output tokens for a model given available credits.
  * Returns Infinity if unlimited, unknown, or if the model does not have completion pricing.
+ * Consults both calculated key-balance limits and provider-reported dynamic affordability.
  */
 export async function getAffordableTokens(
   apiModelId: string,
   apiKey: string,
   baseUrl?: string,
 ): Promise<number> {
+  let calculated = Infinity;
   const price = await getModelCompletionPrice(apiModelId, baseUrl);
-  if (!price || price <= 0) {
-    return Infinity;
+  if (price && price > 0) {
+    const keyInfo = await fetchKeyInfo(apiKey, baseUrl);
+    if (keyInfo && keyInfo.limitRemaining !== null) {
+      calculated = Math.floor(
+        (keyInfo.limitRemaining * AFFORDABILITY_SAFETY_MARGIN) / price,
+      );
+    }
   }
 
-  const keyInfo = await fetchKeyInfo(apiKey, baseUrl);
-  if (!keyInfo || keyInfo.limitRemaining === null) {
-    return Infinity;
+  const recorded = getRecordedAffordability(apiModelId, apiKey);
+  if (recorded !== undefined && Number.isFinite(recorded)) {
+    calculated = Math.min(calculated, recorded);
   }
 
-  const affordable = Math.floor(
-    (keyInfo.limitRemaining * AFFORDABILITY_SAFETY_MARGIN) / price,
-  );
-  return affordable > 0 ? affordable : 0;
+  if (Number.isFinite(calculated)) {
+    return calculated > 0 ? calculated : 0;
+  }
+  return Infinity;
 }
+

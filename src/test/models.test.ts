@@ -31,8 +31,8 @@ suite("OpenRouter Model Registry", () => {
   test("legacy models from old backends are completely removed", () => {
     const legacyIds = [
       "ultra",
-      "nvidia/nemotron-3-ultra-550b-a55b",
       "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b",
+      "lightning-ai/nvidia/nemotron-3-ultra-550b-a55b",
       "deepseek-flash",
       "deepseek-v4-pro",
     ];
@@ -79,6 +79,16 @@ suite("OpenRouter Model Registry", () => {
       assert.strictEqual(found?.supportsTools, true);
       assert.ok((found?.contextLength ?? 0) > 0, `Model '${id}' must have contextLength`);
     }
+  });
+
+  test("contains verified NVIDIA models", () => {
+    const found = MODELS.find((m) => m.apiModelId === "nvidia/nemotron-3-ultra-550b-a55b");
+    assert.ok(found, "Expected NVIDIA Nemotron model to be in MODELS");
+    assert.strictEqual(found?.provider, "NVIDIA");
+    assert.strictEqual(found?.displayName, "Nemotron 3 Ultra 550B");
+    assert.strictEqual(found?.supportsTools, true);
+    assert.strictEqual(found?.supportsVision, false);
+    assert.ok((found?.contextLength ?? 0) > 0, "Model must have contextLength");
   });
 
   test("display names are human-friendly and distinct from apiModelIds", () => {
@@ -133,6 +143,35 @@ suite("OpenRouter Model Registry", () => {
     assert.strictEqual(resolveModelId("qwen3.8-flash"), "qwen/qwen3.8-flash");
     assert.strictEqual(resolveModelId("qwen-2.5-72b"), "qwen/qwen-2.5-72b-instruct");
     assert.strictEqual(resolveModelId("qwen-plus"), "qwen/qwen-plus");
+  });
+
+  test("resolveModelId correctly resolves NVIDIA Nemotron aliases and strips legacy prefixes", () => {
+    assert.strictEqual(
+      resolveModelId("nvidia/nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+    assert.strictEqual(resolveModelId("ultra"), "nvidia/nemotron-3-ultra-550b-a55b");
+    assert.strictEqual(resolveModelId("nemotron"), "nvidia/nemotron-3-ultra-550b-a55b");
+    assert.strictEqual(
+      resolveModelId("nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+    assert.strictEqual(
+      resolveModelId("nvidia-nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+    assert.strictEqual(
+      resolveModelId("lightning-ai/nvidia-nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+    assert.strictEqual(
+      resolveModelId("lightning-ai/nvidia/nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
+    assert.strictEqual(
+      resolveModelId("openrouter/nvidia/nemotron-3-ultra-550b-a55b"),
+      "nvidia/nemotron-3-ultra-550b-a55b",
+    );
   });
 
   test("resolveModelId preserves explicit custom OpenRouter model IDs", () => {
@@ -267,6 +306,21 @@ suite("Model Display and Name Resolution", () => {
     assert.strictEqual(
       getModelDisplayName("qwen/qwen-plus"),
       "Qwen Plus",
+    );
+  });
+
+  test("Test 2.5: nvidia/nemotron-3-ultra-550b-a55b displays 'Nemotron 3 Ultra 550B'", () => {
+    assert.strictEqual(
+      getModelDisplayName("nvidia/nemotron-3-ultra-550b-a55b"),
+      "Nemotron 3 Ultra 550B",
+    );
+    assert.strictEqual(
+      getModelDisplayName("ultra"),
+      "Nemotron 3 Ultra 550B",
+    );
+    assert.strictEqual(
+      getModelDisplayName("lightning-ai/nvidia/nemotron-3-ultra-550b-a55b"),
+      "Nemotron 3 Ultra 550B",
     );
   });
 

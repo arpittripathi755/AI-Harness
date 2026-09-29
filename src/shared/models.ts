@@ -14,8 +14,8 @@ export interface ModelInfo {
   displayName: string;
   /** Sent as the `model` field to the OpenRouter chat/completions API. */
   apiModelId: string;
-  /** Provider/family group (e.g. "DeepSeek", "Qwen"). */
-  provider?: "DeepSeek" | "Qwen";
+  /** Provider/family group (e.g. "DeepSeek", "Qwen", "NVIDIA"). */
+  provider?: "DeepSeek" | "Qwen" | "NVIDIA" | string;
   /** Context window limit in tokens. */
   contextLength?: number;
   /** Maximum output token generation limit if restricted by the model. */
@@ -136,6 +136,18 @@ export const MODELS: ModelInfo[] = [
     supportsTools: true,
     supportsVision: false,
   },
+
+  // ==========================================
+  // NVIDIA Models (Verified on OpenRouter)
+  // ==========================================
+  {
+    displayName: "Nemotron 3 Ultra 550B",
+    apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
+    provider: "NVIDIA",
+    contextLength: 262144,
+    supportsTools: true,
+    supportsVision: false,
+  },
 ];
 
 /**
@@ -245,67 +257,92 @@ export function resolveModelId(apiModelId: string | undefined): string {
     return trimmed;
   }
 
+  // Strip legacy provider namespace prefixes if present (e.g. lightning-ai/ or openrouter/)
+  let candidate = trimmed;
+  while (candidate.startsWith("lightning-ai/") || candidate.startsWith("openrouter/")) {
+    if (candidate.startsWith("lightning-ai/")) {
+      candidate = candidate.slice("lightning-ai/".length);
+    } else if (candidate.startsWith("openrouter/")) {
+      candidate = candidate.slice("openrouter/".length);
+    }
+  }
+
+  if (MODELS.some((m) => m.apiModelId === candidate)) {
+    return candidate;
+  }
+
+  // Aliases for NVIDIA models
+  if (
+    candidate === "ultra" ||
+    candidate === "nemotron" ||
+    candidate === "nemotron-3-ultra-550b-a55b" ||
+    candidate === "nvidia-nemotron-3-ultra-550b-a55b" ||
+    candidate === "nvidia/nemotron-3-ultra-550b-a55b"
+  ) {
+    return "nvidia/nemotron-3-ultra-550b-a55b";
+  }
+
   // Aliases for DeepSeek models
   if (
-    trimmed === "deepseek-v4.1-flash" ||
-    trimmed === "deepseek-ai/deepseek-v4.1-flash" ||
-    trimmed === "deepseek v4.1 flash"
+    candidate === "deepseek-v4.1-flash" ||
+    candidate === "deepseek-ai/deepseek-v4.1-flash" ||
+    candidate === "deepseek v4.1 flash"
   ) {
     return "deepseek/deepseek-v4.1-flash";
   }
   if (
-    trimmed === "deepseek-flash" ||
-    trimmed === "deepseek-v4-flash" ||
-    trimmed === "deepseek-ai/deepseek-v4-flash"
+    candidate === "deepseek-flash" ||
+    candidate === "deepseek-v4-flash" ||
+    candidate === "deepseek-ai/deepseek-v4-flash"
   ) {
     return "deepseek/deepseek-v4-flash";
   }
   if (
-    trimmed === "deepseek-v4-pro" ||
-    trimmed === "deepseek-ai/deepseek-v4-pro"
+    candidate === "deepseek-v4-pro" ||
+    candidate === "deepseek-ai/deepseek-v4-pro"
   ) {
     return "deepseek/deepseek-v4-pro";
   }
   if (
-    trimmed === "deepseek-chat" ||
-    trimmed === "deepseek-v3" ||
-    trimmed === "deepseek-ai/deepseek-chat"
+    candidate === "deepseek-chat" ||
+    candidate === "deepseek-v3" ||
+    candidate === "deepseek-ai/deepseek-chat"
   ) {
     return "deepseek/deepseek-chat";
   }
-  if (trimmed === "deepseek-r1" || trimmed === "deepseek-ai/deepseek-r1") {
+  if (candidate === "deepseek-r1" || candidate === "deepseek-ai/deepseek-r1") {
     return "deepseek/deepseek-r1";
   }
 
   // Aliases for Qwen models
   if (
-    trimmed === "qwen3-coder" ||
-    trimmed === "qwen-coder" ||
-    trimmed === "qwen/qwen3-coder-480b"
+    candidate === "qwen3-coder" ||
+    candidate === "qwen-coder" ||
+    candidate === "qwen/qwen3-coder-480b"
   ) {
     return "qwen/qwen3-coder";
   }
-  if (trimmed === "qwen3-coder-plus") {
+  if (candidate === "qwen3-coder-plus") {
     return "qwen/qwen3-coder-plus";
   }
-  if (trimmed === "qwen3-coder-flash") {
+  if (candidate === "qwen3-coder-flash") {
     return "qwen/qwen3-coder-flash";
   }
-  if (trimmed === "qwen3.8-flash") {
+  if (candidate === "qwen3.8-flash") {
     return "qwen/qwen3.8-flash";
   }
   if (
-    trimmed === "qwen-2.5-72b" ||
-    trimmed === "qwen-2.5-72b-instruct" ||
-    trimmed === "qwen/qwen2.5-72b-instruct"
+    candidate === "qwen-2.5-72b" ||
+    candidate === "qwen-2.5-72b-instruct" ||
+    candidate === "qwen/qwen2.5-72b-instruct"
   ) {
     return "qwen/qwen-2.5-72b-instruct";
   }
-  if (trimmed === "qwen-plus") {
+  if (candidate === "qwen-plus") {
     return "qwen/qwen-plus";
   }
 
   // If an explicit model name was supplied (e.g. any custom OpenRouter model slug),
-  // return it as-is so users are not restricted from using any valid OpenRouter model.
-  return trimmed;
+  // return candidate with prefixes stripped rather than falling back to default.
+  return candidate;
 }
