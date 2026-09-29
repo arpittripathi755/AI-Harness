@@ -15,6 +15,7 @@ import { Toolbar } from "./components/Toolbar";
 import { ApiModal } from "./components/ApiModal";
 import { ChatList } from "./components/ChatList";
 import { StatusBar } from "./components/StatusBar";
+import { Grainient } from "./components/Grainient";
 
 const INITIAL_SETTINGS: UiSettings = {
   modelId: DEFAULT_MODEL_ID,
@@ -151,6 +152,36 @@ export function App() {
 
   return (
     <div className="app">
+      {/* Living ambient Grainient background with visible fluid motion & light flair */}
+      <div className="app-bg-container" aria-hidden="true">
+        <Grainient
+          color1="#0D1525"
+          color2="#0A1830"
+          color3="#060910"
+          timeSpeed={0.55}
+          colorBalance={0.06}
+          warpStrength={1.2}
+          warpFrequency={3.2}
+          warpSpeed={1.8}
+          warpAmplitude={48.0}
+          blendAngle={20.0}
+          blendSoftness={0.14}
+          rotationAmount={380.0}
+          noiseScale={2.2}
+          grainAmount={0.025}
+          grainScale={1.6}
+          grainAnimated={true}
+          contrast={1.05}
+          gamma={1.08}
+          saturation={0.5}
+          centerX={0.0}
+          centerY={-0.1}
+          zoom={0.88}
+          lightMode={false}
+        />
+        <div className="app-bg-overlay" />
+      </div>
+
       <Header
         busy={busy}
         onChats={() => setChatsOpen(true)}
@@ -161,6 +192,8 @@ export function App() {
       <MessageList
         items={items}
         streamingId={streamingId}
+        busy={busy}
+        status={status}
         onSuggestion={handleSend}
       />
 
@@ -189,6 +222,8 @@ export function App() {
         />
         <Composer
           busy={busy}
+          modeId={settings.modeId}
+          onModeChange={handleModeChange}
           onSend={handleSend}
           onStop={() => postMessage({ type: "cancel" })}
         />

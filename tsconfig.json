@@ -19,6 +19,8 @@
 	},
 	"exclude": [
 		"node_modules",
+		"components",
+		"components/**/*",
 		"src/webview",
 		"Website_SAST",
 		"Website_SAST/**/*"

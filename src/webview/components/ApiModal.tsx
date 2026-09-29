@@ -31,6 +31,16 @@ export function ApiModal({
     onClose();
   };
 
+  const getApiKeyLabel = (endpoint: string) => {
+    const lower = (endpoint || "").toLowerCase();
+    if (lower.includes("openrouter")) return "OpenRouter API Key";
+    if (lower.includes("openai")) return "OpenAI API Key";
+    if (lower.includes("anthropic")) return "Anthropic API Key";
+    if (lower.includes("deepseek")) return "DeepSeek API Key";
+    if (lower.includes("groq")) return "Groq API Key";
+    return "API Key";
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -54,7 +64,7 @@ export function ApiModal({
 
         <label className="field">
           <span className="field-label">
-            Lightning API Key{" "}
+            {getApiKeyLabel(url || DEFAULT_BASE_URL)}{" "}
             <span className="field-hint">
               {hasApiKey ? "(a key is saved — leave blank to keep it)" : "(required)"}
             </span>

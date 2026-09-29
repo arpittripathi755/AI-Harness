@@ -2,6 +2,8 @@ import * as React from "react";
 
 interface ComposerProps {
   busy: boolean;
+  modeId?: string;
+  onModeChange?: (modeId: string) => void;
   onSend: (text: string, images: string[]) => void;
   onStop: () => void;
 }
@@ -10,7 +12,7 @@ interface ComposerProps {
 const MAX_IMAGES = 5;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
-export function Composer({ busy, onSend, onStop }: ComposerProps) {
+export function Composer({ busy, modeId = "auto", onModeChange, onSend, onStop }: ComposerProps) {
   const [text, setText] = React.useState("");
   const [images, setImages] = React.useState<string[]>([]);
   const [note, setNote] = React.useState<string | null>(null);
@@ -24,7 +26,9 @@ export function Composer({ busy, onSend, onStop }: ComposerProps) {
       return;
     }
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    if (text) {
+      el.style.height = Math.min(el.scrollHeight, 220) + "px";
+    }
   }, [text]);
 
   const submit = () => {
@@ -132,8 +136,10 @@ export function Composer({ busy, onSend, onStop }: ComposerProps) {
         </div>
       )}
       {note && <div className="composer-note">{note}</div>}
+
+      {/* Floating Dark Glass Capsule Prompt Box (Image 4) */}
       <div
-        className={`composer-box${dragging ? " dragging" : ""}`}
+        className={`composer-capsule${dragging ? " dragging" : ""}`}
         onDragOver={(e) => {
           if (Array.from(e.dataTransfer?.items ?? []).some((it) => it.kind === "file")) {
             e.preventDefault();
@@ -151,45 +157,58 @@ export function Composer({ busy, onSend, onStop }: ComposerProps) {
           style={{ display: "none" }}
           onChange={(e) => onFiles(e.target.files)}
         />
+
+        {/* Top row with @ circular button */}
+        <div className="composer-top-row">
+          <button
+            type="button"
+            className="composer-at-circle"
+            title="Attach image or add reference (@)"
+            onClick={() => fileRef.current?.click()}
+          >
+            <span>@</span>
+          </button>
+        </div>
+
+        {/* Textarea */}
         <textarea
           ref={ref}
-          className="composer-input"
-          placeholder={
-            dragging
-              ? "Drop image to attach…"
-              : "Ask anything, or describe a change…"
-          }
+          className="composer-prompt-textarea"
+          placeholder={dragging ? "Drop image to attach…" : "Build anything..."}
           value={text}
           rows={1}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
-        <div className="composer-actions">
-          <button
-            className="composer-attach"
-            title="Attach image"
-            onClick={() => fileRef.current?.click()}
-          >
-            📎
-          </button>
-          <span className="composer-hint">
-            <kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline
-          </span>
-          {busy ? (
-            <button className="composer-btn composer-btn-stop" onClick={onStop} title="Stop">
-              ■
-            </button>
-          ) : (
-            <button
-              className="composer-btn composer-btn-send"
-              onClick={submit}
-              disabled={!text.trim() && images.length === 0}
-              title="Send (Enter)"
-            >
-              ↑
-            </button>
-          )}
+
+        {/* Bottom row: Circular send arrow on right */}
+        <div className="composer-bottom-row">
+          <div className="composer-send-cluster">
+            {busy ? (
+              <button
+                type="button"
+                className="composer-circle-submit stop"
+                onClick={onStop}
+                title="Stop generation"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="composer-circle-submit send"
+                onClick={submit}
+                disabled={!text.trim() && images.length === 0}
+                title="Send (Enter)"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

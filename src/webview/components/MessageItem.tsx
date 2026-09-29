@@ -1,6 +1,8 @@
 import * as React from "react";
 import Markdown from "react-markdown";
 import type { UiMessage } from "../../shared/protocol";
+import { AxiomIcon } from "./AxiomIcon";
+import { UserAvatar } from "./UserAvatar";
 
 interface MessageItemProps {
   message: UiMessage;
@@ -12,7 +14,7 @@ export function MessageItem({ message, streaming }: MessageItemProps) {
   return (
     <div className={`msg msg-${message.role}`}>
       <div className="msg-avatar" aria-hidden="true">
-        {isUser ? "You" : "✦"}
+        {isUser ? <UserAvatar size={22} /> : <AxiomIcon size={18} color="#4D8DFF" />}
       </div>
       <div className="msg-content">
         {message.images && message.images.length > 0 && (
