@@ -12,6 +12,7 @@ import { streamResponses } from "./responses";
 import { fetchWithRetry } from "./http";
 import type { ProviderClient } from "./ProviderClient";
 import { type CallPhase, getPhaseMaxTokens } from "./tokenBudget";
+import { buildEndpointUrl } from "./endpointUtils";
 
 export interface LLMClientOptions {
   baseUrl: string;
@@ -214,7 +215,7 @@ export class LLMClient {
     }
 
     const response = await fetchWithRetry(
-      `${this.opts.baseUrl}chat/completions`,
+      buildEndpointUrl(this.opts.baseUrl, "chat/completions"),
       {
         method: "POST",
         headers: {

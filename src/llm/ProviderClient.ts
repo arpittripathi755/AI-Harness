@@ -34,6 +34,7 @@ import {
 } from "./providers";
 import { fetchWithRetry } from "./http";
 import { type CallPhase, getPhaseMaxTokens, getReasoningFloor } from "./tokenBudget";
+import { buildEndpointUrl } from "./endpointUtils";
 import {
   getAffordableTokens,
   fetchKeyInfo,
@@ -134,7 +135,7 @@ async function probeProvider(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const url = `${provider.baseUrl}chat/completions`;
+  const url = buildEndpointUrl(provider.baseUrl, "chat/completions");
   const body = JSON.stringify({
     model: provider.model,
     messages: [{ role: "user", content: "ping" }],
@@ -453,7 +454,7 @@ async function* streamFromProvider(
   // so the stream body can be consumed without holding the gate.
   let response = await withGate(() =>
     fetchWithRetry(
-      `${provider.baseUrl}chat/completions`,
+      buildEndpointUrl(provider.baseUrl, "chat/completions"),
       {
         method: "POST",
         headers: buildHeaders(provider, apiKey),
@@ -488,7 +489,7 @@ async function* streamFromProvider(
         const retryBody: ChatCompletionRequest = { ...body, max_tokens: retryTokens };
         const retryResponse = await withGate(() =>
           fetchWithRetry(
-            `${provider.baseUrl}chat/completions`,
+            buildEndpointUrl(provider.baseUrl, "chat/completions"),
             {
               method: "POST",
               headers: buildHeaders(provider, apiKey),
@@ -536,7 +537,7 @@ async function* streamFromProvider(
 
           lastResponse = await withGate(() =>
             fetchWithRetry(
-              `${provider.baseUrl}chat/completions`,
+              buildEndpointUrl(provider.baseUrl, "chat/completions"),
               {
                 method: "POST",
                 headers: buildHeaders(provider, apiKey),

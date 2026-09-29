@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(21);
+const config_1 = __webpack_require__(22);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(20);
-const config_1 = __webpack_require__(21);
-const modes_1 = __webpack_require__(22);
-const tools_1 = __webpack_require__(23);
-const workspace_1 = __webpack_require__(47);
+const ConversationManager_1 = __webpack_require__(21);
+const config_1 = __webpack_require__(22);
+const modes_1 = __webpack_require__(23);
+const tools_1 = __webpack_require__(24);
+const workspace_1 = __webpack_require__(48);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -435,16 +435,16 @@ exports.isReadOnlyTool = isReadOnlyTool;
 exports.buildStableSystemPrompt = buildStableSystemPrompt;
 exports.buildSystemPrompt = buildSystemPrompt;
 const LLMClient_1 = __webpack_require__(4);
-const LoopDetector_1 = __webpack_require__(9);
-const Orchestrator_1 = __webpack_require__(11);
+const LoopDetector_1 = __webpack_require__(10);
+const Orchestrator_1 = __webpack_require__(12);
 const models_1 = __webpack_require__(5);
-const TaskMemory_1 = __webpack_require__(14);
+const TaskMemory_1 = __webpack_require__(15);
 const tokenBudget_1 = __webpack_require__(8);
-const contextBudget_1 = __webpack_require__(15);
-const contextCompaction_1 = __webpack_require__(16);
-const usageTracker_1 = __webpack_require__(17);
-const promptPrefix_1 = __webpack_require__(19);
-const usageMark_1 = __webpack_require__(18);
+const contextBudget_1 = __webpack_require__(16);
+const contextCompaction_1 = __webpack_require__(17);
+const usageTracker_1 = __webpack_require__(18);
+const promptPrefix_1 = __webpack_require__(20);
+const usageMark_1 = __webpack_require__(19);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 /**
@@ -1370,6 +1370,7 @@ const models_1 = __webpack_require__(5);
 const responses_1 = __webpack_require__(6);
 const http_1 = __webpack_require__(7);
 const tokenBudget_1 = __webpack_require__(8);
+const endpointUtils_1 = __webpack_require__(9);
 /**
  * Minimal OpenAI-compatible chat client built on native `fetch` — deliberately
  * NOT the Anthropic/openai SDK. Targets any endpoint exposing
@@ -1519,7 +1520,7 @@ class LLMClient {
             body.tools = tools;
             body.tool_choice = "auto";
         }
-        const response = await (0, http_1.fetchWithRetry)(`${this.opts.baseUrl}chat/completions`, {
+        const response = await (0, http_1.fetchWithRetry)((0, endpointUtils_1.buildEndpointUrl)(this.opts.baseUrl, "chat/completions"), {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -2366,6 +2367,51 @@ function getPhaseModelOverride(phase) {
 
 /***/ }),
 /* 9 */
+/***/ ((__unused_webpack_module, exports) => {
+
+
+/**
+ * Endpoint URL construction utilities (Phase 7 — OpenRouter endpoint correctness).
+ *
+ * Centralises the single defensive rule:
+ *   baseUrl (with or without trailing slash) + path → well-formed URL.
+ *
+ * DESIGN TARGET:
+ *   buildEndpointUrl("https://openrouter.ai/api/v1",  "chat/completions")
+ *     → "https://openrouter.ai/api/v1/chat/completions"
+ *   buildEndpointUrl("https://openrouter.ai/api/v1/", "chat/completions")
+ *     → "https://openrouter.ai/api/v1/chat/completions"
+ *   buildEndpointUrl("https://openrouter.ai/api/v1//", "chat/completions")
+ *     → "https://openrouter.ai/api/v1/chat/completions"
+ *
+ * CONTRACT (both sides):
+ *   - `baseUrl` MUST NOT already contain the path segment.
+ *     e.g. do not pass "https://openrouter.ai/api/v1/chat/completions" as baseUrl.
+ *   - `path` MUST be the plain path segment ("chat/completions"), not a full URL.
+ *
+ * Security: this function does not log, print, or expose any part of the URL
+ * that could include credentials.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.buildEndpointUrl = buildEndpointUrl;
+/**
+ * Build a provider endpoint URL, defensively normalising trailing slashes.
+ *
+ * @param baseUrl  The provider base URL, with or without a trailing slash.
+ *                 All trailing slashes are stripped before joining.
+ * @param path     The path segment to append (e.g. "chat/completions").
+ *                 Leading slashes are stripped before joining.
+ * @returns        A properly joined URL with exactly one slash between base and path.
+ */
+function buildEndpointUrl(baseUrl, path) {
+    const base = baseUrl.replace(/\/+$/, ""); // strip ALL trailing slashes
+    const p = path.replace(/^\/+/, ""); // strip ALL leading slashes
+    return `${base}/${p}`;
+}
+
+
+/***/ }),
+/* 10 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2404,7 +2450,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.LoopDetector = void 0;
-const crypto = __importStar(__webpack_require__(10));
+const crypto = __importStar(__webpack_require__(11));
 /**
  * Detects when the agent is stuck in an ineffective tool execution loop
  * by tracking canonical signatures of (tool name, args, result) triples.
@@ -2596,13 +2642,13 @@ function normalizeQuery(query) {
 
 
 /***/ }),
-/* 10 */
+/* 11 */
 /***/ ((module) => {
 
 module.exports = require("crypto");
 
 /***/ }),
-/* 11 */
+/* 12 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -2642,8 +2688,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.Orchestrator = exports.DEFAULT_BUDGET = exports.PHASE_LABELS = void 0;
 exports.detectRepoProfile = detectRepoProfile;
-const fs = __importStar(__webpack_require__(12));
-const path = __importStar(__webpack_require__(13));
+const fs = __importStar(__webpack_require__(13));
+const path = __importStar(__webpack_require__(14));
 exports.PHASE_LABELS = {
     EXPLORING: "Exploring codebase",
     PLANNING: "Formulating plan",
@@ -2963,19 +3009,19 @@ exports.Orchestrator = Orchestrator;
 
 
 /***/ }),
-/* 12 */
+/* 13 */
 /***/ ((module) => {
 
 module.exports = require("fs");
 
 /***/ }),
-/* 13 */
+/* 14 */
 /***/ ((module) => {
 
 module.exports = require("path");
 
 /***/ }),
-/* 14 */
+/* 15 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -3361,7 +3407,7 @@ exports.TaskMemory = TaskMemory;
 
 
 /***/ }),
-/* 15 */
+/* 16 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -3596,7 +3642,7 @@ function compactHistory(messages, inputBudgetTokens = exports.DEFAULT_INPUT_TOKE
 
 
 /***/ }),
-/* 16 */
+/* 17 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
@@ -3627,7 +3673,7 @@ exports.groupMessages = groupMessages;
 exports.validateToolCallPairIntegrity = validateToolCallPairIntegrity;
 exports.validateCompactedHistory = validateCompactedHistory;
 exports.compactHistoryWithTaskMemory = compactHistoryWithTaskMemory;
-const contextBudget_1 = __webpack_require__(15);
+const contextBudget_1 = __webpack_require__(16);
 // ---------------------------------------------------------------------------
 // Feature Flag
 // ---------------------------------------------------------------------------
@@ -3908,7 +3954,7 @@ function compactHistoryWithTaskMemory(opts) {
 
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
@@ -3924,9 +3970,9 @@ exports.classifyToolBucket = classifyToolBucket;
 exports.analyzeToolResultTokens = analyzeToolResultTokens;
 exports.getMaxSessionUsd = getMaxSessionUsd;
 const models_1 = __webpack_require__(5);
-const contextBudget_1 = __webpack_require__(15);
+const contextBudget_1 = __webpack_require__(16);
 const tokenBudget_1 = __webpack_require__(8);
-const usageMark_1 = __webpack_require__(18);
+const usageMark_1 = __webpack_require__(19);
 /**
  * Classify a tool name into one of the required measurement buckets.
  */
@@ -4268,7 +4314,7 @@ function getMaxSessionUsd() {
 
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4607,7 +4653,7 @@ function resolveUsageMark(observation, tracker = exports.defaultCalibrationTrack
 
 
 /***/ }),
-/* 19 */
+/* 20 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4651,8 +4697,8 @@ exports.canonicalJsonStringify = canonicalJsonStringify;
 exports.canonicalizeToolDefinitions = canonicalizeToolDefinitions;
 exports.formatDynamicTaskContext = formatDynamicTaskContext;
 exports.partitionPrompt = partitionPrompt;
-const crypto = __importStar(__webpack_require__(10));
-const contextBudget_1 = __webpack_require__(15);
+const crypto = __importStar(__webpack_require__(11));
+const contextBudget_1 = __webpack_require__(16);
 /**
  * Feature flag for Phase 4: Stable Prompt Prefix.
  * When ON, the system prompt and tool definitions are kept strictly immutable
@@ -4857,7 +4903,7 @@ function partitionPrompt(options) {
 
 
 /***/ }),
-/* 20 */
+/* 21 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4975,7 +5021,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 21 */
+/* 22 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5034,7 +5080,7 @@ const models_1 = __webpack_require__(5);
 Object.defineProperty(exports, "DEFAULT_MAX_TOKENS", ({ enumerable: true, get: function () { return models_1.DEFAULT_MAX_TOKENS; } }));
 Object.defineProperty(exports, "getMaxTokens", ({ enumerable: true, get: function () { return models_1.getMaxTokens; } }));
 Object.defineProperty(exports, "resolveMaxTokens", ({ enumerable: true, get: function () { return models_1.resolveMaxTokens; } }));
-const modes_1 = __webpack_require__(22);
+const modes_1 = __webpack_require__(23);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -5182,7 +5228,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 22 */
+/* 23 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -5219,7 +5265,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 23 */
+/* 24 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5240,22 +5286,22 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createWebFetchTool = exports.webFetchTool = exports.createWebSearchTool = exports.webSearchTool = exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(24);
-const listFiles_1 = __webpack_require__(25);
-const readFile_1 = __webpack_require__(30);
-const readActiveEditor_1 = __webpack_require__(31);
-const readSelection_1 = __webpack_require__(32);
-const searchWorkspace_1 = __webpack_require__(33);
-const createFile_1 = __webpack_require__(35);
-const editFile_1 = __webpack_require__(36);
-const renameFile_1 = __webpack_require__(38);
-const deleteFile_1 = __webpack_require__(39);
-const multiEdit_1 = __webpack_require__(40);
-const runCommand_1 = __webpack_require__(41);
-const gitClone_1 = __webpack_require__(46);
-const fetchGithubIssue_1 = __webpack_require__(48);
-const webSearch_1 = __webpack_require__(49);
-const webFetch_1 = __webpack_require__(51);
+const registry_1 = __webpack_require__(25);
+const listFiles_1 = __webpack_require__(26);
+const readFile_1 = __webpack_require__(31);
+const readActiveEditor_1 = __webpack_require__(32);
+const readSelection_1 = __webpack_require__(33);
+const searchWorkspace_1 = __webpack_require__(34);
+const createFile_1 = __webpack_require__(36);
+const editFile_1 = __webpack_require__(37);
+const renameFile_1 = __webpack_require__(39);
+const deleteFile_1 = __webpack_require__(40);
+const multiEdit_1 = __webpack_require__(41);
+const runCommand_1 = __webpack_require__(42);
+const gitClone_1 = __webpack_require__(47);
+const fetchGithubIssue_1 = __webpack_require__(49);
+const webSearch_1 = __webpack_require__(50);
+const webFetch_1 = __webpack_require__(52);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -5284,19 +5330,19 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(24);
+var registry_2 = __webpack_require__(25);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-var webSearch_2 = __webpack_require__(49);
+var webSearch_2 = __webpack_require__(50);
 Object.defineProperty(exports, "webSearchTool", ({ enumerable: true, get: function () { return webSearch_2.webSearchTool; } }));
 Object.defineProperty(exports, "createWebSearchTool", ({ enumerable: true, get: function () { return webSearch_2.createWebSearchTool; } }));
-var webFetch_2 = __webpack_require__(51);
+var webFetch_2 = __webpack_require__(52);
 Object.defineProperty(exports, "webFetchTool", ({ enumerable: true, get: function () { return webFetch_2.webFetchTool; } }));
 Object.defineProperty(exports, "createWebFetchTool", ({ enumerable: true, get: function () { return webFetch_2.createWebFetchTool; } }));
-__exportStar(__webpack_require__(27), exports);
+__exportStar(__webpack_require__(28), exports);
 
 
 /***/ }),
-/* 24 */
+/* 25 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -5348,7 +5394,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 25 */
+/* 26 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5388,9 +5434,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(26);
-const fsutil_2 = __webpack_require__(26);
-const workspaceSafety_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
+const fsutil_2 = __webpack_require__(27);
+const workspaceSafety_1 = __webpack_require__(29);
 const MAX_ENTRIES = parseInt(process.env.LIST_FILES_MAX_ENTRIES || "150", 10);
 exports.listFilesTool = {
     name: "list_files",
@@ -5470,7 +5516,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 26 */
+/* 27 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5523,9 +5569,9 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(27);
-const fs = __importStar(__webpack_require__(12));
-const path = __importStar(__webpack_require__(13));
+const types_1 = __webpack_require__(28);
+const fs = __importStar(__webpack_require__(13));
+const path = __importStar(__webpack_require__(14));
 /** Default directory names ignored during file walking and searching. */
 exports.DEFAULT_IGNORE_DIRS = [
     "node_modules",
@@ -5731,7 +5777,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 27 */
+/* 28 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -5752,7 +5798,7 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 28 */
+/* 29 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5793,8 +5839,8 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.isBroadWorkspace = isBroadWorkspace;
 exports.checkBroadWorkspaceWarning = checkBroadWorkspaceWarning;
 exports.resetBroadWorkspaceWarning = resetBroadWorkspaceWarning;
-const path = __importStar(__webpack_require__(13));
-const os = __importStar(__webpack_require__(29));
+const path = __importStar(__webpack_require__(14));
+const os = __importStar(__webpack_require__(30));
 let broadWorkspaceWarned = false;
 /**
  * Returns true if the path is considered "too broad" (home, Desktop, Documents, Downloads, root).
@@ -5842,19 +5888,19 @@ function resetBroadWorkspaceWarning() {
 
 
 /***/ }),
-/* 29 */
+/* 30 */
 /***/ ((module) => {
 
 module.exports = require("os");
 
 /***/ }),
-/* 30 */
+/* 31 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(27);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -5915,7 +5961,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 31 */
+/* 32 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5955,7 +6001,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(27);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -5982,7 +6028,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 32 */
+/* 33 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6053,7 +6099,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 33 */
+/* 34 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6092,12 +6138,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
-const fs = __importStar(__webpack_require__(12));
-const path = __importStar(__webpack_require__(13));
-const readline = __importStar(__webpack_require__(34));
-const fsutil_1 = __webpack_require__(26);
-const types_1 = __webpack_require__(27);
-const workspaceSafety_1 = __webpack_require__(28);
+const fs = __importStar(__webpack_require__(13));
+const path = __importStar(__webpack_require__(14));
+const readline = __importStar(__webpack_require__(35));
+const fsutil_1 = __webpack_require__(27);
+const types_1 = __webpack_require__(28);
+const workspaceSafety_1 = __webpack_require__(29);
 const MAX_MATCHES_PER_FILE = 5;
 const CONCURRENCY_LIMIT = 8;
 const MAX_DEPTH = 8;
@@ -6409,13 +6455,13 @@ exports.searchWorkspaceTool = {
 
 
 /***/ }),
-/* 34 */
+/* 35 */
 /***/ ((module) => {
 
 module.exports = require("readline");
 
 /***/ }),
-/* 35 */
+/* 36 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6455,8 +6501,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -6515,15 +6561,15 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 36 */
+/* 37 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
-const editCore_1 = __webpack_require__(37);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
+const editCore_1 = __webpack_require__(38);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -6650,7 +6696,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 37 */
+/* 38 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6695,9 +6741,9 @@ exports.applyEdits = applyEdits;
 exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
-const crypto = __importStar(__webpack_require__(10));
-const fsutil_1 = __webpack_require__(26);
-const types_1 = __webpack_require__(27);
+const crypto = __importStar(__webpack_require__(11));
+const fsutil_1 = __webpack_require__(27);
+const types_1 = __webpack_require__(28);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -6865,7 +6911,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 38 */
+/* 39 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6905,8 +6951,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -6959,7 +7005,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 39 */
+/* 40 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6999,8 +7045,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -7057,14 +7103,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 40 */
+/* 41 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(27);
-const editCore_1 = __webpack_require__(37);
+const types_1 = __webpack_require__(28);
+const editCore_1 = __webpack_require__(38);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -7179,20 +7225,20 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 41 */
+/* 42 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(42);
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
-const contextBudget_1 = __webpack_require__(15);
-const contextBudget_2 = __webpack_require__(15);
-const processManager_1 = __webpack_require__(43);
-const changes_1 = __webpack_require__(44);
-const commandDigest_1 = __webpack_require__(45);
+const child_process_1 = __webpack_require__(43);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
+const contextBudget_1 = __webpack_require__(16);
+const contextBudget_2 = __webpack_require__(16);
+const processManager_1 = __webpack_require__(44);
+const changes_1 = __webpack_require__(45);
+const commandDigest_1 = __webpack_require__(46);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_COMMAND_OUTPUT_CHARS || "6000", 10);
 exports.runCommandTool = {
@@ -7393,13 +7439,13 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 42 */
+/* 43 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 43 */
+/* 44 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -7536,7 +7582,7 @@ exports.ProcessManager = ProcessManager;
 
 
 /***/ }),
-/* 44 */
+/* 45 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -7577,9 +7623,9 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.ChangeManager = void 0;
 exports.isVerificationCommand = isVerificationCommand;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(13));
-const fs = __importStar(__webpack_require__(12));
-const fsutil_1 = __webpack_require__(26);
+const path = __importStar(__webpack_require__(14));
+const fs = __importStar(__webpack_require__(13));
+const fsutil_1 = __webpack_require__(27);
 /**
  * Recognizes standard test, build, lint, and verification commands.
  */
@@ -8356,7 +8402,7 @@ function formatUnifiedDiff(filePath, original, modified) {
 
 
 /***/ }),
-/* 45 */
+/* 46 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -8410,9 +8456,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.writeScratch = writeScratch;
 exports.digestCommandOutput = digestCommandOutput;
-const path = __importStar(__webpack_require__(13));
-const fs = __importStar(__webpack_require__(12));
-const crypto = __importStar(__webpack_require__(10));
+const path = __importStar(__webpack_require__(14));
+const fs = __importStar(__webpack_require__(13));
+const crypto = __importStar(__webpack_require__(11));
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -8907,7 +8953,7 @@ function digestCommandOutput(input) {
 
 
 /***/ }),
-/* 46 */
+/* 47 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -8949,12 +8995,12 @@ exports.gitCloneTool = void 0;
 exports.setExecFileForTesting = setExecFileForTesting;
 exports.resetExecFileForTesting = resetExecFileForTesting;
 exports.extractRepoNameFromUrl = extractRepoNameFromUrl;
-const path = __importStar(__webpack_require__(13));
-const fs = __importStar(__webpack_require__(12));
-const child_process_1 = __webpack_require__(42);
-const types_1 = __webpack_require__(27);
-const fsutil_1 = __webpack_require__(26);
-const workspace_1 = __webpack_require__(47);
+const path = __importStar(__webpack_require__(14));
+const fs = __importStar(__webpack_require__(13));
+const child_process_1 = __webpack_require__(43);
+const types_1 = __webpack_require__(28);
+const fsutil_1 = __webpack_require__(27);
+const workspace_1 = __webpack_require__(48);
 let execFileImpl = child_process_1.execFile;
 function setExecFileForTesting(fn) {
     execFileImpl = fn;
@@ -9073,7 +9119,7 @@ exports.gitCloneTool = {
 
 
 /***/ }),
-/* 47 */
+/* 48 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -9116,9 +9162,9 @@ exports.toRelative = toRelative;
 exports.isInside = isInside;
 exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
-const path = __importStar(__webpack_require__(13));
-const fs = __importStar(__webpack_require__(12));
-const types_1 = __webpack_require__(27);
+const path = __importStar(__webpack_require__(14));
+const fs = __importStar(__webpack_require__(13));
+const types_1 = __webpack_require__(28);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -9187,14 +9233,14 @@ async function resolvePathInWorkspace(input, root, confirm) {
 
 
 /***/ }),
-/* 48 */
+/* 49 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchGithubIssueTool = void 0;
 exports.fetchGithubIssue = fetchGithubIssue;
-const child_process_1 = __webpack_require__(42);
+const child_process_1 = __webpack_require__(43);
 /**
  * Fetch issue details authoritatively using `gh` CLI with REST API fallback.
  */
@@ -9348,14 +9394,14 @@ exports.fetchGithubIssueTool = {
 
 
 /***/ }),
-/* 49 */
+/* 50 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.webSearchTool = void 0;
 exports.createWebSearchTool = createWebSearchTool;
-const WebSearchProvider_1 = __webpack_require__(50);
+const WebSearchProvider_1 = __webpack_require__(51);
 /**
  * Native web search tool for DAXIOM.
  * Enables the agent to query current external documentation, APIs, and guides.
@@ -9458,7 +9504,7 @@ exports.webSearchTool = createWebSearchTool();
 
 
 /***/ }),
-/* 50 */
+/* 51 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -9961,7 +10007,7 @@ function getSearchProvider(explicitName) {
 
 
 /***/ }),
-/* 51 */
+/* 52 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
