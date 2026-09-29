@@ -287,7 +287,7 @@ class SidebarProvider {
                 this.post({ type: "openApiSettings" });
                 this.post({
                     type: "error",
-                    message: "Add your Lightning API key to start (click the ⚙ button).",
+                    message: "Add your OpenRouter API key to start (click the ⚙ button).",
                 });
             }
             else {
@@ -1457,6 +1457,9 @@ class LLMClient {
         const trimmed = (baseUrl || "").trim();
         if (apiKey?.startsWith("nvapi-") && (trimmed.includes("lightning.ai") || !trimmed)) {
             return "https://integrate.api.nvidia.com/v1/";
+        }
+        if (apiKey?.startsWith("sk-or-v1-") && (trimmed.includes("lightning.ai") || !trimmed)) {
+            return "https://openrouter.ai/api/v1/";
         }
         return trimmed;
     }
@@ -5127,6 +5130,8 @@ exports.setApiKey = setApiKey;
 exports.resolveConfig = resolveConfig;
 exports.promptAndStoreApiKey = promptAndStoreApiKey;
 const vscode = __importStar(__webpack_require__(1));
+const fs = __importStar(__webpack_require__(13));
+const path = __importStar(__webpack_require__(14));
 const models_1 = __webpack_require__(5);
 Object.defineProperty(exports, "DEFAULT_MAX_TOKENS", ({ enumerable: true, get: function () { return models_1.DEFAULT_MAX_TOKENS; } }));
 Object.defineProperty(exports, "getMaxTokens", ({ enumerable: true, get: function () { return models_1.getMaxTokens; } }));
@@ -5157,13 +5162,53 @@ function normalizeBaseUrl(raw) {
     const trimmed = raw.trim() || exports.DEFAULT_BASE_URL;
     return trimmed.replace(/\/+$/, "") + "/";
 }
+/** Read fallback key from .env file in workspace root if not in process.env. */
+function readWorkspaceEnvFallback(keyName) {
+    try {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            return undefined;
+        }
+        const envPath = path.join(folders[0].uri.fsPath, ".env");
+        if (!fs.existsSync(envPath)) {
+            return undefined;
+        }
+        const content = fs.readFileSync(envPath, "utf-8");
+        for (const line of content.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) {
+                continue;
+            }
+            const eqIdx = trimmed.indexOf("=");
+            if (eqIdx !== -1) {
+                const k = trimmed.slice(0, eqIdx).trim();
+                let v = trimmed.slice(eqIdx + 1).trim();
+                v = v.replace(/^["'“”]+|["'“”]+$/g, "");
+                if (k === keyName && v) {
+                    return v;
+                }
+            }
+        }
+    }
+    catch {
+        // Fail open
+    }
+    return undefined;
+}
 // ---- persisted settings (globalState) ----
 function getModelId(context) {
-    const envModel = process.env.MODEL?.trim() || process.env.AI_MODEL?.trim();
+    const envModel = process.env.MODEL?.trim() ||
+        process.env.AI_MODEL?.trim() ||
+        readWorkspaceEnvFallback("MODEL") ||
+        readWorkspaceEnvFallback("AI_MODEL");
     if (envModel) {
         return (0, models_1.resolveModelId)(envModel);
     }
-    return (0, models_1.resolveModelId)(context.globalState.get(KEY_MODEL));
+    const stored = context.globalState.get(KEY_MODEL);
+    if (!stored || stored.includes("lightning-ai") || stored === "ultra" || stored.includes("nemotron")) {
+        return models_1.DEFAULT_MODEL_ID;
+    }
+    return (0, models_1.resolveModelId)(stored);
 }
 async function setModelId(context, apiModelId) {
     await context.globalState.update(KEY_MODEL, (0, models_1.resolveModelId)(apiModelId));
@@ -5179,18 +5224,30 @@ function getBaseUrl(context, apiKey) {
         process.env.OPENROUTER_BASE_URL?.trim() ||
         process.env.BASE_URL?.trim() ||
         process.env.DEEPSEEK_BASE_URL?.trim() ||
-        process.env.OPENAI_BASE_URL?.trim();
+        process.env.OPENAI_BASE_URL?.trim() ||
+        readWorkspaceEnvFallback("AI_BASE_URL") ||
+        readWorkspaceEnvFallback("OPENROUTER_BASE_URL") ||
+        readWorkspaceEnvFallback("BASE_URL");
     if (envUrl) {
         return normalizeBaseUrl(envUrl);
     }
     const key = apiKey ||
         process.env.OPENROUTER_API_KEY?.trim() ||
         process.env.AI_API_KEY?.trim() ||
+        readWorkspaceEnvFallback("OPENROUTER_API_KEY") ||
+        readWorkspaceEnvFallback("AI_API_KEY") ||
         "";
     if (key.startsWith("nvapi-")) {
         return "https://integrate.api.nvidia.com/v1/";
     }
-    return normalizeBaseUrl(context.globalState.get(KEY_BASE_URL) ?? exports.DEFAULT_BASE_URL);
+    if (key.startsWith("sk-or-v1-")) {
+        return "https://openrouter.ai/api/v1/";
+    }
+    const stored = context.globalState.get(KEY_BASE_URL);
+    if (stored && stored.includes("lightning.ai")) {
+        return exports.DEFAULT_BASE_URL;
+    }
+    return normalizeBaseUrl(stored ?? exports.DEFAULT_BASE_URL);
 }
 async function setBaseUrl(context, baseUrl) {
     await context.globalState.update(KEY_BASE_URL, normalizeBaseUrl(baseUrl));
@@ -5223,7 +5280,11 @@ async function getApiKey(context) {
     const envKey = cleanEnvKey(process.env.OPENROUTER_API_KEY ||
         process.env.AI_API_KEY ||
         process.env.DEEPSEEK_API_KEY ||
-        process.env.OPENAI_API_KEY);
+        process.env.OPENAI_API_KEY ||
+        readWorkspaceEnvFallback("OPENROUTER_API_KEY") ||
+        readWorkspaceEnvFallback("AI_API_KEY") ||
+        readWorkspaceEnvFallback("DEEPSEEK_API_KEY") ||
+        readWorkspaceEnvFallback("OPENAI_API_KEY"));
     if (envKey) {
         return envKey;
     }

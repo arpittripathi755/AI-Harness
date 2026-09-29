@@ -17347,7 +17347,7 @@ __webpack_require__.r(__webpack_exports__);
 const INITIAL_SETTINGS = {
     modelId: _shared_models__WEBPACK_IMPORTED_MODULE_2__.DEFAULT_MODEL_ID,
     modeId: _shared_modes__WEBPACK_IMPORTED_MODULE_3__.DEFAULT_MODE,
-    baseUrl: "https://lightning.ai/api/v1/",
+    baseUrl: "https://openrouter.ai/api/v1/",
     hasApiKey: false,
     terminalAutoRun: false,
 };
@@ -39880,9 +39880,9 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(7);
 
 
-const DEFAULT_BASE_URL = "https://lightning.ai/api/v1/";
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/";
 /**
- * Settings modal: Lightning base URL + API key (write-only, stored in
+ * Settings modal: OpenRouter base URL + API key (write-only, stored in
  * SecretStorage) and the terminal command execution mode (auto / manual).
  */
 function ApiModal({ baseUrl, hasApiKey, terminalAutoRun, onSave, onTerminalAutoRunChange, onClose, }) {
