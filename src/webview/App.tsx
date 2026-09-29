@@ -19,7 +19,7 @@ import { StatusBar } from "./components/StatusBar";
 const INITIAL_SETTINGS: UiSettings = {
   modelId: DEFAULT_MODEL_ID,
   modeId: DEFAULT_MODE,
-  baseUrl: "https://lightning.ai/api/v1/",
+  baseUrl: "https://openrouter.ai/api/v1/",
   hasApiKey: false,
   terminalAutoRun: false,
 };

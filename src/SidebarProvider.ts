@@ -215,7 +215,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.post({ type: "openApiSettings" });
         this.post({
           type: "error",
-          message: "Add your Lightning API key to start (click the ⚙ button).",
+          message: "Add your OpenRouter API key to start (click the ⚙ button).",
         });
       } else {
         this.post({

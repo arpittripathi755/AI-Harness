@@ -9,10 +9,10 @@ interface ApiModalProps {
   onClose: () => void;
 }
 
-const DEFAULT_BASE_URL = "https://lightning.ai/api/v1/";
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/";
 
 /**
- * Settings modal: Lightning base URL + API key (write-only, stored in
+ * Settings modal: OpenRouter base URL + API key (write-only, stored in
  * SecretStorage) and the terminal command execution mode (auto / manual).
  */
 export function ApiModal({
