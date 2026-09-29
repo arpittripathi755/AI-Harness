@@ -10,9 +10,9 @@ import { getModelByApiId, resolveMaxTokens } from "../shared/models";
 export type CallPhase = "tool_decision" | "edit" | "explain" | "plan";
 
 export const PHASE_BUDGET: Record<CallPhase, number> = {
-  tool_decision: 1024,
+  tool_decision: 2048,  // raised: model needs room to reason + emit tool calls
   edit: 4096,
-  explain: 1536,
+  explain: 2048,        // raised: summary turns were being cut off
   plan: 2048,
 };
 
