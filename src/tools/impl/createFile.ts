@@ -38,19 +38,24 @@ export const createFileTool: Tool = {
     const overwrite = args.overwrite === true;
     const uri = await ctx.resolvePath(rel);
 
-    let exists = true;
-    try {
-      await vscode.workspace.fs.stat(uri);
-    } catch {
-      exists = false;
+    const relPath = ctx.toRelative(uri);
+
+    let exists = false;
+    if (ctx.changeManager) {
+      exists = await ctx.changeManager.fileExists(relPath);
+    } else {
+      try {
+        await vscode.workspace.fs.stat(uri);
+        exists = true;
+      } catch {
+        exists = false;
+      }
     }
     if (exists && !overwrite) {
       throw new ToolError(
-        `File already exists: ${ctx.toRelative(uri)}. Pass overwrite:true or use edit_file.`,
+        `File already exists: ${relPath}. Pass overwrite:true or use edit_file.`,
       );
     }
-
-    const relPath = ctx.toRelative(uri);
     if (ctx.changeManager) {
       ctx.changeManager.stageCreate(relPath, content);
     } else {

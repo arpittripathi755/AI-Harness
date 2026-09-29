@@ -119,6 +119,7 @@ const ConversationManager_1 = __webpack_require__(21);
 const config_1 = __webpack_require__(22);
 const modes_1 = __webpack_require__(23);
 const tools_1 = __webpack_require__(24);
+const changes_1 = __webpack_require__(45);
 const workspace_1 = __webpack_require__(48);
 class SidebarProvider {
     context;
@@ -127,6 +128,7 @@ class SidebarProvider {
     session;
     sessionConversationId;
     ctx;
+    changeManager;
     chats;
     constructor(context) {
         this.context = context;
@@ -135,6 +137,8 @@ class SidebarProvider {
             this.session = undefined;
             this.sessionConversationId = undefined;
             this.ctx = undefined;
+            this.changeManager?.clear();
+            this.changeManager = undefined;
         }));
     }
     resolveWebviewView(webviewView) {
@@ -154,6 +158,9 @@ class SidebarProvider {
         this.session?.cancel();
         this.session = undefined;
         this.sessionConversationId = undefined;
+        this.changeManager?.clear();
+        this.changeManager = undefined;
+        this.ctx = undefined;
         this.chats.create();
         this.post({ type: "restore", items: [] });
         this.postChats();
@@ -193,6 +200,9 @@ class SidebarProvider {
             case "setMode":
                 await (0, config_1.setModeId)(this.context, msg.modeId);
                 this.session?.setMode((0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations);
+                if (this.ctx) {
+                    this.ctx.autoEdit = (0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations;
+                }
                 this.post({ type: "settings", settings: await this.buildSettings() });
                 break;
             case "setTerminalAutoRun":
@@ -211,6 +221,9 @@ class SidebarProvider {
         this.session?.cancel();
         this.session = undefined;
         this.sessionConversationId = undefined;
+        this.changeManager?.clear();
+        this.changeManager = undefined;
+        this.ctx = undefined;
         this.chats.setActive(id);
         this.post({ type: "restore", items: this.chats.active.timeline });
         this.postChats();
@@ -224,6 +237,9 @@ class SidebarProvider {
             this.session?.cancel();
             this.session = undefined;
             this.sessionConversationId = undefined;
+            this.changeManager?.clear();
+            this.changeManager = undefined;
+            this.ctx = undefined;
             this.post({ type: "restore", items: this.chats.active.timeline });
         }
         this.postChats();
@@ -293,39 +309,62 @@ class SidebarProvider {
         });
         this.postChats();
         this.post({ type: "busy", value: true });
-        await session.send(trimmed, {
-            onAssistantStart: (id) => {
-                this.appendTimeline({ kind: "message", id, role: "assistant", content: "" });
-                this.post({ type: "assistantStart", id });
-            },
-            onAssistantDelta: (id, delta) => {
-                this.appendAssistantDelta(id, delta);
-                this.post({ type: "assistantDelta", id, delta });
-            },
-            onAssistantDone: (id) => this.post({ type: "assistantDone", id }),
-            onToolStart: (callId, name, title) => {
-                this.appendTimeline({
-                    kind: "tool",
-                    callId,
-                    name,
-                    title,
-                    status: "running",
-                });
-                this.post({ type: "toolStart", callId, name, title });
-            },
-            onToolEnd: (callId, ok, summary) => {
-                this.updateToolItem(callId, ok, summary);
-                this.post({ type: "toolEnd", callId, ok, summary });
-            },
-            onStatus: (status) => this.post({ type: "status", status }),
-            onError: (message) => this.post({ type: "error", message }),
-        }, images);
-        // Persist the LLM history and active task memory after the turn completes.
-        this.chats.active.history = session.exportHistory();
-        this.chats.active.taskMemory = session.exportTaskMemory();
-        this.chats.save();
-        this.post({ type: "busy", value: false });
-        this.post({ type: "status", status: "Idle" });
+        try {
+            await session.send(trimmed, {
+                onAssistantStart: (id) => {
+                    this.appendTimeline({ kind: "message", id, role: "assistant", content: "" });
+                    this.post({ type: "assistantStart", id });
+                },
+                onAssistantDelta: (id, delta) => {
+                    this.appendAssistantDelta(id, delta);
+                    this.post({ type: "assistantDelta", id, delta });
+                },
+                onAssistantDone: (id) => this.post({ type: "assistantDone", id }),
+                onToolStart: (callId, name, title) => {
+                    this.appendTimeline({
+                        kind: "tool",
+                        callId,
+                        name,
+                        title,
+                        status: "running",
+                    });
+                    this.post({ type: "toolStart", callId, name, title });
+                },
+                onToolEnd: (callId, ok, summary) => {
+                    this.updateToolItem(callId, ok, summary);
+                    this.post({ type: "toolEnd", callId, ok, summary });
+                },
+                onStatus: (status) => this.post({ type: "status", status }),
+                onError: (message) => this.post({ type: "error", message }),
+            }, images);
+            // Persist the LLM history and active task memory after the turn completes.
+            this.chats.active.history = session.exportHistory();
+            this.chats.active.taskMemory = session.exportTaskMemory();
+            this.chats.save();
+            // Apply staged changes atomically if any were produced during the turn
+            const allowMutations = (0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations;
+            if (allowMutations && this.changeManager?.hasStaged()) {
+                try {
+                    await this.changeManager.applyChangeSet();
+                }
+                catch (err) {
+                    this.post({
+                        type: "error",
+                        message: `Failed to apply staged changes: ${err.message || String(err)}`,
+                    });
+                }
+            }
+        }
+        catch (err) {
+            this.post({
+                type: "error",
+                message: err.message || String(err),
+            });
+        }
+        finally {
+            this.post({ type: "busy", value: false });
+            this.post({ type: "status", status: "Idle" });
+        }
     }
     // ---- timeline mirroring (source of truth for persistence + switching) ----
     appendTimeline(item) {
@@ -372,14 +411,26 @@ class SidebarProvider {
             const pick = await vscode.window.showWarningMessage(message, { modal: true, detail }, "Allow");
             return pick === "Allow";
         };
+        if (!this.changeManager && root) {
+            this.changeManager = new changes_1.ChangeManager(root);
+        }
         this.ctx = {
             workspaceRoot: root,
             terminalAutoRun: (0, config_1.getTerminalAutoRun)(this.context),
             autoEdit: (0, modes_1.getMode)((0, config_1.getModeId)(this.context)).allowMutations,
+            changeManager: this.changeManager,
             resolvePath: (input) => (0, workspace_1.resolvePathInWorkspace)(input, root, confirm),
             toRelative: (uri) => (0, workspace_1.toRelative)(root, uri),
             confirm,
         };
+        return this.ctx;
+    }
+    /** Visible for testing */
+    getChangeManager() {
+        return this.changeManager;
+    }
+    /** Visible for testing */
+    getToolContext() {
         return this.ctx;
     }
     post(msg) {
@@ -6138,6 +6189,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
+const vscode = __importStar(__webpack_require__(1));
 const fs = __importStar(__webpack_require__(13));
 const path = __importStar(__webpack_require__(14));
 const readline = __importStar(__webpack_require__(35));
@@ -6279,12 +6331,16 @@ exports.searchWorkspaceTool = {
                         continue;
                     }
                     const fullPath = path.join(current.dir, entry.name);
-                    const rel = path.relative(rootFs, fullPath).split(path.sep).join("/");
+                    const rel = (ctx.toRelative
+                        ? ctx.toRelative(vscode.Uri.file(fullPath))
+                        : path.relative(rootFs, fullPath))
+                        .split(path.sep)
+                        .join("/");
                     if (!matchesGlob(rel, include)) {
                         continue;
                     }
                     // Skip if staged deleted in ChangeManager
-                    if (ctx.changeManager?.getDeletedPaths().includes(rel)) {
+                    if (ctx.changeManager?.isDeleted(rel)) {
                         continue;
                     }
                     try {
@@ -6535,17 +6591,23 @@ exports.createFileTool = {
         const content = typeof args.content === "string" ? args.content : "";
         const overwrite = args.overwrite === true;
         const uri = await ctx.resolvePath(rel);
-        let exists = true;
-        try {
-            await vscode.workspace.fs.stat(uri);
+        const relPath = ctx.toRelative(uri);
+        let exists = false;
+        if (ctx.changeManager) {
+            exists = await ctx.changeManager.fileExists(relPath);
         }
-        catch {
-            exists = false;
+        else {
+            try {
+                await vscode.workspace.fs.stat(uri);
+                exists = true;
+            }
+            catch {
+                exists = false;
+            }
         }
         if (exists && !overwrite) {
-            throw new types_1.ToolError(`File already exists: ${ctx.toRelative(uri)}. Pass overwrite:true or use edit_file.`);
+            throw new types_1.ToolError(`File already exists: ${relPath}. Pass overwrite:true or use edit_file.`);
         }
-        const relPath = ctx.toRelative(uri);
         if (ctx.changeManager) {
             ctx.changeManager.stageCreate(relPath, content);
         }
@@ -6982,14 +7044,38 @@ exports.renameFileTool = {
         const overwrite = args.overwrite === true;
         const from = await ctx.resolvePath(fromRel);
         const to = await ctx.resolvePath(toRel);
-        try {
-            await vscode.workspace.fs.stat(from);
-        }
-        catch {
-            throw new types_1.ToolError(`Source does not exist: ${ctx.toRelative(from)}`);
-        }
         const fromRelPath = ctx.toRelative(from);
         const toRelPath = ctx.toRelative(to);
+        const fromExists = ctx.changeManager
+            ? await ctx.changeManager.fileExists(fromRelPath)
+            : await (async () => {
+                try {
+                    await vscode.workspace.fs.stat(from);
+                    return true;
+                }
+                catch {
+                    return false;
+                }
+            })();
+        if (!fromExists) {
+            throw new types_1.ToolError(`Source does not exist: ${fromRelPath}`);
+        }
+        if (!overwrite) {
+            const toExists = ctx.changeManager
+                ? await ctx.changeManager.fileExists(toRelPath)
+                : await (async () => {
+                    try {
+                        await vscode.workspace.fs.stat(to);
+                        return true;
+                    }
+                    catch {
+                        return false;
+                    }
+                })();
+            if (toExists) {
+                throw new types_1.ToolError(`Destination already exists: ${toRelPath}. Pass overwrite:true to overwrite.`);
+            }
+        }
         if (ctx.changeManager) {
             await ctx.changeManager.stageRename(fromRelPath, toRelPath);
         }
@@ -7070,15 +7156,38 @@ exports.deleteFileTool = {
         const rel = (0, fsutil_1.requireString)(args, "path");
         const recursive = args.recursive === true;
         const uri = await ctx.resolvePath(rel);
-        let stat;
-        try {
-            stat = await vscode.workspace.fs.stat(uri);
-        }
-        catch {
-            throw new types_1.ToolError(`Path does not exist: ${ctx.toRelative(uri)}`);
-        }
-        const isDir = (stat.type & vscode.FileType.Directory) !== 0;
         const relPath = ctx.toRelative(uri);
+        let exists = false;
+        let isDir = false;
+        if (ctx.changeManager) {
+            exists = await ctx.changeManager.fileExists(relPath);
+            if (!exists) {
+                throw new types_1.ToolError(`Path does not exist: ${relPath}`);
+            }
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                isDir = (stat.type & vscode.FileType.Directory) !== 0;
+            }
+            catch {
+                const prefix = `${relPath}/`;
+                for (const p of ctx.changeManager.getCreatedPaths()) {
+                    if (p.startsWith(prefix)) {
+                        isDir = true;
+                        break;
+                    }
+                }
+            }
+        }
+        else {
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                exists = true;
+                isDir = (stat.type & vscode.FileType.Directory) !== 0;
+            }
+            catch {
+                throw new types_1.ToolError(`Path does not exist: ${relPath}`);
+            }
+        }
         if (!ctx.autoEdit) {
             const approved = await ctx.confirm(`Delete ${isDir ? "directory" : "file"} "${relPath}"?`, "This action cannot be easily undone.");
             if (!approved) {
@@ -7794,12 +7903,74 @@ class ChangeManager {
         return result;
     }
     /**
+     * Check whether a relative path or any of its parent directories is deleted in the staged overlay.
+     */
+    isDeleted(filePath) {
+        const rel = this.normalize(filePath);
+        if (this.deleted.has(rel)) {
+            return true;
+        }
+        for (const del of this.deleted) {
+            if (rel.startsWith(`${del}/`)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Check whether a file or directory effectively exists in the virtual overlay
+     * or on physical disk (accounting for staged creations, edits, deletions, and renames).
+     */
+    async fileExists(filePath) {
+        const rel = this.normalize(filePath);
+        if (!rel) {
+            return true; // Workspace root always exists
+        }
+        // If explicitly deleted in staged overlay, it does not exist
+        if (this.isDeleted(rel)) {
+            return false;
+        }
+        // If staged for creation or modification, it exists
+        if (this.created.has(rel) || this.staged.has(rel)) {
+            return true;
+        }
+        // If it was renamed to another path, the old path no longer exists
+        if (this.renames.has(rel)) {
+            return false;
+        }
+        // Check if it's a directory containing staged creations, edits, or renames
+        const prefix = `${rel}/`;
+        for (const p of this.created) {
+            if (p.startsWith(prefix) && !this.isDeleted(p)) {
+                return true;
+            }
+        }
+        for (const p of this.staged.keys()) {
+            if (p.startsWith(prefix) && !this.isDeleted(p)) {
+                return true;
+            }
+        }
+        for (const p of this.renames.values()) {
+            if (p.startsWith(prefix) && !this.isDeleted(p)) {
+                return true;
+            }
+        }
+        // Check physical filesystem
+        try {
+            await vscode.workspace.fs.stat(this.resolveUri(rel));
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    /**
      * Read the effective content of a file: returns the staged virtual version
      * if modified/created, or reads from physical disk if not staged.
      */
     async readEffective(filePath) {
         const rel = this.normalize(filePath);
-        if (this.deleted.has(rel)) {
+        if (this.isDeleted(rel)) {
             throw new Error(`File is deleted in staged changes: ${rel}`);
         }
         if (this.staged.has(rel)) {
@@ -7835,7 +8006,7 @@ class ChangeManager {
      */
     stageEdit(filePath, newContent) {
         const rel = this.normalize(filePath);
-        if (this.deleted.has(rel)) {
+        if (this.isDeleted(rel)) {
             throw new Error(`Cannot edit deleted file: ${rel}`);
         }
         this.staged.set(rel, newContent);
@@ -7853,13 +8024,40 @@ class ChangeManager {
         }
     }
     /**
-     * Stage the deletion of a file.
+     * Stage the deletion of a file or directory.
      */
     stageDelete(filePath) {
         const rel = this.normalize(filePath);
+        const wasCreated = this.created.has(rel);
         this.staged.delete(rel);
         this.created.delete(rel);
-        this.deleted.add(rel);
+        // If it was created in this session and never existed physically on disk,
+        // deleting it simply cancels the creation without staging a disk deletion.
+        let physicallyExists = false;
+        try {
+            physicallyExists = fs.existsSync(this.resolveUri(rel).fsPath);
+        }
+        catch {
+            physicallyExists = false;
+        }
+        if (physicallyExists || !wasCreated) {
+            this.deleted.add(rel);
+        }
+        else {
+            this.originals.delete(rel);
+        }
+        // If deleting a directory or path, clear any staged children under this path
+        const prefix = `${rel}/`;
+        for (const key of Array.from(this.staged.keys())) {
+            if (key.startsWith(prefix)) {
+                this.staged.delete(key);
+            }
+        }
+        for (const key of Array.from(this.created)) {
+            if (key.startsWith(prefix)) {
+                this.created.delete(key);
+            }
+        }
     }
     /**
      * Stage renaming or moving a file.
@@ -7871,15 +8069,24 @@ class ChangeManager {
         this.stageDelete(oldRel);
         this.stageCreate(newRel, content);
         this.renames.set(oldRel, newRel);
+        // If oldRel was itself the target of an earlier rename (A -> B, now B -> C),
+        // update it so the original rename points directly to newRel (A -> C).
+        for (const [orig, target] of this.renames.entries()) {
+            if (target === oldRel && orig !== oldRel) {
+                this.renames.set(orig, newRel);
+                this.renames.delete(oldRel);
+            }
+        }
     }
     /**
      * Generate structured ChangeSet entries with unified diffs.
      */
     getChangeSet() {
         const entries = [];
+        const renameTargets = new Set(this.renames.values());
         // Created files
         for (const rel of this.created) {
-            if (this.deleted.has(rel)) {
+            if (this.deleted.has(rel) || renameTargets.has(rel)) {
                 continue;
             }
             const stagedContent = this.staged.get(rel) ?? "";

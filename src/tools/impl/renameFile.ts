@@ -36,14 +36,42 @@ export const renameFileTool: Tool = {
     const from = await ctx.resolvePath(fromRel);
     const to = await ctx.resolvePath(toRel);
 
-    try {
-      await vscode.workspace.fs.stat(from);
-    } catch {
-      throw new ToolError(`Source does not exist: ${ctx.toRelative(from)}`);
-    }
-
     const fromRelPath = ctx.toRelative(from);
     const toRelPath = ctx.toRelative(to);
+
+    const fromExists = ctx.changeManager
+      ? await ctx.changeManager.fileExists(fromRelPath)
+      : await (async () => {
+          try {
+            await vscode.workspace.fs.stat(from);
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+
+    if (!fromExists) {
+      throw new ToolError(`Source does not exist: ${fromRelPath}`);
+    }
+
+    if (!overwrite) {
+      const toExists = ctx.changeManager
+        ? await ctx.changeManager.fileExists(toRelPath)
+        : await (async () => {
+            try {
+              await vscode.workspace.fs.stat(to);
+              return true;
+            } catch {
+              return false;
+            }
+          })();
+
+      if (toExists) {
+        throw new ToolError(
+          `Destination already exists: ${toRelPath}. Pass overwrite:true to overwrite.`,
+        );
+      }
+    }
 
     if (ctx.changeManager) {
       await ctx.changeManager.stageRename(fromRelPath, toRelPath);

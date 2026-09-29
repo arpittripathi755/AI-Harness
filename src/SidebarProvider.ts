@@ -24,6 +24,7 @@ import type {
   WebviewToExtension,
 } from "./shared/protocol";
 import { createToolRegistry } from "./tools";
+import { ChangeManager } from "./tools/changes";
 import type { ToolContext } from "./tools/types";
 import {
   getWorkspaceRoot,
@@ -38,6 +39,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   private session: ChatSession | undefined;
   private sessionConversationId: string | undefined;
   private ctx: ToolContext | undefined;
+  private changeManager: ChangeManager | undefined;
   private readonly chats: ConversationManager;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -47,6 +49,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         this.session = undefined;
         this.sessionConversationId = undefined;
         this.ctx = undefined;
+        this.changeManager?.clear();
+        this.changeManager = undefined;
       }),
     );
   }
@@ -74,6 +78,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.session?.cancel();
     this.session = undefined;
     this.sessionConversationId = undefined;
+    this.changeManager?.clear();
+    this.changeManager = undefined;
+    this.ctx = undefined;
     this.chats.create();
     this.post({ type: "restore", items: [] });
     this.postChats();
@@ -115,6 +122,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       case "setMode":
         await setModeId(this.context, msg.modeId);
         this.session?.setMode(getMode(getModeId(this.context)).allowMutations);
+        if (this.ctx) {
+          this.ctx.autoEdit = getMode(getModeId(this.context)).allowMutations;
+        }
         this.post({ type: "settings", settings: await this.buildSettings() });
         break;
       case "setTerminalAutoRun":
@@ -134,6 +144,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.session?.cancel();
     this.session = undefined;
     this.sessionConversationId = undefined;
+    this.changeManager?.clear();
+    this.changeManager = undefined;
+    this.ctx = undefined;
     this.chats.setActive(id);
     this.post({ type: "restore", items: this.chats.active.timeline });
     this.postChats();
@@ -148,6 +161,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       this.session?.cancel();
       this.session = undefined;
       this.sessionConversationId = undefined;
+      this.changeManager?.clear();
+      this.changeManager = undefined;
+      this.ctx = undefined;
       this.post({ type: "restore", items: this.chats.active.timeline });
     }
     this.postChats();
@@ -222,41 +238,61 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.postChats();
 
     this.post({ type: "busy", value: true });
-    await session.send(trimmed, {
-      onAssistantStart: (id) => {
-        this.appendTimeline({ kind: "message", id, role: "assistant", content: "" });
-        this.post({ type: "assistantStart", id });
-      },
-      onAssistantDelta: (id, delta) => {
-        this.appendAssistantDelta(id, delta);
-        this.post({ type: "assistantDelta", id, delta });
-      },
-      onAssistantDone: (id) => this.post({ type: "assistantDone", id }),
-      onToolStart: (callId, name, title) => {
-        this.appendTimeline({
-          kind: "tool",
-          callId,
-          name,
-          title,
-          status: "running",
-        });
-        this.post({ type: "toolStart", callId, name, title });
-      },
-      onToolEnd: (callId, ok, summary) => {
-        this.updateToolItem(callId, ok, summary);
-        this.post({ type: "toolEnd", callId, ok, summary });
-      },
-      onStatus: (status) => this.post({ type: "status", status }),
-      onError: (message) => this.post({ type: "error", message }),
-    }, images);
+    try {
+      await session.send(trimmed, {
+        onAssistantStart: (id) => {
+          this.appendTimeline({ kind: "message", id, role: "assistant", content: "" });
+          this.post({ type: "assistantStart", id });
+        },
+        onAssistantDelta: (id, delta) => {
+          this.appendAssistantDelta(id, delta);
+          this.post({ type: "assistantDelta", id, delta });
+        },
+        onAssistantDone: (id) => this.post({ type: "assistantDone", id }),
+        onToolStart: (callId, name, title) => {
+          this.appendTimeline({
+            kind: "tool",
+            callId,
+            name,
+            title,
+            status: "running",
+          });
+          this.post({ type: "toolStart", callId, name, title });
+        },
+        onToolEnd: (callId, ok, summary) => {
+          this.updateToolItem(callId, ok, summary);
+          this.post({ type: "toolEnd", callId, ok, summary });
+        },
+        onStatus: (status) => this.post({ type: "status", status }),
+        onError: (message) => this.post({ type: "error", message }),
+      }, images);
 
-    // Persist the LLM history and active task memory after the turn completes.
-    this.chats.active.history = session.exportHistory();
-    this.chats.active.taskMemory = session.exportTaskMemory();
-    this.chats.save();
+      // Persist the LLM history and active task memory after the turn completes.
+      this.chats.active.history = session.exportHistory();
+      this.chats.active.taskMemory = session.exportTaskMemory();
+      this.chats.save();
 
-    this.post({ type: "busy", value: false });
-    this.post({ type: "status", status: "Idle" });
+      // Apply staged changes atomically if any were produced during the turn
+      const allowMutations = getMode(getModeId(this.context)).allowMutations;
+      if (allowMutations && this.changeManager?.hasStaged()) {
+        try {
+          await this.changeManager.applyChangeSet();
+        } catch (err: any) {
+          this.post({
+            type: "error",
+            message: `Failed to apply staged changes: ${err.message || String(err)}`,
+          });
+        }
+      }
+    } catch (err: any) {
+      this.post({
+        type: "error",
+        message: err.message || String(err),
+      });
+    } finally {
+      this.post({ type: "busy", value: false });
+      this.post({ type: "status", status: "Idle" });
+    }
   }
 
   // ---- timeline mirroring (source of truth for persistence + switching) ----
@@ -324,14 +360,28 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       );
       return pick === "Allow";
     };
+    if (!this.changeManager && root) {
+      this.changeManager = new ChangeManager(root);
+    }
     this.ctx = {
       workspaceRoot: root,
       terminalAutoRun: getTerminalAutoRun(this.context),
       autoEdit: getMode(getModeId(this.context)).allowMutations,
+      changeManager: this.changeManager,
       resolvePath: (input) => resolvePathInWorkspace(input, root, confirm),
       toRelative: (uri) => toRelative(root, uri),
       confirm,
     };
+    return this.ctx;
+  }
+
+  /** Visible for testing */
+  public getChangeManager(): ChangeManager | undefined {
+    return this.changeManager;
+  }
+
+  /** Visible for testing */
+  public getToolContext(): ToolContext | undefined {
     return this.ctx;
   }
 

@@ -178,14 +178,19 @@ export const searchWorkspaceTool: Tool = {
           }
 
           const fullPath = path.join(current.dir, entry.name);
-          const rel = path.relative(rootFs, fullPath).split(path.sep).join("/");
+          const rel = (ctx.toRelative
+            ? ctx.toRelative(vscode.Uri.file(fullPath))
+            : path.relative(rootFs, fullPath)
+          )
+            .split(path.sep)
+            .join("/");
 
           if (!matchesGlob(rel, include)) {
             continue;
           }
 
           // Skip if staged deleted in ChangeManager
-          if (ctx.changeManager?.getDeletedPaths().includes(rel)) {
+          if (ctx.changeManager?.isDeleted(rel)) {
             continue;
           }
 

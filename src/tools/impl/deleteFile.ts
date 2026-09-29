@@ -29,15 +29,37 @@ export const deleteFileTool: Tool = {
     const recursive = args.recursive === true;
     const uri = await ctx.resolvePath(rel);
 
-    let stat: vscode.FileStat;
-    try {
-      stat = await vscode.workspace.fs.stat(uri);
-    } catch {
-      throw new ToolError(`Path does not exist: ${ctx.toRelative(uri)}`);
-    }
-    const isDir = (stat.type & vscode.FileType.Directory) !== 0;
-
     const relPath = ctx.toRelative(uri);
+
+    let exists = false;
+    let isDir = false;
+
+    if (ctx.changeManager) {
+      exists = await ctx.changeManager.fileExists(relPath);
+      if (!exists) {
+        throw new ToolError(`Path does not exist: ${relPath}`);
+      }
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        isDir = (stat.type & vscode.FileType.Directory) !== 0;
+      } catch {
+        const prefix = `${relPath}/`;
+        for (const p of ctx.changeManager.getCreatedPaths()) {
+          if (p.startsWith(prefix)) {
+            isDir = true;
+            break;
+          }
+        }
+      }
+    } else {
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        exists = true;
+        isDir = (stat.type & vscode.FileType.Directory) !== 0;
+      } catch {
+        throw new ToolError(`Path does not exist: ${relPath}`);
+      }
+    }
     if (!ctx.autoEdit) {
       const approved = await ctx.confirm(
         `Delete ${isDir ? "directory" : "file"} "${relPath}"?`,

@@ -224,13 +224,81 @@ export class ChangeManager {
   }
 
   /**
+   * Check whether a relative path or any of its parent directories is deleted in the staged overlay.
+   */
+  isDeleted(filePath: string): boolean {
+    const rel = this.normalize(filePath);
+    if (this.deleted.has(rel)) {
+      return true;
+    }
+    for (const del of this.deleted) {
+      if (rel.startsWith(`${del}/`)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check whether a file or directory effectively exists in the virtual overlay
+   * or on physical disk (accounting for staged creations, edits, deletions, and renames).
+   */
+  async fileExists(filePath: string): Promise<boolean> {
+    const rel = this.normalize(filePath);
+    if (!rel) {
+      return true; // Workspace root always exists
+    }
+
+    // If explicitly deleted in staged overlay, it does not exist
+    if (this.isDeleted(rel)) {
+      return false;
+    }
+
+    // If staged for creation or modification, it exists
+    if (this.created.has(rel) || this.staged.has(rel)) {
+      return true;
+    }
+
+    // If it was renamed to another path, the old path no longer exists
+    if (this.renames.has(rel)) {
+      return false;
+    }
+
+    // Check if it's a directory containing staged creations, edits, or renames
+    const prefix = `${rel}/`;
+    for (const p of this.created) {
+      if (p.startsWith(prefix) && !this.isDeleted(p)) {
+        return true;
+      }
+    }
+    for (const p of this.staged.keys()) {
+      if (p.startsWith(prefix) && !this.isDeleted(p)) {
+        return true;
+      }
+    }
+    for (const p of this.renames.values()) {
+      if (p.startsWith(prefix) && !this.isDeleted(p)) {
+        return true;
+      }
+    }
+
+    // Check physical filesystem
+    try {
+      await vscode.workspace.fs.stat(this.resolveUri(rel));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Read the effective content of a file: returns the staged virtual version
    * if modified/created, or reads from physical disk if not staged.
    */
   async readEffective(filePath: string): Promise<string> {
     const rel = this.normalize(filePath);
 
-    if (this.deleted.has(rel)) {
+    if (this.isDeleted(rel)) {
       throw new Error(`File is deleted in staged changes: ${rel}`);
     }
 
@@ -274,7 +342,7 @@ export class ChangeManager {
    */
   stageEdit(filePath: string, newContent: string): void {
     const rel = this.normalize(filePath);
-    if (this.deleted.has(rel)) {
+    if (this.isDeleted(rel)) {
       throw new Error(`Cannot edit deleted file: ${rel}`);
     }
     this.staged.set(rel, newContent);
@@ -294,13 +362,41 @@ export class ChangeManager {
   }
 
   /**
-   * Stage the deletion of a file.
+   * Stage the deletion of a file or directory.
    */
   stageDelete(filePath: string): void {
     const rel = this.normalize(filePath);
+    const wasCreated = this.created.has(rel);
     this.staged.delete(rel);
     this.created.delete(rel);
-    this.deleted.add(rel);
+
+    // If it was created in this session and never existed physically on disk,
+    // deleting it simply cancels the creation without staging a disk deletion.
+    let physicallyExists = false;
+    try {
+      physicallyExists = fs.existsSync(this.resolveUri(rel).fsPath);
+    } catch {
+      physicallyExists = false;
+    }
+
+    if (physicallyExists || !wasCreated) {
+      this.deleted.add(rel);
+    } else {
+      this.originals.delete(rel);
+    }
+
+    // If deleting a directory or path, clear any staged children under this path
+    const prefix = `${rel}/`;
+    for (const key of Array.from(this.staged.keys())) {
+      if (key.startsWith(prefix)) {
+        this.staged.delete(key);
+      }
+    }
+    for (const key of Array.from(this.created)) {
+      if (key.startsWith(prefix)) {
+        this.created.delete(key);
+      }
+    }
   }
 
   /**
@@ -314,6 +410,15 @@ export class ChangeManager {
     this.stageDelete(oldRel);
     this.stageCreate(newRel, content);
     this.renames.set(oldRel, newRel);
+
+    // If oldRel was itself the target of an earlier rename (A -> B, now B -> C),
+    // update it so the original rename points directly to newRel (A -> C).
+    for (const [orig, target] of this.renames.entries()) {
+      if (target === oldRel && orig !== oldRel) {
+        this.renames.set(orig, newRel);
+        this.renames.delete(oldRel);
+      }
+    }
   }
 
   /**
@@ -321,10 +426,11 @@ export class ChangeManager {
    */
   getChangeSet(): ChangeSetEntry[] {
     const entries: ChangeSetEntry[] = [];
+    const renameTargets = new Set(this.renames.values());
 
     // Created files
     for (const rel of this.created) {
-      if (this.deleted.has(rel)) {
+      if (this.deleted.has(rel) || renameTargets.has(rel)) {
         continue;
       }
       const stagedContent = this.staged.get(rel) ?? "";
