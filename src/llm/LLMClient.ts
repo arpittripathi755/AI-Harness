@@ -74,6 +74,9 @@ export class LLMClient {
     if (apiKey?.startsWith("nvapi-") && (trimmed.includes("lightning.ai") || !trimmed)) {
       return "https://integrate.api.nvidia.com/v1/";
     }
+    if (apiKey?.startsWith("sk-or-v1-") && (trimmed.includes("lightning.ai") || !trimmed)) {
+      return "https://openrouter.ai/api/v1/";
+    }
     return trimmed;
   }
 

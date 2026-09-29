@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 import {
   DEFAULT_MAX_TOKENS,
+  DEFAULT_MODEL_ID,
   getMaxTokens,
   resolveMaxTokens,
   resolveModelId,
@@ -46,14 +49,55 @@ function normalizeBaseUrl(raw: string): string {
   return trimmed.replace(/\/+$/, "") + "/";
 }
 
+/** Read fallback key from .env file in workspace root if not in process.env. */
+function readWorkspaceEnvFallback(keyName: string): string | undefined {
+  try {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return undefined;
+    }
+    const envPath = path.join(folders[0].uri.fsPath, ".env");
+    if (!fs.existsSync(envPath)) {
+      return undefined;
+    }
+    const content = fs.readFileSync(envPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue;
+      }
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx !== -1) {
+        const k = trimmed.slice(0, eqIdx).trim();
+        let v = trimmed.slice(eqIdx + 1).trim();
+        v = v.replace(/^["'“”]+|["'“”]+$/g, "");
+        if (k === keyName && v) {
+          return v;
+        }
+      }
+    }
+  } catch {
+    // Fail open
+  }
+  return undefined;
+}
+
 // ---- persisted settings (globalState) ----
 
 export function getModelId(context: vscode.ExtensionContext): string {
-  const envModel = process.env.MODEL?.trim() || process.env.AI_MODEL?.trim();
+  const envModel =
+    process.env.MODEL?.trim() ||
+    process.env.AI_MODEL?.trim() ||
+    readWorkspaceEnvFallback("MODEL") ||
+    readWorkspaceEnvFallback("AI_MODEL");
   if (envModel) {
     return resolveModelId(envModel);
   }
-  return resolveModelId(context.globalState.get<string>(KEY_MODEL));
+  const stored = context.globalState.get<string>(KEY_MODEL);
+  if (!stored || stored.includes("lightning-ai") || stored === "ultra" || stored.includes("nemotron")) {
+    return DEFAULT_MODEL_ID;
+  }
+  return resolveModelId(stored);
 }
 
 export async function setModelId(
@@ -80,7 +124,10 @@ export function getBaseUrl(context: vscode.ExtensionContext, apiKey?: string): s
     process.env.OPENROUTER_BASE_URL?.trim() ||
     process.env.BASE_URL?.trim() ||
     process.env.DEEPSEEK_BASE_URL?.trim() ||
-    process.env.OPENAI_BASE_URL?.trim();
+    process.env.OPENAI_BASE_URL?.trim() ||
+    readWorkspaceEnvFallback("AI_BASE_URL") ||
+    readWorkspaceEnvFallback("OPENROUTER_BASE_URL") ||
+    readWorkspaceEnvFallback("BASE_URL");
   if (envUrl) {
     return normalizeBaseUrl(envUrl);
   }
@@ -88,13 +135,20 @@ export function getBaseUrl(context: vscode.ExtensionContext, apiKey?: string): s
     apiKey ||
     process.env.OPENROUTER_API_KEY?.trim() ||
     process.env.AI_API_KEY?.trim() ||
+    readWorkspaceEnvFallback("OPENROUTER_API_KEY") ||
+    readWorkspaceEnvFallback("AI_API_KEY") ||
     "";
   if (key.startsWith("nvapi-")) {
     return "https://integrate.api.nvidia.com/v1/";
   }
-  return normalizeBaseUrl(
-    context.globalState.get<string>(KEY_BASE_URL) ?? DEFAULT_BASE_URL,
-  );
+  if (key.startsWith("sk-or-v1-")) {
+    return "https://openrouter.ai/api/v1/";
+  }
+  const stored = context.globalState.get<string>(KEY_BASE_URL);
+  if (stored && stored.includes("lightning.ai")) {
+    return DEFAULT_BASE_URL;
+  }
+  return normalizeBaseUrl(stored ?? DEFAULT_BASE_URL);
 }
 
 export async function setBaseUrl(
@@ -147,7 +201,11 @@ export async function getApiKey(
     process.env.OPENROUTER_API_KEY ||
     process.env.AI_API_KEY ||
     process.env.DEEPSEEK_API_KEY ||
-    process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY ||
+    readWorkspaceEnvFallback("OPENROUTER_API_KEY") ||
+    readWorkspaceEnvFallback("AI_API_KEY") ||
+    readWorkspaceEnvFallback("DEEPSEEK_API_KEY") ||
+    readWorkspaceEnvFallback("OPENAI_API_KEY")
   );
   if (envKey) {
     return envKey;
