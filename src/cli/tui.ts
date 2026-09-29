@@ -1,10 +1,24 @@
 import * as path from "path";
 
-const USE_COLOR =
-  !process.env.NO_COLOR &&
-  (process.stdout.isTTY || process.env.FORCE_COLOR === "1");
 
-const TRUECOLOR = (process.env.COLORTERM === 'truecolor' || process.env.COLORTERM === '24bit') && USE_COLOR;
+export type ColorLevel = "none" | "16" | "256" | "truecolor";
+
+export function detectColorLevel(env: NodeJS.ProcessEnv, isTTY: boolean): ColorLevel {
+  const o = env.AXIOM_COLOR;                       // manual override
+  if (o === "none" || o === "16" || o === "256" || o === "truecolor") return o;
+  if (env.NO_COLOR) return "none";
+  const forced = !!env.FORCE_COLOR && env.FORCE_COLOR !== "0" && env.FORCE_COLOR !== "false";
+  if (!isTTY && !forced) return "none";
+  if (env.TERM === "dumb") return "none";
+  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return "truecolor";
+  if (/256color/.test(env.TERM ?? "") ||
+      ["Apple_Terminal", "iTerm.app", "vscode", "WezTerm", "ghostty"].includes(env.TERM_PROGRAM ?? ""))
+    return "256";
+  return "16";
+}
+
+const COLOR_LEVEL = detectColorLevel(process.env, !!process.stdout.isTTY);
+const USE_COLOR = COLOR_LEVEL !== "none";
 
 export const colors = {
   reset: USE_COLOR ? "\x1b[0m" : "",
@@ -30,9 +44,20 @@ export const colors = {
   brightWhite: USE_COLOR ? "\x1b[97m" : "",
 };
 
+const CUBE = [0, 95, 135, 175, 215, 255];
+const nearest = (v: number) => CUBE.reduce((bi, c, i) => Math.abs(c - v) < Math.abs(CUBE[bi] - v) ? i : bi, 0);
+
+export function rgbFor(level: ColorLevel, r: number, g: number, b: number): string {
+  switch (level) {
+    case "none": return "";
+    case "truecolor": return `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(b)}m`;
+    case "256": return `\x1b[38;5;${16 + 36 * nearest(r) + 6 * nearest(g) + nearest(b)}m`;
+    default: return colors.brightRed;              // 16-color fallback
+  }
+}
+
 function rgb(r: number, g: number, b: number): string {
-  if (TRUECOLOR) return `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(b)}m`;
-  return colors.red; // fallback 16-color
+  return rgbFor(COLOR_LEVEL, r, g, b);
 }
 
 export function getTerminalWidth(): number {
@@ -138,17 +163,28 @@ function formatToolStartLabel(name: string, title: string): string {
   }
 }
 
-class Spinner {
-  private timer: ReturnType<typeof setInterval> | null = null;
+process.once("exit", () => {
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b[?25h");
+  }
+});
+
+export class Spinner {
+  public timer: ReturnType<typeof setInterval> | null = null;
   private frame = 0;
   private label = "";
-  private active = false;
+  public active = false;
 
   start(label: string): void {
+    if (this.active) {
+      this.stopSilent();
+    }
     this.label = label;
     this.active = true;
     this.frame = 0;
-    if (!process.stdout.isTTY || !USE_COLOR) {
+    const isTTY = !!process.stdout.isTTY;
+    const level = detectColorLevel(process.env, isTTY);
+    if (!isTTY || level === "none") {
       process.stdout.write(`  ⠿ ${label}\n`);
       return;
     }
@@ -161,18 +197,22 @@ class Spinner {
     if (!this.active) return;
     this.active = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    if (process.stdout.isTTY && USE_COLOR) {
+    const isTTY = !!process.stdout.isTTY;
+    const level = detectColorLevel(process.env, isTTY);
+    if (isTTY && level !== "none") {
       process.stdout.write("\r\x1b[2K\x1b[?25h");
     }
-    const icon = ok ? "\x1b[92m✔\x1b[0m" : "\x1b[91m✘\x1b[0m";
-    process.stdout.write(`  ${icon}  \x1b[2m${finalLabel}\x1b[0m\n`);
+    const icon = ok ? `${colors.brightGreen}✔${colors.reset}` : `${colors.brightRed}✘${colors.reset}`;
+    process.stdout.write(`  ${icon}  ${colors.dim}${finalLabel}${colors.reset}\n`);
   }
 
   stopSilent(): void {
     if (!this.active) return;
     this.active = false;
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    if (process.stdout.isTTY && USE_COLOR) {
+    const isTTY = !!process.stdout.isTTY;
+    const level = detectColorLevel(process.env, isTTY);
+    if (isTTY && level !== "none") {
       process.stdout.write("\r\x1b[2K\x1b[?25h");
     }
   }
@@ -181,22 +221,29 @@ class Spinner {
     if (!this.active) return;
     const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
     const f = frames[this.frame++ % frames.length];
-    process.stdout.write(`\r\x1b[2K  \x1b[34m${f}\x1b[0m  \x1b[2m${this.label}\x1b[0m`);
+    process.stdout.write(`\r\x1b[2K  ${colors.blue}${f}${colors.reset}  ${colors.dim}${this.label}${colors.reset}`);
   }
 }
 
 export class TerminalUI {
-  private width: number;
   private assistantActive = false;
   private spinner = new Spinner();
 
-  constructor() {
-    this.width = getTerminalWidth();
+  constructor() {}
+
+  get width(): number {
+    return getTerminalWidth();
   }
 
-  async printBanner(modelName: string, providerName?: string): Promise<void> {
+  private titleRule(title: string, open = false): string {
+    const dashes = Math.max(0, this.width - stripAnsi(title).length - (open ? 2 : 3));
+    return `┌─ ${title} ${"─".repeat(dashes)}${open ? "" : "┐"}`;
+  }
+
+  async printBanner(modelName: string, providerName?: string, opts?: { showInfo?: boolean }): Promise<void> {
     const w = this.width;
-    if (w >= 60) {
+    const isCompact = (process.stdout.columns && process.stdout.columns < 52) || w < 60;
+    if (!isCompact) {
       const art = [
         " █████╗ ██╗  ██╗██╗ ██████╗ ███╗   ███╗",
         "██╔══██╗╚██╗██╔╝██║██╔═══██╗████╗ ████║",
@@ -209,6 +256,8 @@ export class TerminalUI {
       console.log(`${colors.dim}╔${'═'.repeat(w)}╗${colors.reset}`);
       console.log(`${colors.dim}║${' '.repeat(w)}║${colors.reset}`);
       
+      const skipAnim = !process.stdout.isTTY || process.env.AXIOM_NO_ANIM === "1" || !!process.env.CI;
+
       for (const line of art) {
         let coloredLine = "";
         for (let i = 0; i < line.length; i++) {
@@ -225,24 +274,39 @@ export class TerminalUI {
         const rightPad = padding - leftPad;
         
         console.log(`${colors.dim}║${colors.reset}${' '.repeat(leftPad)}${coloredLine}${' '.repeat(rightPad)}${colors.dim}║${colors.reset}`);
-        await sleep(30);
+        if (!skipAnim) {
+          await sleep(30);
+        }
       }
       
-      const tagline = "  Autonomous Coding Agent  ·  Understand · Modify · Verify · Deliver  ";
-      const taglinePadding = Math.max(0, w - tagline.length);
+      const rawTagline = w >= 72
+        ? "  Autonomous Coding Agent  ·  Understand · Modify · Verify · Deliver  "
+        : "Autonomous Coding Agent";
+      const safeTagline = rawTagline.length > w ? rawTagline.slice(0, w) : rawTagline;
+      const taglinePadding = Math.max(0, w - safeTagline.length);
       const taglineLeft = Math.floor(taglinePadding / 2);
       const taglineRight = taglinePadding - taglineLeft;
       
-      console.log(`${colors.dim}║${' '.repeat(taglineLeft)}${colors.italic}${tagline}${' '.repeat(taglineRight)}║${colors.reset}`);
-      console.log(`${colors.dim}║${' '.repeat(w)}║${colors.reset}`);
-      console.log(`${colors.dim}╠${'═'.repeat(w)}╣${colors.reset}`);
+      console.log(`${colors.dim}║${' '.repeat(taglineLeft)}${colors.italic}${safeTagline}${colors.reset}${colors.dim}${' '.repeat(taglineRight)}║${colors.reset}`);
       
-      const pName = providerName || "Unknown";
-      const infoLeft = `  Model: ${modelName}`;
-      const infoRight = `${pName}  `;
-      const infoPadding = Math.max(0, w - infoLeft.length - infoRight.length);
-      
-      console.log(`${colors.dim}║${infoLeft}${' '.repeat(infoPadding)}${infoRight}║${colors.reset}`);
+      const showInfo = opts?.showInfo !== false;
+      if (showInfo) {
+        console.log(`${colors.dim}║${' '.repeat(w)}║${colors.reset}`);
+        console.log(`${colors.dim}╠${'═'.repeat(w)}╣${colors.reset}`);
+        
+        const pName = providerName || "Unknown";
+        const infoRight = `${pName}  `;
+        const prefix = "  Model: ";
+        const maxModelLen = Math.max(0, w - prefix.length - infoRight.length);
+        let displayModel = modelName;
+        if (displayModel.length > maxModelLen) {
+          displayModel = maxModelLen > 3 ? displayModel.slice(0, maxModelLen - 3) + "..." : displayModel.slice(0, maxModelLen);
+        }
+        const infoLeft = `${prefix}${displayModel}`;
+        const infoPadding = Math.max(0, w - infoLeft.length - infoRight.length);
+        
+        console.log(`${colors.dim}║${colors.reset}${infoLeft}${' '.repeat(infoPadding)}${infoRight}${colors.dim}║${colors.reset}`);
+      }
       console.log(`${colors.dim}╚${'═'.repeat(w)}╝${colors.reset}`);
       console.log("");
     } else {
@@ -275,11 +339,17 @@ export class TerminalUI {
       ? `${colors.brightGreen}${colors.bold}▸ AUTO EDIT${colors.reset}  `
       : `${colors.brightYellow}${colors.bold}▸ PLAN MODE${colors.reset}  `;
       
-    const titleLine = "│" + padBetween(titleLeft, autoEditBadge, w) + "│";
-    
     const infoLeft = `  Model: ${modelName}`;
     const infoRight = `Workspace: ${wsName}  `;
-    const infoLine = "│" + padBetween(infoLeft, infoRight, w) + "│";
+
+    if (process.stdout.columns && process.stdout.columns < 52) {
+      console.log(`${titleLeft}  ${autoEditBadge.trim()}`);
+      console.log(`${colors.dim}${infoLeft.trim()}  ${infoRight.trim()}${colors.reset}`);
+      if (providerName) {
+        console.log(`${colors.dim}Provider: ${providerName}${colors.reset}`);
+      }
+      return;
+    }
 
     console.log(`${colors.dim}${colors.brightBlack}${top}${colors.reset}`);
     console.log(`${colors.dim}${colors.brightBlack}│${colors.reset}${padBetween(titleLeft, autoEditBadge, w)}${colors.dim}${colors.brightBlack}│${colors.reset}`);
@@ -297,26 +367,20 @@ export class TerminalUI {
 
   printDivider(): void {
     const w = this.width;
-    console.log(`\x1b[90m${'─'.repeat(w + 2)}\x1b[0m`);
+    console.log(`${colors.brightBlack}${'─'.repeat(w + 2)}${colors.reset}`);
   }
 
-  printFooter(promptPlaceholder = "Type your task here..."): void {
-    const w = this.width;
-    const topText = " YOUR TASK ";
-    const fill = w - topText.length - 2;
-    const top = `┌─${colors.brightCyan}${colors.bold}${topText}${colors.reset}${colors.dim}${colors.brightBlack}${'─'.repeat(fill)}┐${colors.reset}`;
-    const bottom = `${colors.dim}${colors.brightBlack}└${'─'.repeat(w)}┘${colors.reset}`;
-    
-    const promptText = `  ${colors.brightCyan}${colors.bold}❯${colors.reset} ${promptPlaceholder}`;
-    const promptLine = `${colors.dim}${colors.brightBlack}│${colors.reset}${padBetween(promptText, "", w)}${colors.dim}${colors.brightBlack}│${colors.reset}`;
-    
-    console.log(`${colors.dim}${colors.brightBlack}┌─${colors.reset}${colors.brightCyan}${colors.bold} YOUR TASK ${colors.reset}${colors.dim}${colors.brightBlack}${'─'.repeat(w - 11)}┐${colors.reset}`);
-    console.log(promptLine);
-    console.log(bottom);
+  printFooter(promptPlaceholder = "What would you like to build?  (or /help for commands)"): void {
+    if (process.stdout.columns && process.stdout.columns < 52) {
+      console.log(`${colors.dim}${promptPlaceholder}${colors.reset}`);
+      return;
+    }
+    console.log(`${colors.dim}  ${promptPlaceholder}${colors.reset}`);
+    console.log(`${colors.dim}${colors.brightBlack}${this.titleRule("YOUR TASK", true)}${colors.reset}`);
   }
 
   printPromptPrefix(): string {
-    return '\x1b[96m\x1b[1m❯ \x1b[0m';
+    return `${colors.dim}${colors.brightBlack}│${colors.reset} ${colors.brightCyan}${colors.bold}❯${colors.reset} `;
   }
 
   printToolStart(name: string, title: string): void {
@@ -331,7 +395,6 @@ export class TerminalUI {
       case "web_search":
       case "web_fetch":
         icon = "◎";
-        break;
       case "list_files":
         icon = "◈";
         break;
@@ -366,12 +429,12 @@ export class TerminalUI {
         const testMatch = rawContent.match(/(\d+\s+passing|\d+\s+tests?\s+passed)/i);
         if (testMatch) finalSummary = testMatch[1];
       }
-      console.log(`  \x1b[92m✔\x1b[0m  \x1b[2m${finalSummary}\x1b[0m`);
+      console.log(`  ${colors.brightGreen}✔${colors.reset}  ${colors.dim}${finalSummary}${colors.reset}`);
     } else {
       const snippet = rawContent ? extractFailureSnippet(rawContent) : undefined;
-      console.log(`  \x1b[91m✘\x1b[0m  \x1b[2m${summary}\x1b[0m`);
+      console.log(`  ${colors.brightRed}✘${colors.reset}  ${colors.dim}${summary}${colors.reset}`);
       if (snippet) {
-        console.log(`       \x1b[90m${snippet}\x1b[0m`);
+        console.log(`       ${colors.brightBlack}${snippet}${colors.reset}`);
       }
     }
   }
@@ -386,15 +449,14 @@ export class TerminalUI {
       return;
     }
     this.spinner.stopSilent();
-    console.log(`  \x1b[2m· ${status}\x1b[0m`);
+    console.log(`  ${colors.dim}· ${status}${colors.reset}`);
   }
 
   printAssistantStart(): void {
     this.spinner.stopSilent();
     if (!this.assistantActive) {
-      const w = this.width;
       console.log("");
-      console.log(`┌─ \x1b[31mAXIOM\x1b[0m ${'─'.repeat(w - 7)}┐`);
+      console.log(`${this.titleRule(`${colors.red}AXIOM${colors.reset}`, true)}`);
       this.assistantActive = true;
     }
   }
@@ -410,7 +472,7 @@ export class TerminalUI {
     if (this.assistantActive) {
       const w = this.width;
       process.stdout.write('\n');
-      console.log(`\x1b[2m└${'─'.repeat(w)}┘\x1b[0m`);
+      console.log(`${colors.dim}└${'─'.repeat(w + 1)}${colors.reset}`);
       console.log("");
       this.assistantActive = false;
     }
@@ -423,19 +485,24 @@ export class TerminalUI {
       this.assistantActive = false;
     }
     
+    if (process.stdout.columns && process.stdout.columns < 52) {
+      console.log(`${colors.brightRed}✘ ERROR: ${message}${colors.reset}`);
+      return;
+    }
+
     const w = this.width;
     const lines = wrapText(message, w - 6);
     
-    console.log(`\x1b[91m┌─ ERROR ${'─'.repeat(w - 7)}┐\x1b[0m`);
+    console.log(`${colors.brightRed}${this.titleRule("ERROR")}${colors.reset}`);
     let first = true;
     for (const line of lines) {
       const icon = first ? "✘ " : "  ";
       first = false;
-      const content = `  ${icon} ${line}`;
+      const content = `  ${icon}${line}`;
       const rightPadding = Math.max(0, w - stripAnsi(content).length);
-      console.log(`\x1b[91m│\x1b[0m\x1b[97m${content}\x1b[0m${' '.repeat(rightPadding)}\x1b[91m│\x1b[0m`);
+      console.log(`${colors.brightRed}│${colors.reset}${colors.brightWhite}${content}${colors.reset}${' '.repeat(rightPadding)}${colors.brightRed}│${colors.reset}`);
     }
-    console.log(`\x1b[91m└${'─'.repeat(w)}┘\x1b[0m`);
+    console.log(`${colors.brightRed}└${'─'.repeat(w)}┘${colors.reset}`);
   }
 
   printSuccess(message: string): void {
@@ -444,13 +511,13 @@ export class TerminalUI {
       console.log("");
       this.assistantActive = false;
     }
-    console.log(`  \x1b[92m✔\x1b[0m  ${message}`);
+    console.log(`  ${colors.brightGreen}✔${colors.reset}  ${message}`);
   }
 
   printNotice(message: string): void {
     const lines = message.split("\n");
     for (const line of lines) {
-      console.log(`  \x1b[2m· ${line}\x1b[0m`);
+      console.log(`  ${colors.dim}· ${line}${colors.reset}`);
     }
   }
 
@@ -475,9 +542,10 @@ export class TerminalUI {
     const c = phaseColor[phase] ?? colors.dim;
     const w = this.width;
     const prefix = `  ${c}▶ ${phase}${colors.reset} `;
-    const visiblePrefixLen = stripAnsi(`  ▶ ${phase} `).length;
-    const fill = Math.max(0, w - visiblePrefixLen + 2);
+    const visiblePrefixLen = stripAnsi(prefix).length;
+    const fill = Math.max(0, w + 2 - visiblePrefixLen);
     
-    console.log(`\n${prefix}\x1b[90m${'─'.repeat(fill)}\x1b[0m\n`);
+    console.log(`\n${prefix}${colors.brightBlack}${'─'.repeat(fill)}${colors.reset}\n`);
   }
 }
+

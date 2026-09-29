@@ -15,15 +15,15 @@ _SAVED_AI_BASE_URL="$AI_BASE_URL"
 _SAVED_INPUT_TOKEN_BUDGET="$INPUT_TOKEN_BUDGET"
 
 # Load default environment variables from .env file if present
-if [ -f "$REPO_DIR/.env" ]; then
+ENV_FILE="$REPO_DIR/.env"
+if [ ! -f "$ENV_FILE" ] && [ -f "./.env" ]; then
+  ENV_FILE="./.env"
+fi
+
+if [ -f "$ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
-  . "$REPO_DIR/.env"
-  set +a
-elif [ -f "./.env" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "./.env"
+  . "$ENV_FILE"
   set +a
 fi
 
@@ -41,6 +41,13 @@ fi
 # Verify required API key
 if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
   echo "ERROR: OPENROUTER_API_KEY or AI_API_KEY environment variable is not set."
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "Checked .env file at $ENV_FILE: file is missing."
+  elif [ ! -s "$ENV_FILE" ]; then
+    echo "Checked .env file at $ENV_FILE: file is empty (0 bytes)."
+  else
+    echo "Checked .env file at $ENV_FILE: file exists ($(wc -c < "$ENV_FILE" | tr -d ' ') bytes), but contains no active API keys."
+  fi
   echo "Please run: export OPENROUTER_API_KEY=\"<your-api-key>\" (or export AI_API_KEY=\"<your-api-key>\")"
   exit 1
 fi

@@ -26,6 +26,12 @@ import {
   getEnvCeiling,
 } from "../llm/tokenBudget";
 import { compactHistory, getInputTokenBudget } from "../llm/contextBudget";
+import {
+  isContextCompactionEnabled,
+  compactHistoryWithTaskMemory,
+  getCompactionHighWatermark,
+  getCompactionTarget,
+} from "../llm/contextCompaction";
 import { UsageTracker } from "../llm/usageTracker";
 import {
   isStablePromptPrefixEnabled,
@@ -602,6 +608,33 @@ export class ChatSession {
 
         const inputBudget = getInputTokenBudget();
         this.messages = compactHistory(this.messages, inputBudget);
+
+        // Phase 6: Token-budget-aware compaction with TaskMemory anchor.
+        // Only runs when DAXIOM_CONTEXT_COMPACTION=1 (default: OFF).
+        // Fails open — any error retains the history from compactHistory() above.
+        if (isContextCompactionEnabled()) {
+          try {
+            const anchorText = this.taskMemory.formatForCompactionAnchor();
+            const { messages: compacted6, metrics: cm } = compactHistoryWithTaskMemory({
+              messages: this.messages,
+              inputBudgetTokens: inputBudget,
+              taskMemoryAnchor: anchorText,
+              highWatermark: getCompactionHighWatermark(),
+              target: getCompactionTarget(),
+            });
+            if (cm.compactionSucceeded) {
+              this.messages = compacted6;
+            }
+          } catch (compactionErr) {
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+              console.debug(
+                "[ContextCompaction] Phase 6 compaction threw unexpectedly; failing open",
+                compactionErr,
+              );
+            }
+          }
+        }
+
         let outgoingMessages = this.messages;
 
         if (isStablePromptPrefixEnabled()) {

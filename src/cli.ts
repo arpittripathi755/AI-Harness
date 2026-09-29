@@ -662,11 +662,15 @@ async function main(): Promise<void> {
   }
 
   // Print TUI header with active workspace name (Desktop by default, or target repo if switched)
+  if (process.stdout.isTTY) {
+    await tui.printBanner(getModelDisplayName(activeModelId), providerClient.providerName, { showInfo: false });
+  }
   tui.printHeader(allowMutations, getModelDisplayName(activeModelId), currentWorkspacePath, providerClient.providerName);
-
-  console.log(`${colors.dim}  Application Root:  ${applicationRoot}${colors.reset}`);
-  console.log(`${colors.dim}  Default Workspace: ${defaultWorkspace}${colors.reset}`);
-  console.log(`${colors.dim}  Active Workspace:  ${currentWorkspacePath}${colors.reset}\n`);
+  console.log(`${colors.dim}  Workspace: ${currentWorkspacePath}${colors.reset}\n`);
+  if (process.env.AXIOM_DEBUG === "1") {
+    console.log(`${colors.dim}  Application Root:  ${applicationRoot}${colors.reset}`);
+    console.log(`${colors.dim}  Default Workspace: ${defaultWorkspace}${colors.reset}\n`);
+  }
 
   checkBroadWorkspaceWarning(currentWorkspacePath, (msg) => tui.printNotice(msg));
 
@@ -694,7 +698,7 @@ async function main(): Promise<void> {
   }
 
   // Interactive TUI prompt
-  tui.printFooter("Enter task... (or /help)");
+  tui.printFooter("What would you like to build?  (or /help for commands)");
 
   rl = readline.createInterface({
     input: process.stdin,
@@ -731,7 +735,7 @@ async function main(): Promise<void> {
   });
 
   rl.on("close", () => {
-    console.log(`\n${colors.dim}Exiting Daxiom. Goodbye!${colors.reset}`);
+    console.log("\n" + colors.brightBlack + "  Exiting AXIOM. Goodbye." + colors.reset + "\n");
     process.exit(0);
   });
 }

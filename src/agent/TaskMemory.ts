@@ -342,6 +342,98 @@ export class TaskMemory {
     );
   }
 
+  /**
+   * Format a compact, structured summary of durable task state for the Phase 6
+   * compaction anchor. This is injected as a user message in the dynamic suffix
+   * immediately after compaction — it must never include raw file contents,
+   * full command outputs, or API secrets.
+   *
+   * Version: 1 (schema bumped on structural changes, no migrations in Phase 6).
+   */
+  formatForCompactionAnchor(): string {
+    const lines: string[] = [
+      "=== TASK MEMORY ANCHOR (v1) ===",
+      "This summarizes durable task state preserved across context compaction.",
+      "Older conversation turns have been removed to stay within token limits.",
+      "",
+    ];
+
+    // Goal / user request(s)
+    if (this.userRequests.length > 0) {
+      lines.push("GOAL:");
+      lines.push(`  ${this.userRequests[0]}`);
+      if (this.userRequests.length > 1) {
+        lines.push("FOLLOW-UP INSTRUCTIONS:");
+        for (const req of this.userRequests.slice(1, 5)) {
+          lines.push(`  - ${req.slice(0, 200)}`);
+        }
+      }
+      lines.push("");
+    }
+
+    // Active plan steps (if any)
+    if (this.planSteps.length > 0) {
+      lines.push("ACTIVE PLAN:");
+      for (const step of this.planSteps.slice(0, 8)) {
+        lines.push(`  ${step.slice(0, 200)}`);
+      }
+      lines.push("");
+    }
+
+    // Important files (paths only — never full contents)
+    const modifiedFiles = Array.from(this.filesModified.entries());
+    if (modifiedFiles.length > 0) {
+      lines.push("FILES MODIFIED:");
+      for (const [path, action] of modifiedFiles.slice(0, 15)) {
+        lines.push(`  ${action}: ${path}`);
+      }
+      lines.push("");
+    }
+
+    const readFiles = Array.from(this.filesRead);
+    if (readFiles.length > 0) {
+      const displayFiles = readFiles.length > 10
+        ? [...readFiles.slice(-10), `(+${readFiles.length - 10} earlier)`]
+        : readFiles;
+      lines.push("FILES READ:");
+      for (const f of displayFiles) {
+        lines.push(`  - ${f}`);
+      }
+      lines.push("");
+    }
+
+    // Command / test results (summaries only — no raw output)
+    if (this.commandResults.length > 0) {
+      lines.push("COMMAND RESULTS:");
+      for (const r of this.commandResults.slice(-5)) {
+        lines.push(`  ${r.slice(0, 200)}`);
+      }
+      lines.push("");
+    }
+
+    // Errors still to address
+    if (this.errorsEncountered.length > 0) {
+      lines.push("ERRORS / ISSUES (address if unresolved):");
+      for (const e of this.errorsEncountered.slice(-5)) {
+        lines.push(`  - ${e.slice(0, 200)}`);
+      }
+      lines.push("");
+    }
+
+    // Recent actions (for continuity)
+    if (this.actionsTaken.length > 0) {
+      lines.push("RECENT ACTIONS:");
+      for (const a of this.actionsTaken.slice(-5)) {
+        lines.push(`  ${a.slice(0, 200)}`);
+      }
+      lines.push("");
+    }
+
+    lines.push("=== END TASK MEMORY ANCHOR ===");
+
+    return lines.join("\n");
+  }
+
   /** Export data for persistence. */
   exportData(): TaskMemoryData {
     return {

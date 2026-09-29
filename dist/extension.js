@@ -43,7 +43,7 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(__webpack_require__(1));
 const SidebarProvider_1 = __webpack_require__(2);
-const config_1 = __webpack_require__(20);
+const config_1 = __webpack_require__(21);
 function activate(context) {
     console.log("Axiom Activated");
     const provider = new SidebarProvider_1.SidebarProvider(context);
@@ -115,11 +115,11 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.SidebarProvider = void 0;
 const vscode = __importStar(__webpack_require__(1));
 const ChatSession_1 = __webpack_require__(3);
-const ConversationManager_1 = __webpack_require__(19);
-const config_1 = __webpack_require__(20);
-const modes_1 = __webpack_require__(21);
-const tools_1 = __webpack_require__(22);
-const workspace_1 = __webpack_require__(46);
+const ConversationManager_1 = __webpack_require__(20);
+const config_1 = __webpack_require__(21);
+const modes_1 = __webpack_require__(22);
+const tools_1 = __webpack_require__(23);
+const workspace_1 = __webpack_require__(47);
 class SidebarProvider {
     context;
     static viewType = "claudeAgent.chat";
@@ -441,9 +441,10 @@ const models_1 = __webpack_require__(5);
 const TaskMemory_1 = __webpack_require__(14);
 const tokenBudget_1 = __webpack_require__(8);
 const contextBudget_1 = __webpack_require__(15);
-const usageTracker_1 = __webpack_require__(16);
-const promptPrefix_1 = __webpack_require__(18);
-const usageMark_1 = __webpack_require__(17);
+const contextCompaction_1 = __webpack_require__(16);
+const usageTracker_1 = __webpack_require__(17);
+const promptPrefix_1 = __webpack_require__(19);
+const usageMark_1 = __webpack_require__(18);
 /** Product name shown to the user and used in the agent's self-identity. */
 exports.AGENT_NAME = "Axiom";
 /**
@@ -875,6 +876,29 @@ class ChatSession {
                 const currentModel = phaseModelOverride ?? this.getActiveModel();
                 const inputBudget = (0, contextBudget_1.getInputTokenBudget)();
                 this.messages = (0, contextBudget_1.compactHistory)(this.messages, inputBudget);
+                // Phase 6: Token-budget-aware compaction with TaskMemory anchor.
+                // Only runs when DAXIOM_CONTEXT_COMPACTION=1 (default: OFF).
+                // Fails open — any error retains the history from compactHistory() above.
+                if ((0, contextCompaction_1.isContextCompactionEnabled)()) {
+                    try {
+                        const anchorText = this.taskMemory.formatForCompactionAnchor();
+                        const { messages: compacted6, metrics: cm } = (0, contextCompaction_1.compactHistoryWithTaskMemory)({
+                            messages: this.messages,
+                            inputBudgetTokens: inputBudget,
+                            taskMemoryAnchor: anchorText,
+                            highWatermark: (0, contextCompaction_1.getCompactionHighWatermark)(),
+                            target: (0, contextCompaction_1.getCompactionTarget)(),
+                        });
+                        if (cm.compactionSucceeded) {
+                            this.messages = compacted6;
+                        }
+                    }
+                    catch (compactionErr) {
+                        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                            console.debug("[ContextCompaction] Phase 6 compaction threw unexpectedly; failing open", compactionErr);
+                        }
+                    }
+                }
                 let outgoingMessages = this.messages;
                 if ((0, promptPrefix_1.isStablePromptPrefixEnabled)()) {
                     try {
@@ -3234,6 +3258,88 @@ class TaskMemory {
             sections.join("\n\n") +
             `\n==============================================`);
     }
+    /**
+     * Format a compact, structured summary of durable task state for the Phase 6
+     * compaction anchor. This is injected as a user message in the dynamic suffix
+     * immediately after compaction — it must never include raw file contents,
+     * full command outputs, or API secrets.
+     *
+     * Version: 1 (schema bumped on structural changes, no migrations in Phase 6).
+     */
+    formatForCompactionAnchor() {
+        const lines = [
+            "=== TASK MEMORY ANCHOR (v1) ===",
+            "This summarizes durable task state preserved across context compaction.",
+            "Older conversation turns have been removed to stay within token limits.",
+            "",
+        ];
+        // Goal / user request(s)
+        if (this.userRequests.length > 0) {
+            lines.push("GOAL:");
+            lines.push(`  ${this.userRequests[0]}`);
+            if (this.userRequests.length > 1) {
+                lines.push("FOLLOW-UP INSTRUCTIONS:");
+                for (const req of this.userRequests.slice(1, 5)) {
+                    lines.push(`  - ${req.slice(0, 200)}`);
+                }
+            }
+            lines.push("");
+        }
+        // Active plan steps (if any)
+        if (this.planSteps.length > 0) {
+            lines.push("ACTIVE PLAN:");
+            for (const step of this.planSteps.slice(0, 8)) {
+                lines.push(`  ${step.slice(0, 200)}`);
+            }
+            lines.push("");
+        }
+        // Important files (paths only — never full contents)
+        const modifiedFiles = Array.from(this.filesModified.entries());
+        if (modifiedFiles.length > 0) {
+            lines.push("FILES MODIFIED:");
+            for (const [path, action] of modifiedFiles.slice(0, 15)) {
+                lines.push(`  ${action}: ${path}`);
+            }
+            lines.push("");
+        }
+        const readFiles = Array.from(this.filesRead);
+        if (readFiles.length > 0) {
+            const displayFiles = readFiles.length > 10
+                ? [...readFiles.slice(-10), `(+${readFiles.length - 10} earlier)`]
+                : readFiles;
+            lines.push("FILES READ:");
+            for (const f of displayFiles) {
+                lines.push(`  - ${f}`);
+            }
+            lines.push("");
+        }
+        // Command / test results (summaries only — no raw output)
+        if (this.commandResults.length > 0) {
+            lines.push("COMMAND RESULTS:");
+            for (const r of this.commandResults.slice(-5)) {
+                lines.push(`  ${r.slice(0, 200)}`);
+            }
+            lines.push("");
+        }
+        // Errors still to address
+        if (this.errorsEncountered.length > 0) {
+            lines.push("ERRORS / ISSUES (address if unresolved):");
+            for (const e of this.errorsEncountered.slice(-5)) {
+                lines.push(`  - ${e.slice(0, 200)}`);
+            }
+            lines.push("");
+        }
+        // Recent actions (for continuity)
+        if (this.actionsTaken.length > 0) {
+            lines.push("RECENT ACTIONS:");
+            for (const a of this.actionsTaken.slice(-5)) {
+                lines.push(`  ${a.slice(0, 200)}`);
+            }
+            lines.push("");
+        }
+        lines.push("=== END TASK MEMORY ANCHOR ===");
+        return lines.join("\n");
+    }
     /** Export data for persistence. */
     exportData() {
         return {
@@ -3495,6 +3601,318 @@ function compactHistory(messages, inputBudgetTokens = exports.DEFAULT_INPUT_TOKE
 
 
 /**
+ * Phase 6: Context Compaction with TaskMemory Anchor.
+ *
+ * Introduces token-budget-aware context compaction that:
+ *   1. Measures current conversation token usage against a configurable threshold.
+ *   2. When the threshold is exceeded, rebuilds history with a TaskMemory anchor
+ *      replacing the bulk of old conversation turns.
+ *   3. Preserves: system prompt, TaskMemory anchor, recent turns, active tool
+ *      call/result pairs, and the current user request.
+ *   4. Fails open — any failure retains the original history.
+ *
+ * Feature Flag: DAXIOM_CONTEXT_COMPACTION (default: OFF)
+ *
+ * Thresholds (all labeled per measurement status):
+ *   COMPACTION_HIGH_WATERMARK: 0.75 — DESIGN TARGET (unmeasured)
+ *   COMPACTION_TARGET:         0.45 — DESIGN TARGET (unmeasured)
+ *   RECENT_TURNS_WINDOW:       4    — DESIGN TARGET (unmeasured)
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.MAX_COMPACTION_PASSES = exports.DEFAULT_RECENT_TURNS_WINDOW = exports.DEFAULT_COMPACTION_TARGET = exports.DEFAULT_COMPACTION_HIGH_WATERMARK = void 0;
+exports.isContextCompactionEnabled = isContextCompactionEnabled;
+exports.getCompactionHighWatermark = getCompactionHighWatermark;
+exports.getCompactionTarget = getCompactionTarget;
+exports.groupMessages = groupMessages;
+exports.validateToolCallPairIntegrity = validateToolCallPairIntegrity;
+exports.validateCompactedHistory = validateCompactedHistory;
+exports.compactHistoryWithTaskMemory = compactHistoryWithTaskMemory;
+const contextBudget_1 = __webpack_require__(15);
+// ---------------------------------------------------------------------------
+// Feature Flag
+// ---------------------------------------------------------------------------
+/**
+ * Check whether context compaction is enabled.
+ * DAXIOM_CONTEXT_COMPACTION must be "1" or "true" to enable.
+ * Default: OFF.
+ */
+function isContextCompactionEnabled() {
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const val = proc?.env?.DAXIOM_CONTEXT_COMPACTION?.trim();
+    return val === "1" || val === "true";
+}
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+/**
+ * High-watermark fraction of input token budget that triggers compaction.
+ * DESIGN TARGET: 0.75 (75%). Unmeasured — chosen conservatively.
+ */
+exports.DEFAULT_COMPACTION_HIGH_WATERMARK = 0.75; // DESIGN TARGET
+/**
+ * Target fraction of input token budget after compaction.
+ * DESIGN TARGET: 0.45 (45%). Unmeasured. Must be < HIGH_WATERMARK.
+ */
+exports.DEFAULT_COMPACTION_TARGET = 0.45; // DESIGN TARGET
+/**
+ * Number of most-recent turn-groups to always preserve verbatim.
+ * DESIGN TARGET: 4 groups. Unmeasured.
+ */
+exports.DEFAULT_RECENT_TURNS_WINDOW = 4; // DESIGN TARGET
+/**
+ * Maximum passes of compaction per turn (loop protection).
+ */
+exports.MAX_COMPACTION_PASSES = 1;
+/**
+ * Read the high-watermark fraction from DAXIOM_COMPACTION_HIGH_WATERMARK.
+ * Falls back to DEFAULT_COMPACTION_HIGH_WATERMARK on invalid/unset.
+ */
+function getCompactionHighWatermark() {
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const raw = proc?.env?.DAXIOM_COMPACTION_HIGH_WATERMARK?.trim();
+    if (!raw) {
+        return exports.DEFAULT_COMPACTION_HIGH_WATERMARK;
+    }
+    const val = Number(raw);
+    if (Number.isFinite(val) && val > 0 && val < 1) {
+        return val;
+    }
+    return exports.DEFAULT_COMPACTION_HIGH_WATERMARK;
+}
+/**
+ * Read the target fraction from DAXIOM_COMPACTION_TARGET.
+ * Falls back to DEFAULT_COMPACTION_TARGET on invalid/unset.
+ */
+function getCompactionTarget() {
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const raw = proc?.env?.DAXIOM_COMPACTION_TARGET?.trim();
+    if (!raw) {
+        return exports.DEFAULT_COMPACTION_TARGET;
+    }
+    const val = Number(raw);
+    if (Number.isFinite(val) && val > 0 && val < 1) {
+        return val;
+    }
+    return exports.DEFAULT_COMPACTION_TARGET;
+}
+/**
+ * Group non-system messages into atomic MessageGroups that preserve
+ * tool-call / tool-result pairing.
+ *
+ * Rules:
+ *  - A user message always forms its own group.
+ *  - An assistant message starts a new group; any subsequent tool messages
+ *    (with matching tool_call_id) are appended to the same group.
+ */
+function groupMessages(nonSystemMessages) {
+    const groups = [];
+    let currentGroup = [];
+    let currentPendingIds = new Set();
+    const flush = () => {
+        if (currentGroup.length > 0) {
+            groups.push({
+                messages: currentGroup,
+                pendingToolCallIds: new Set(currentPendingIds),
+                hasToolResults: currentGroup.some((m) => m.role === "tool"),
+            });
+            currentGroup = [];
+            currentPendingIds = new Set();
+        }
+    };
+    for (const msg of nonSystemMessages) {
+        if (msg.role === "user") {
+            flush();
+            groups.push({ messages: [msg], pendingToolCallIds: new Set(), hasToolResults: false });
+        }
+        else if (msg.role === "assistant") {
+            flush();
+            currentGroup.push(msg);
+            if (msg.tool_calls) {
+                for (const tc of msg.tool_calls) {
+                    if (tc.id) {
+                        currentPendingIds.add(tc.id);
+                    }
+                }
+            }
+        }
+        else if (msg.role === "tool") {
+            // Belongs to current assistant group
+            currentGroup.push(msg);
+        }
+        else {
+            // Unknown role — flush and add standalone
+            flush();
+            groups.push({ messages: [msg], pendingToolCallIds: new Set(), hasToolResults: false });
+        }
+    }
+    flush();
+    return groups;
+}
+/**
+ * Validate that no tool result exists without its corresponding assistant tool_call.
+ */
+function validateToolCallPairIntegrity(messages) {
+    const declaredIds = new Set();
+    for (const msg of messages) {
+        if (msg.role === "assistant" && msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+                if (tc.id) {
+                    declaredIds.add(tc.id);
+                }
+            }
+        }
+    }
+    for (const msg of messages) {
+        if (msg.role === "tool" && msg.tool_call_id) {
+            if (!declaredIds.has(msg.tool_call_id)) {
+                return false; // orphaned tool result
+            }
+        }
+    }
+    return true;
+}
+/**
+ * Validate the full compacted message array.
+ * Returns null on success, or an error string on failure.
+ */
+function validateCompactedHistory(compacted, expectedSystemContent) {
+    if (compacted.length === 0) {
+        return "Empty message array after compaction";
+    }
+    if (compacted[0].role !== "system") {
+        return "System prompt missing (not at index 0)";
+    }
+    if (typeof compacted[0].content !== "string" || !compacted[0].content.trim()) {
+        return "System prompt is empty";
+    }
+    if (compacted[0].content !== expectedSystemContent) {
+        return "System prompt content was mutated during compaction";
+    }
+    if (!validateToolCallPairIntegrity(compacted)) {
+        return "Tool call/result pair integrity violated";
+    }
+    // No empty assistant message (provider rejects them)
+    for (const msg of compacted) {
+        if (msg.role === "assistant" && !msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
+            return "Empty assistant message found (no content, no tool calls)";
+        }
+    }
+    return null;
+}
+/**
+ * Compact conversation history, injecting a TaskMemory anchor.
+ *
+ * Algorithm:
+ *   1. Measure tokens. If below high-watermark, return unchanged.
+ *   2. Group non-system messages into atomic turn-groups.
+ *   3. Protect the `recentTurnsWindow` newest groups.
+ *   4. Build: [system] + [TaskMemory anchor (user msg)] + [recent groups].
+ *   5. Validate. On failure, fail open to original.
+ *   6. Remeasure and report metrics.
+ *
+ * Guarantees:
+ *   - Never mutates the input array.
+ *   - Fails open on any error.
+ *   - Does not loop (MAX_COMPACTION_PASSES = 1).
+ *   - Does not alter the stable Phase 4 system prefix content.
+ */
+function compactHistoryWithTaskMemory(opts) {
+    const { messages, inputBudgetTokens, taskMemoryAnchor, highWatermark = exports.DEFAULT_COMPACTION_HIGH_WATERMARK, target = exports.DEFAULT_COMPACTION_TARGET, recentTurnsWindow = exports.DEFAULT_RECENT_TURNS_WINDOW, } = opts;
+    const beforeTokens = (0, contextBudget_1.estimateMessagesTokens)(messages);
+    const messagesBefore = messages.length;
+    const makeNoop = (reason) => ({
+        messages: [...messages],
+        metrics: {
+            compactionReason: reason,
+            compactionSucceeded: false,
+            beforeTokens,
+            afterTokens: beforeTokens,
+            tokensSaved: 0,
+            reductionRatio: 0,
+            messagesBefore,
+            messagesAfter: messagesBefore,
+            taskMemorySize: 0,
+        },
+    });
+    // 1. Threshold check
+    const hwThreshold = Math.floor(inputBudgetTokens * highWatermark);
+    if (beforeTokens <= hwThreshold) {
+        return makeNoop("below-threshold");
+    }
+    const systemMsg = messages[0];
+    if (!systemMsg || systemMsg.role !== "system" || typeof systemMsg.content !== "string") {
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            console.debug("[ContextCompaction] No system message at index 0; skipping");
+        }
+        return makeNoop("no-system-message");
+    }
+    const originalSystemContent = systemMsg.content;
+    try {
+        const nonSystem = messages.slice(1);
+        const groups = groupMessages(nonSystem);
+        if (groups.length === 0) {
+            return makeNoop("insufficient-groups");
+        }
+        // 2. Protect recent window
+        const windowSize = Math.min(recentTurnsWindow, groups.length);
+        const recentGroups = groups.slice(groups.length - windowSize);
+        const recentMessages = recentGroups.flatMap((g) => g.messages);
+        // 3. Build TaskMemory anchor (user message, in the DYNAMIC suffix)
+        const anchorMsg = {
+            role: "user",
+            content: taskMemoryAnchor,
+        };
+        const taskMemorySize = (0, contextBudget_1.estimateTokens)(taskMemoryAnchor);
+        // 4. Build candidate
+        const candidate = [systemMsg, anchorMsg, ...recentMessages];
+        // 5. Validate
+        const err = validateCompactedHistory(candidate, originalSystemContent);
+        if (err) {
+            if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+                console.debug(`[ContextCompaction] Validation failed (${err}); failing open`);
+            }
+            return makeNoop(`validation-failed:${err}`);
+        }
+        const afterTokens = (0, contextBudget_1.estimateMessagesTokens)(candidate);
+        const tokensSaved = Math.max(0, beforeTokens - afterTokens);
+        const reductionRatio = beforeTokens > 0 ? tokensSaved / beforeTokens : 0;
+        const metrics = {
+            compactionReason: "high-watermark",
+            compactionSucceeded: true,
+            beforeTokens,
+            afterTokens,
+            tokensSaved,
+            reductionRatio,
+            messagesBefore,
+            messagesAfter: candidate.length,
+            taskMemorySize,
+        };
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            const targetThreshold = Math.floor(inputBudgetTokens * target);
+            const aboveTarget = afterTokens > targetThreshold;
+            console.log(`[ContextCompaction] compacted: ${beforeTokens}→${afterTokens} tokens ` +
+                `(${(reductionRatio * 100).toFixed(1)}% reduction, ` +
+                `${messagesBefore}→${candidate.length} msgs, ` +
+                `taskMemory=${taskMemorySize} tok, ` +
+                `aboveTarget=${aboveTarget})`);
+        }
+        return { messages: candidate, metrics };
+    }
+    catch (err) {
+        if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            console.debug("[ContextCompaction] Unexpected error; failing open", err);
+        }
+        return makeNoop(`error:${String(err)}`);
+    }
+}
+
+
+/***/ }),
+/* 17 */
+/***/ ((__unused_webpack_module, exports, __webpack_require__) => {
+
+
+/**
  * Usage telemetry and session cost guard.
  *
  * Tracks tokens and USD cost per phase and model, enforces MAX_SESSION_USD,
@@ -3508,7 +3926,7 @@ exports.getMaxSessionUsd = getMaxSessionUsd;
 const models_1 = __webpack_require__(5);
 const contextBudget_1 = __webpack_require__(15);
 const tokenBudget_1 = __webpack_require__(8);
-const usageMark_1 = __webpack_require__(17);
+const usageMark_1 = __webpack_require__(18);
 /**
  * Classify a tool name into one of the required measurement buckets.
  */
@@ -3850,7 +4268,7 @@ function getMaxSessionUsd() {
 
 
 /***/ }),
-/* 17 */
+/* 18 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4189,7 +4607,7 @@ function resolveUsageMark(observation, tracker = exports.defaultCalibrationTrack
 
 
 /***/ }),
-/* 18 */
+/* 19 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4439,7 +4857,7 @@ function partitionPrompt(options) {
 
 
 /***/ }),
-/* 19 */
+/* 20 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4557,7 +4975,7 @@ exports.ConversationManager = ConversationManager;
 
 
 /***/ }),
-/* 20 */
+/* 21 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4616,7 +5034,7 @@ const models_1 = __webpack_require__(5);
 Object.defineProperty(exports, "DEFAULT_MAX_TOKENS", ({ enumerable: true, get: function () { return models_1.DEFAULT_MAX_TOKENS; } }));
 Object.defineProperty(exports, "getMaxTokens", ({ enumerable: true, get: function () { return models_1.getMaxTokens; } }));
 Object.defineProperty(exports, "resolveMaxTokens", ({ enumerable: true, get: function () { return models_1.resolveMaxTokens; } }));
-const modes_1 = __webpack_require__(21);
+const modes_1 = __webpack_require__(22);
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
 /** globalState keys — these persist across VS Code restarts. */
@@ -4764,7 +5182,7 @@ async function promptAndStoreApiKey(context) {
 
 
 /***/ }),
-/* 21 */
+/* 22 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4801,7 +5219,7 @@ function getMode(id) {
 
 
 /***/ }),
-/* 22 */
+/* 23 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4822,22 +5240,22 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createWebFetchTool = exports.webFetchTool = exports.createWebSearchTool = exports.webSearchTool = exports.ToolRegistry = void 0;
 exports.createToolRegistry = createToolRegistry;
-const registry_1 = __webpack_require__(23);
-const listFiles_1 = __webpack_require__(24);
-const readFile_1 = __webpack_require__(29);
-const readActiveEditor_1 = __webpack_require__(30);
-const readSelection_1 = __webpack_require__(31);
-const searchWorkspace_1 = __webpack_require__(32);
-const createFile_1 = __webpack_require__(34);
-const editFile_1 = __webpack_require__(35);
-const renameFile_1 = __webpack_require__(37);
-const deleteFile_1 = __webpack_require__(38);
-const multiEdit_1 = __webpack_require__(39);
-const runCommand_1 = __webpack_require__(40);
-const gitClone_1 = __webpack_require__(45);
-const fetchGithubIssue_1 = __webpack_require__(47);
-const webSearch_1 = __webpack_require__(48);
-const webFetch_1 = __webpack_require__(50);
+const registry_1 = __webpack_require__(24);
+const listFiles_1 = __webpack_require__(25);
+const readFile_1 = __webpack_require__(30);
+const readActiveEditor_1 = __webpack_require__(31);
+const readSelection_1 = __webpack_require__(32);
+const searchWorkspace_1 = __webpack_require__(33);
+const createFile_1 = __webpack_require__(35);
+const editFile_1 = __webpack_require__(36);
+const renameFile_1 = __webpack_require__(38);
+const deleteFile_1 = __webpack_require__(39);
+const multiEdit_1 = __webpack_require__(40);
+const runCommand_1 = __webpack_require__(41);
+const gitClone_1 = __webpack_require__(46);
+const fetchGithubIssue_1 = __webpack_require__(48);
+const webSearch_1 = __webpack_require__(49);
+const webFetch_1 = __webpack_require__(51);
 /**
  * The ONE place built-in tools are wired up. To add a capability: create a Tool
  * in `impl/`, import it, and `.register()` it here. Nothing else in the agent,
@@ -4866,19 +5284,19 @@ function createToolRegistry() {
         .register(runCommand_1.runCommandTool);
     return registry;
 }
-var registry_2 = __webpack_require__(23);
+var registry_2 = __webpack_require__(24);
 Object.defineProperty(exports, "ToolRegistry", ({ enumerable: true, get: function () { return registry_2.ToolRegistry; } }));
-var webSearch_2 = __webpack_require__(48);
+var webSearch_2 = __webpack_require__(49);
 Object.defineProperty(exports, "webSearchTool", ({ enumerable: true, get: function () { return webSearch_2.webSearchTool; } }));
 Object.defineProperty(exports, "createWebSearchTool", ({ enumerable: true, get: function () { return webSearch_2.createWebSearchTool; } }));
-var webFetch_2 = __webpack_require__(50);
+var webFetch_2 = __webpack_require__(51);
 Object.defineProperty(exports, "webFetchTool", ({ enumerable: true, get: function () { return webFetch_2.webFetchTool; } }));
 Object.defineProperty(exports, "createWebFetchTool", ({ enumerable: true, get: function () { return webFetch_2.createWebFetchTool; } }));
-__exportStar(__webpack_require__(26), exports);
+__exportStar(__webpack_require__(27), exports);
 
 
 /***/ }),
-/* 23 */
+/* 24 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -4930,7 +5348,7 @@ exports.ToolRegistry = ToolRegistry;
 
 
 /***/ }),
-/* 24 */
+/* 25 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -4970,9 +5388,9 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.listFilesTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(25);
-const fsutil_2 = __webpack_require__(25);
-const workspaceSafety_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
+const fsutil_2 = __webpack_require__(26);
+const workspaceSafety_1 = __webpack_require__(28);
 const MAX_ENTRIES = parseInt(process.env.LIST_FILES_MAX_ENTRIES || "150", 10);
 exports.listFilesTool = {
     name: "list_files",
@@ -5052,7 +5470,7 @@ exports.listFilesTool = {
 
 
 /***/ }),
-/* 25 */
+/* 26 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5105,7 +5523,7 @@ exports.numberLines = numberLines;
 exports.requireString = requireString;
 exports.optionalNumber = optionalNumber;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(27);
 const fs = __importStar(__webpack_require__(12));
 const path = __importStar(__webpack_require__(13));
 /** Default directory names ignored during file walking and searching. */
@@ -5313,7 +5731,7 @@ function optionalNumber(args, key, fallback) {
 
 
 /***/ }),
-/* 26 */
+/* 27 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -5334,7 +5752,7 @@ exports.ToolDeniedError = ToolDeniedError;
 
 
 /***/ }),
-/* 27 */
+/* 28 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5376,7 +5794,7 @@ exports.isBroadWorkspace = isBroadWorkspace;
 exports.checkBroadWorkspaceWarning = checkBroadWorkspaceWarning;
 exports.resetBroadWorkspaceWarning = resetBroadWorkspaceWarning;
 const path = __importStar(__webpack_require__(13));
-const os = __importStar(__webpack_require__(28));
+const os = __importStar(__webpack_require__(29));
 let broadWorkspaceWarned = false;
 /**
  * Returns true if the path is considered "too broad" (home, Desktop, Documents, Downloads, root).
@@ -5424,19 +5842,19 @@ function resetBroadWorkspaceWarning() {
 
 
 /***/ }),
-/* 28 */
+/* 29 */
 /***/ ((module) => {
 
 module.exports = require("os");
 
 /***/ }),
-/* 29 */
+/* 30 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readFileTool = void 0;
-const fsutil_1 = __webpack_require__(25);
+const fsutil_1 = __webpack_require__(26);
 exports.readFileTool = {
     name: "read_file",
     description: "Read a text file from the workspace. Returns the content with line numbers " +
@@ -5497,7 +5915,7 @@ exports.readFileTool = {
 
 
 /***/ }),
-/* 30 */
+/* 31 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5537,7 +5955,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.readActiveEditorTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const fsutil_1 = __webpack_require__(25);
+const fsutil_1 = __webpack_require__(26);
 exports.readActiveEditorTool = {
     name: "read_active_editor",
     description: "Read the file currently open and focused in the editor, including its path " +
@@ -5564,7 +5982,7 @@ exports.readActiveEditorTool = {
 
 
 /***/ }),
-/* 31 */
+/* 32 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5635,7 +6053,7 @@ exports.readSelectionTool = {
 
 
 /***/ }),
-/* 32 */
+/* 33 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -5676,10 +6094,10 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.searchWorkspaceTool = void 0;
 const fs = __importStar(__webpack_require__(12));
 const path = __importStar(__webpack_require__(13));
-const readline = __importStar(__webpack_require__(33));
-const fsutil_1 = __webpack_require__(25);
-const types_1 = __webpack_require__(26);
-const workspaceSafety_1 = __webpack_require__(27);
+const readline = __importStar(__webpack_require__(34));
+const fsutil_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(27);
+const workspaceSafety_1 = __webpack_require__(28);
 const MAX_MATCHES_PER_FILE = 5;
 const CONCURRENCY_LIMIT = 8;
 const MAX_DEPTH = 8;
@@ -5991,13 +6409,13 @@ exports.searchWorkspaceTool = {
 
 
 /***/ }),
-/* 33 */
+/* 34 */
 /***/ ((module) => {
 
 module.exports = require("readline");
 
 /***/ }),
-/* 34 */
+/* 35 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6037,8 +6455,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.createFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
 exports.createFileTool = {
     name: "create_file",
     mutates: true,
@@ -6097,15 +6515,15 @@ exports.createFileTool = {
 
 
 /***/ }),
-/* 35 */
+/* 36 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.editFileTool = void 0;
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
-const editCore_1 = __webpack_require__(36);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
+const editCore_1 = __webpack_require__(37);
 exports.editFileTool = {
     name: "edit_file",
     mutates: true,
@@ -6232,7 +6650,7 @@ exports.editFileTool = {
 
 
 /***/ }),
-/* 36 */
+/* 37 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6278,8 +6696,8 @@ exports.readForEdit = readForEdit;
 exports.writeText = writeText;
 const vscode = __importStar(__webpack_require__(1));
 const crypto = __importStar(__webpack_require__(10));
-const fsutil_1 = __webpack_require__(25);
-const types_1 = __webpack_require__(26);
+const fsutil_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(27);
 /** Parse and validate a raw edit op from tool arguments. */
 function parseEditOp(raw) {
     if (!raw || typeof raw !== "object") {
@@ -6447,7 +6865,7 @@ function truncate(s, max = 200) {
 
 
 /***/ }),
-/* 37 */
+/* 38 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6487,8 +6905,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.renameFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
 exports.renameFileTool = {
     name: "rename_file",
     mutates: true,
@@ -6541,7 +6959,7 @@ exports.renameFileTool = {
 
 
 /***/ }),
-/* 38 */
+/* 39 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -6581,8 +6999,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.deleteFileTool = void 0;
 const vscode = __importStar(__webpack_require__(1));
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
 exports.deleteFileTool = {
     name: "delete_file",
     mutates: true,
@@ -6639,14 +7057,14 @@ exports.deleteFileTool = {
 
 
 /***/ }),
-/* 39 */
+/* 40 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.multiEditTool = void 0;
-const types_1 = __webpack_require__(26);
-const editCore_1 = __webpack_require__(36);
+const types_1 = __webpack_require__(27);
+const editCore_1 = __webpack_require__(37);
 /**
  * Apply a batch of edits across one or more files. Edits for each file are
  * validated and applied in-memory first; a file is only written if all of its
@@ -6761,20 +7179,20 @@ exports.multiEditTool = {
 
 
 /***/ }),
-/* 40 */
+/* 41 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runCommandTool = void 0;
-const child_process_1 = __webpack_require__(41);
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
+const child_process_1 = __webpack_require__(42);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
 const contextBudget_1 = __webpack_require__(15);
 const contextBudget_2 = __webpack_require__(15);
-const processManager_1 = __webpack_require__(42);
-const changes_1 = __webpack_require__(43);
-const commandDigest_1 = __webpack_require__(44);
+const processManager_1 = __webpack_require__(43);
+const changes_1 = __webpack_require__(44);
+const commandDigest_1 = __webpack_require__(45);
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_COMMAND_OUTPUT_CHARS || "6000", 10);
 exports.runCommandTool = {
@@ -6975,13 +7393,13 @@ exports.runCommandTool = {
 
 
 /***/ }),
-/* 41 */
+/* 42 */
 /***/ ((module) => {
 
 module.exports = require("child_process");
 
 /***/ }),
-/* 42 */
+/* 43 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -7118,7 +7536,7 @@ exports.ProcessManager = ProcessManager;
 
 
 /***/ }),
-/* 43 */
+/* 44 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -7161,7 +7579,7 @@ exports.isVerificationCommand = isVerificationCommand;
 const vscode = __importStar(__webpack_require__(1));
 const path = __importStar(__webpack_require__(13));
 const fs = __importStar(__webpack_require__(12));
-const fsutil_1 = __webpack_require__(25);
+const fsutil_1 = __webpack_require__(26);
 /**
  * Recognizes standard test, build, lint, and verification commands.
  */
@@ -7938,7 +8356,7 @@ function formatUnifiedDiff(filePath, original, modified) {
 
 
 /***/ }),
-/* 44 */
+/* 45 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -8489,7 +8907,7 @@ function digestCommandOutput(input) {
 
 
 /***/ }),
-/* 45 */
+/* 46 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -8533,10 +8951,10 @@ exports.resetExecFileForTesting = resetExecFileForTesting;
 exports.extractRepoNameFromUrl = extractRepoNameFromUrl;
 const path = __importStar(__webpack_require__(13));
 const fs = __importStar(__webpack_require__(12));
-const child_process_1 = __webpack_require__(41);
-const types_1 = __webpack_require__(26);
-const fsutil_1 = __webpack_require__(25);
-const workspace_1 = __webpack_require__(46);
+const child_process_1 = __webpack_require__(42);
+const types_1 = __webpack_require__(27);
+const fsutil_1 = __webpack_require__(26);
+const workspace_1 = __webpack_require__(47);
 let execFileImpl = child_process_1.execFile;
 function setExecFileForTesting(fn) {
     execFileImpl = fn;
@@ -8655,7 +9073,7 @@ exports.gitCloneTool = {
 
 
 /***/ }),
-/* 46 */
+/* 47 */
 /***/ (function(__unused_webpack_module, exports, __webpack_require__) {
 
 
@@ -8700,7 +9118,7 @@ exports.resolvePathInWorkspace = resolvePathInWorkspace;
 const vscode = __importStar(__webpack_require__(1));
 const path = __importStar(__webpack_require__(13));
 const fs = __importStar(__webpack_require__(12));
-const types_1 = __webpack_require__(26);
+const types_1 = __webpack_require__(27);
 /** The first open workspace folder, or undefined if none is open. */
 function getWorkspaceRoot() {
     return vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -8769,14 +9187,14 @@ async function resolvePathInWorkspace(input, root, confirm) {
 
 
 /***/ }),
-/* 47 */
+/* 48 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.fetchGithubIssueTool = void 0;
 exports.fetchGithubIssue = fetchGithubIssue;
-const child_process_1 = __webpack_require__(41);
+const child_process_1 = __webpack_require__(42);
 /**
  * Fetch issue details authoritatively using `gh` CLI with REST API fallback.
  */
@@ -8930,14 +9348,14 @@ exports.fetchGithubIssueTool = {
 
 
 /***/ }),
-/* 48 */
+/* 49 */
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.webSearchTool = void 0;
 exports.createWebSearchTool = createWebSearchTool;
-const WebSearchProvider_1 = __webpack_require__(49);
+const WebSearchProvider_1 = __webpack_require__(50);
 /**
  * Native web search tool for DAXIOM.
  * Enables the agent to query current external documentation, APIs, and guides.
@@ -9040,7 +9458,7 @@ exports.webSearchTool = createWebSearchTool();
 
 
 /***/ }),
-/* 49 */
+/* 50 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
@@ -9543,7 +9961,7 @@ function getSearchProvider(explicitName) {
 
 
 /***/ }),
-/* 50 */
+/* 51 */
 /***/ ((__unused_webpack_module, exports) => {
 
 
