@@ -58,6 +58,7 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream: boolean;
+  max_tokens?: number;
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none";
 }

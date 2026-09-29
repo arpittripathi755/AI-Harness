@@ -27,7 +27,7 @@ export class ProcessManager {
    */
   register(child: ChildProcess, description = "child process"): () => void {
     const pid = child.pid;
-    if (!pid) {
+    if (!pid || child.exitCode !== null || child.signalCode !== null) {
       return () => {};
     }
 

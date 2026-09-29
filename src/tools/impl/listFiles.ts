@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
-import { SKIP_DIRS } from "../fsutil";
+import { getIgnoredDirs } from "../fsutil";
 import { optionalNumber } from "../fsutil";
+import { checkBroadWorkspaceWarning } from "../workspaceSafety";
 
-const MAX_ENTRIES = 1000;
+const MAX_ENTRIES = 500;
 
 export const listFilesTool: Tool = {
   name: "list_files",
@@ -27,9 +28,11 @@ export const listFilesTool: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
+    checkBroadWorkspaceWarning(ctx.workspaceRoot?.fsPath);
     const rel = typeof args.path === "string" && args.path ? args.path : ".";
     const depth = Math.max(1, Math.min(optionalNumber(args, "depth", 2), 8));
     const dir = await ctx.resolvePath(rel);
+    const ignoredDirs = getIgnoredDirs();
 
     const lines: string[] = [];
     let count = 0;
@@ -58,7 +61,7 @@ export const listFilesTool: Tool = {
         });
       }
       for (const [name, type] of entries) {
-        if (SKIP_DIRS.has(name)) {
+        if (ignoredDirs.has(name)) {
           continue;
         }
         if (count >= MAX_ENTRIES) {

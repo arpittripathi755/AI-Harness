@@ -26,6 +26,7 @@ export function Toolbar({
         options={MODELS.map((m) => ({
           value: m.apiModelId,
           label: m.displayName,
+          group: m.provider,
         }))}
         onChange={onModelChange}
       />

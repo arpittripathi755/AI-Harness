@@ -8,7 +8,7 @@ setup:
 
 run:
 	npm run compile
-	@REPO="$(REPO)" ./scripts/launch-tui.sh "$(TASK)"
+	@REPO="$(REPO)" MODEL="$(MODEL)" MAX_TOKENS="$(MAX_TOKENS)" ./scripts/launch-tui.sh "$(TASK)"
 
 test:
 	npm run lint

@@ -360,10 +360,8 @@ suite("Cancellation and Graceful Shutdown Tests", () => {
     const targetDir = path.join(tempDir, "partial-clone-test");
     const controller = new AbortController();
 
-    // Abort clone almost immediately
-    setTimeout(() => {
-      controller.abort();
-    }, 50);
+    // Abort clone before/during execution
+    controller.abort();
 
     // cloneRepository is synchronous; wrap so assert.rejects can handle
     await assert.rejects(
@@ -371,6 +369,7 @@ suite("Cancellation and Graceful Shutdown Tests", () => {
         WorkspaceIsolation.cloneRepository(
           "https://github.com/octocat/Hello-World.git",
           targetDir,
+          controller.signal,
         );
       },
       (err: any) => {

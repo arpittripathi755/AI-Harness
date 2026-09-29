@@ -17470,69 +17470,211 @@ function App() {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   DEFAULT_MAX_TOKENS: () => (/* binding */ DEFAULT_MAX_TOKENS),
 /* harmony export */   DEFAULT_MODEL_ID: () => (/* binding */ DEFAULT_MODEL_ID),
 /* harmony export */   MODELS: () => (/* binding */ MODELS),
+/* harmony export */   getMaxTokens: () => (/* binding */ getMaxTokens),
 /* harmony export */   getModelByApiId: () => (/* binding */ getModelByApiId),
+/* harmony export */   getModelDisplayName: () => (/* binding */ getModelDisplayName),
+/* harmony export */   getModelMaxTokens: () => (/* binding */ getModelMaxTokens),
+/* harmony export */   isOpenRouterModelId: () => (/* binding */ isOpenRouterModelId),
+/* harmony export */   isRegisteredModelId: () => (/* binding */ isRegisteredModelId),
 /* harmony export */   modelApi: () => (/* binding */ modelApi),
 /* harmony export */   modelSupportsTools: () => (/* binding */ modelSupportsTools),
 /* harmony export */   modelSupportsVision: () => (/* binding */ modelSupportsVision),
+/* harmony export */   resolveMaxTokens: () => (/* binding */ resolveMaxTokens),
 /* harmony export */   resolveModelId: () => (/* binding */ resolveModelId)
 /* harmony export */ });
 /**
  * Central Model Registry — the single source of truth mapping user-facing display
- * names to Lightning API model IDs. Imported by BOTH bundles: the webview shows
- * `displayName`, the extension sends `apiModelId`. Add/remove a model here only.
+ * names to OpenRouter API model IDs. Imported by BOTH bundles: the webview shows
+ * `displayName`, the extension and TUI send `apiModelId`. Add/remove a model here only.
  *
- * The canonical evaluation model is "deepseek/deepseek-v4.1-flash". It is kept in
- * sync with CANONICAL_MODEL in src/llm/providers.ts — do not change one without
- * the other.
+ * Every model registered here must use its exact OpenRouter identifier: "provider/model-name".
+ *
+ * The canonical evaluation model is "deepseek/deepseek-v4.1-flash". It is imported by
+ * CANONICAL_MODEL in src/llm/providers.ts to maintain a single source of truth.
  */
 const MODELS = [
-    /**
-     * Canonical evaluation model — matches CANONICAL_MODEL in src/llm/providers.ts.
-     * This MUST remain "deepseek/deepseek-v4.1-flash".
-     */
+    // ==========================================
+    // DeepSeek Models (Verified on OpenRouter)
+    // ==========================================
     {
-        displayName: "deepseek/deepseek-v4.1-flash",
+        displayName: "DeepSeek V4.1 Flash",
         apiModelId: "deepseek/deepseek-v4.1-flash",
+        provider: "DeepSeek",
+        contextLength: 1048576,
+        supportsTools: true,
         supportsVision: false,
     },
     {
-        displayName: "ultra",
-        apiModelId: "nvidia/nemotron-3-ultra-550b-a55b",
+        displayName: "DeepSeek V4 Pro",
+        apiModelId: "deepseek/deepseek-v4-pro",
+        provider: "DeepSeek",
+        contextLength: 1048576,
+        supportsTools: true,
         supportsVision: false,
     },
     {
-        displayName: "deepseek-v4-pro",
-        apiModelId: "deepseek-v4-pro",
+        displayName: "DeepSeek V4 Flash",
+        apiModelId: "deepseek/deepseek-v4-flash",
+        provider: "DeepSeek",
+        contextLength: 1048576,
+        supportsTools: true,
         supportsVision: false,
     },
     {
-        displayName: "deepseek-flash",
-        apiModelId: "deepseek-flash",
+        displayName: "DeepSeek V3",
+        apiModelId: "deepseek/deepseek-chat",
+        provider: "DeepSeek",
+        contextLength: 163840,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "DeepSeek R1",
+        apiModelId: "deepseek/deepseek-r1",
+        provider: "DeepSeek",
+        contextLength: 64000,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    // ==========================================
+    // Qwen Models (Verified on OpenRouter)
+    // ==========================================
+    {
+        displayName: "Qwen3 Coder 480B",
+        apiModelId: "qwen/qwen3-coder",
+        provider: "Qwen",
+        contextLength: 262144,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "Qwen3 Coder Plus",
+        apiModelId: "qwen/qwen3-coder-plus",
+        provider: "Qwen",
+        contextLength: 1000000,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "Qwen3 Coder Flash",
+        apiModelId: "qwen/qwen3-coder-flash",
+        provider: "Qwen",
+        contextLength: 1000000,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "Qwen3.8 Flash",
+        apiModelId: "qwen/qwen3.8-flash",
+        provider: "Qwen",
+        contextLength: 1000000,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "Qwen2.5 72B Instruct",
+        apiModelId: "qwen/qwen-2.5-72b-instruct",
+        provider: "Qwen",
+        contextLength: 32768,
+        supportsTools: true,
+        supportsVision: false,
+    },
+    {
+        displayName: "Qwen Plus",
+        apiModelId: "qwen/qwen-plus",
+        provider: "Qwen",
+        contextLength: 1000000,
+        supportsTools: true,
         supportsVision: false,
     },
 ];
 /**
  * Default evaluation model — the canonical DeepSeek model.
- * Must stay in sync with CANONICAL_MODEL in src/llm/providers.ts.
+ * Single source of truth across DAXIOM.
  */
 const DEFAULT_MODEL_ID = "deepseek/deepseek-v4.1-flash";
+/**
+ * Sensible default token budget for assistant completions (16,384 tokens).
+ * Optimizes agent turns while avoiding OpenRouter 402 "credit limit" errors.
+ */
+const DEFAULT_MAX_TOKENS = 16384;
+/**
+ * Safely parse and validate a token budget value.
+ * Falls back to DEFAULT_MAX_TOKENS (16384) for invalid, non-positive, or non-finite inputs.
+ */
+function resolveMaxTokens(raw) {
+    if (raw === undefined || raw === null || raw === "") {
+        return DEFAULT_MAX_TOKENS;
+    }
+    const val = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(val) || val <= 0 || !Number.isInteger(val)) {
+        return DEFAULT_MAX_TOKENS;
+    }
+    return val;
+}
+/** Get the active max_tokens budget from environment (MAX_TOKENS or AI_MAX_TOKENS) or fallback to default. */
+function getMaxTokens(override) {
+    if (override !== undefined) {
+        return resolveMaxTokens(override);
+    }
+    const proc = typeof globalThis !== "undefined" ? globalThis.process : undefined;
+    const envVal = proc?.env?.MAX_TOKENS?.trim() || proc?.env?.AI_MAX_TOKENS?.trim();
+    return resolveMaxTokens(envVal);
+}
+/**
+ * Determine the effective max_tokens for a given model, respecting model-specific
+ * output limits (if any) and requested/environment overrides.
+ */
+function getModelMaxTokens(apiModelId, requestedMaxTokens) {
+    const base = resolveMaxTokens(requestedMaxTokens ?? getMaxTokens());
+    const model = getModelByApiId(apiModelId);
+    if (model?.maxOutputTokens && model.maxOutputTokens < base) {
+        return model.maxOutputTokens;
+    }
+    return base;
+}
 function getModelByApiId(apiModelId) {
     const resolved = resolveModelId(apiModelId);
     return MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === apiModelId);
+}
+/**
+ * Return the human-friendly display name for an OpenRouter model ID if registered in MODELS,
+ * or return the raw model ID as-is for unregistered / custom models.
+ * Never falls back to DeepSeek V4.1 Flash for unknown models.
+ */
+function getModelDisplayName(apiModelId) {
+    const trimmed = apiModelId?.trim();
+    if (!trimmed) {
+        const defaultModel = getModelByApiId(DEFAULT_MODEL_ID);
+        return defaultModel?.displayName ?? DEFAULT_MODEL_ID;
+    }
+    const resolved = resolveModelId(trimmed);
+    const model = MODELS.find((m) => m.apiModelId === resolved || m.apiModelId === trimmed);
+    return model?.displayName ?? trimmed;
 }
 /** Whether a model supports function/tool calling on this endpoint (default true). */
 function modelSupportsTools(apiModelId) {
     return getModelByApiId(apiModelId)?.supportsTools !== false;
 }
-/** Whether a model accepts image inputs (default true). */
+/** Whether a model accepts image inputs (default false). */
 function modelSupportsVision(apiModelId) {
-    return getModelByApiId(apiModelId)?.supportsVision !== false;
+    return getModelByApiId(apiModelId)?.supportsVision === true;
 }
 /** Which endpoint API a model uses ("chat" by default). */
 function modelApi(apiModelId) {
     return getModelByApiId(apiModelId)?.api ?? "chat";
+}
+/** Whether a model ID conforms to OpenRouter's namespaced format "provider/model-name". */
+function isOpenRouterModelId(modelId) {
+    return /^[^/\s]+\/[^/\s]+$/.test(modelId.trim());
+}
+/** Check if a model is explicitly in the registered list. */
+function isRegisteredModelId(apiModelId) {
+    const resolved = resolveModelId(apiModelId);
+    return MODELS.some((m) => m.apiModelId === resolved);
 }
 /** Resolve a stored/selected api id to a valid one, falling back to the default. */
 function resolveModelId(apiModelId) {
@@ -17543,22 +17685,54 @@ function resolveModelId(apiModelId) {
     if (MODELS.some((m) => m.apiModelId === trimmed)) {
         return trimmed;
     }
-    // Aliases for the canonical evaluation model
+    // Aliases for DeepSeek models
     if (trimmed === "deepseek-v4.1-flash" ||
-        trimmed === "deepseek-flash" ||
         trimmed === "deepseek-ai/deepseek-v4.1-flash" ||
-        trimmed === "deepseek v4") {
+        trimmed === "deepseek v4.1 flash") {
         return "deepseek/deepseek-v4.1-flash";
     }
-    if (trimmed === "ultra" ||
-        trimmed === "lightning-ai/nvidia-nemotron-3-ultra-550b-a55b") {
-        return "nvidia/nemotron-3-ultra-550b-a55b";
+    if (trimmed === "deepseek-flash" ||
+        trimmed === "deepseek-v4-flash" ||
+        trimmed === "deepseek-ai/deepseek-v4-flash") {
+        return "deepseek/deepseek-v4-flash";
     }
     if (trimmed === "deepseek-v4-pro" ||
         trimmed === "deepseek-ai/deepseek-v4-pro") {
-        return "deepseek-v4-pro";
+        return "deepseek/deepseek-v4-pro";
     }
-    // If an explicit model name was supplied, respect it rather than overwriting
+    if (trimmed === "deepseek-chat" ||
+        trimmed === "deepseek-v3" ||
+        trimmed === "deepseek-ai/deepseek-chat") {
+        return "deepseek/deepseek-chat";
+    }
+    if (trimmed === "deepseek-r1" || trimmed === "deepseek-ai/deepseek-r1") {
+        return "deepseek/deepseek-r1";
+    }
+    // Aliases for Qwen models
+    if (trimmed === "qwen3-coder" ||
+        trimmed === "qwen-coder" ||
+        trimmed === "qwen/qwen3-coder-480b") {
+        return "qwen/qwen3-coder";
+    }
+    if (trimmed === "qwen3-coder-plus") {
+        return "qwen/qwen3-coder-plus";
+    }
+    if (trimmed === "qwen3-coder-flash") {
+        return "qwen/qwen3-coder-flash";
+    }
+    if (trimmed === "qwen3.8-flash") {
+        return "qwen/qwen3.8-flash";
+    }
+    if (trimmed === "qwen-2.5-72b" ||
+        trimmed === "qwen-2.5-72b-instruct" ||
+        trimmed === "qwen/qwen2.5-72b-instruct") {
+        return "qwen/qwen-2.5-72b-instruct";
+    }
+    if (trimmed === "qwen-plus") {
+        return "qwen/qwen-plus";
+    }
+    // If an explicit model name was supplied (e.g. any custom OpenRouter model slug),
+    // return it as-is so users are not restricted from using any valid OpenRouter model.
     return trimmed;
 }
 
@@ -39653,6 +39827,7 @@ function Toolbar({ modelId, modeId, onModelChange, onModeChange, }) {
     return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "toolbar", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_Dropdown__WEBPACK_IMPORTED_MODULE_3__.Dropdown, { label: "Model", value: modelId, title: "Model used for API requests", options: _shared_models__WEBPACK_IMPORTED_MODULE_1__.MODELS.map((m) => ({
                     value: m.apiModelId,
                     label: m.displayName,
+                    group: m.provider,
                 })), onChange: onModelChange }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(_Dropdown__WEBPACK_IMPORTED_MODULE_3__.Dropdown, { label: "Mode", value: modeId, title: "Agent mode", options: _shared_modes__WEBPACK_IMPORTED_MODULE_2__.MODES.map((m) => ({ value: m.id, label: m.label })), onChange: onModeChange })] }));
 }
 
@@ -39670,9 +39845,26 @@ __webpack_require__.r(__webpack_exports__);
 /**
  * A compact themed dropdown. Uses a native <select> for accessibility and
  * keyboard support, styled to blend into the header.
+ * Automatically organizes options into <optgroup> when options define a `group`.
  */
 function Dropdown({ label, value, options, onChange, disabled, title, }) {
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("label", { className: "dropdown", title: title, children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "dropdown-label", children: label }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("select", { className: "dropdown-select", value: value, disabled: disabled, onChange: (e) => onChange(e.target.value), children: options.map((o) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("option", { value: o.value, children: o.label }, o.value))) })] }));
+    const hasGroups = options.some((o) => !!o.group);
+    let selectChildren;
+    if (hasGroups) {
+        const groups = new Map();
+        for (const opt of options) {
+            const g = opt.group || "Other";
+            if (!groups.has(g)) {
+                groups.set(g, []);
+            }
+            groups.get(g).push(opt);
+        }
+        selectChildren = Array.from(groups.entries()).map(([grp, opts]) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("optgroup", { label: grp, children: opts.map((o) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("option", { value: o.value, children: o.label }, o.value))) }, grp)));
+    }
+    else {
+        selectChildren = options.map((o) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("option", { value: o.value, children: o.label }, o.value)));
+    }
+    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("label", { className: "dropdown", title: title, children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "dropdown-label", children: label }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("select", { className: "dropdown-select", value: value, disabled: disabled, onChange: (e) => onChange(e.target.value), children: selectChildren })] }));
 }
 
 

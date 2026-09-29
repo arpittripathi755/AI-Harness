@@ -63,6 +63,9 @@ export interface ToolContext {
 
   /** Modal confirmation for destructive or out-of-scope actions. */
   confirm(message: string, detail?: string): Promise<boolean>;
+
+  /** Optional workspace switcher callback to update the active workspace after cloning. */
+  switchWorkspace?: (newPath: string) => Promise<void> | void;
 }
 
 /**

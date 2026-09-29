@@ -29,9 +29,16 @@ import type {
 import {
   CANONICAL_MODEL,
   PROVIDER_PRIORITY,
+  getModelMaxTokens,
   type ProviderConfig,
 } from "./providers";
 import { fetchWithRetry } from "./http";
+import { type CallPhase, getPhaseMaxTokens } from "./tokenBudget";
+import {
+  getAffordableTokens,
+  invalidateKeyInfoCache,
+  MIN_RETRY_AFFORDABLE_TOKENS,
+} from "./affordability";
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -40,7 +47,11 @@ import { fetchWithRetry } from "./http";
 export interface StreamOptions {
   signal?: AbortSignal;
   tools?: ToolDefinition[];
+  maxTokens?: number;
+  phase?: CallPhase;
   onRetry?: (waitMs: number, attempt: number) => void;
+  /** Optional model override for this stream request. */
+  model?: string;
 }
 
 export interface ProviderStatus {
@@ -158,6 +169,20 @@ async function probeProvider(
     /* ignore read failures */
   }
 
+  if (response.status === 401 || response.status === 403) {
+    return `${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.`;
+  }
+  if (
+    response.status === 404 ||
+    detail.toLowerCase().includes("model not found") ||
+    detail.toLowerCase().includes("no endpoints found")
+  ) {
+    return `Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model.`;
+  }
+  if (response.status === 429) {
+    return `${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your credits.`;
+  }
+
   return `${provider.name} request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`;
 }
 
@@ -246,19 +271,40 @@ async function* streamFromProvider(
   provider: ProviderConfig,
   apiKey: string,
   messages: ChatMessage[],
-  { signal, tools, onRetry }: StreamOptions = {},
+  { signal, tools, maxTokens, phase, onRetry, model }: StreamOptions = {},
 ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
+  const targetModel = model ?? provider.model;
+  let effectiveMaxTokens = phase
+    ? getPhaseMaxTokens(phase, targetModel, maxTokens)
+    : getModelMaxTokens(targetModel, maxTokens);
+
+  if (provider.baseUrl.includes("openrouter.ai") && apiKey) {
+    try {
+      const affordable = await getAffordableTokens(targetModel, apiKey, provider.baseUrl);
+      if (Number.isFinite(affordable) && affordable > 0) {
+        effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+      }
+    } catch {
+      // Fail open on affordability errors
+    }
+  }
+
   const body: ChatCompletionRequest = {
-    model: provider.model,
+    model: targetModel,
     messages,
     stream: true,
+    max_tokens: effectiveMaxTokens,
   };
+  // TODO: Prompt Caching Breakpoint
+  // When OpenRouter / Anthropic structured cache_control markers (e.g. { type: "ephemeral" })
+  // are supported in request message content blocks, attach cache_control to the stable prefix
+  // message here to trigger provider-side KV prompt caching.
   if (tools && tools.length > 0) {
     body.tools = tools;
     body.tool_choice = "auto";
   }
 
-  const response = await fetchWithRetry(
+  let response = await fetchWithRetry(
     `${provider.baseUrl}chat/completions`,
     {
       method: "POST",
@@ -270,12 +316,85 @@ async function* streamFromProvider(
 
   if (!response.ok || !response.body) {
     const detail = await safeReadText(response);
-    // Ensure the API key never appears in error messages
     const safeDetail = detail.replace(apiKey, "[REDACTED]");
-    throw new Error(
-      `${provider.name} request failed (${response.status} ${response.statusText})` +
-        (safeDetail ? `: ${safeDetail}` : ""),
-    );
+    let errMessage = "";
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed.error?.message) {
+        errMessage = parsed.error.message.replace(apiKey, "[REDACTED]");
+      }
+    } catch {
+      errMessage = safeDetail;
+    }
+
+    if (response.status === 402) {
+      invalidateKeyInfoCache();
+      const affordMatch = (errMessage || safeDetail).match(/can only afford (\d+)/i);
+      if (affordMatch) {
+        const affordable = parseInt(affordMatch[1], 10);
+        if (affordable < MIN_RETRY_AFFORDABLE_TOKENS) {
+          throw new Error(
+            `OpenRouter balance is too low: can only afford ${affordable} tokens (minimum required is ${MIN_RETRY_AFFORDABLE_TOKENS}). ` +
+              `Please add credits at https://openrouter.ai/settings/credits.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+          );
+        }
+        // Retry exactly ONCE with safely clamped max_tokens
+        const retryTokens = Math.floor(affordable * 0.9);
+        const retryBody: ChatCompletionRequest = {
+          ...body,
+          max_tokens: retryTokens,
+        };
+        const retryResponse = await fetchWithRetry(
+          `${provider.baseUrl}chat/completions`,
+          {
+            method: "POST",
+            headers: buildHeaders(provider, apiKey),
+            body: JSON.stringify(retryBody),
+          },
+          { signal, onRetry, retries: 0 },
+        );
+        if (retryResponse.ok && retryResponse.body) {
+          response = retryResponse;
+        } else {
+          const retryDetail = await safeReadText(retryResponse);
+          const safeRetryDetail = retryDetail.replace(apiKey, "[REDACTED]");
+          throw new Error(
+            `${provider.name} request failed (402 Payment Required) after retry: ${safeRetryDetail || retryResponse.statusText}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `${provider.name} credit check failed (402 Payment Required). Please add credits at https://openrouter.ai/settings/credits.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+        );
+      }
+    }
+
+    if (!response.ok || !response.body) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(
+          `${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+        );
+      }
+      if (
+        response.status === 404 ||
+        errMessage.toLowerCase().includes("model not found") ||
+        errMessage.toLowerCase().includes("no endpoints found")
+      ) {
+        throw new Error(
+          `Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model (run /models).${errMessage ? ` Detail: ${errMessage}` : ""}`,
+        );
+      }
+      if (response.status === 429) {
+        throw new Error(
+          `${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your OpenRouter credits.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+        );
+      }
+
+      throw new Error(
+        `${provider.name} request failed (${response.status} ${response.statusText})` +
+          (errMessage ? `: ${errMessage}` : ""),
+      );
+    }
   }
 
   const reader = response.body.getReader();
@@ -431,9 +550,15 @@ export class ProviderClient {
         primaryErr?.message?.includes("401") ||
         primaryErr?.message?.includes("403") ||
         primaryErr?.message?.includes("Unauthorized") ||
-        primaryErr?.message?.includes("Forbidden");
+        primaryErr?.message?.includes("Forbidden") ||
+        primaryErr?.message?.includes("authentication failed");
 
-      if (isAuthError || !this.fallbackProvider || this.didFallback) {
+      const isModelNotFoundError =
+        primaryErr?.message?.includes("404") ||
+        primaryErr?.message?.includes("Model not found") ||
+        primaryErr?.message?.includes("No endpoints found");
+
+      if (isAuthError || isModelNotFoundError || !this.fallbackProvider || this.didFallback) {
         throw primaryErr;
       }
 

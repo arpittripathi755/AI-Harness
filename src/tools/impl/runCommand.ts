@@ -2,6 +2,8 @@ import { exec } from "child_process";
 import type { Tool, ToolContext, ToolResult } from "../types";
 import { ToolDeniedError, ToolError } from "../types";
 import { requireString } from "../fsutil";
+import { truncateHeadTail } from "../../llm/contextBudget";
+import { ProcessManager } from "../../cli/processManager";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_CHARS = 20_000;
@@ -58,6 +60,8 @@ export const runCommandTool: Tool = {
 
     const cwd = ctx.workspaceRoot.fsPath;
     console.log(`[run_command] command="${command}" cwd="${cwd}"`);
+    let cancelled = false;
+    let unregister: (() => void) | undefined;
     const { stdout, stderr, code, timedOut } = await new Promise<{
       stdout: string;
       stderr: string;
@@ -68,8 +72,9 @@ export const runCommandTool: Tool = {
         command,
         { cwd, timeout, maxBuffer: 10 * 1024 * 1024, windowsHide: true },
         (err, out, errOut) => {
+          unregister?.();
           const execErr = err as (Error & { code?: number; signal?: string }) | null;
-          const timedOut = !!execErr && execErr.signal === "SIGTERM";
+          const timedOut = !!execErr && execErr.signal === "SIGTERM" && !cancelled;
           const code =
             execErr && typeof execErr.code === "number"
               ? execErr.code
@@ -79,29 +84,56 @@ export const runCommandTool: Tool = {
           resolve({ stdout: out, stderr: errOut, code, timedOut });
         },
       );
+
+      unregister = ProcessManager.getInstance().register(child, command);
+
+      if (ctx.signal) {
+        if (ctx.signal.aborted) {
+          cancelled = true;
+          ProcessManager.getInstance().killProcess(child, "SIGKILL");
+          resolve({ stdout: "", stderr: "Command was cancelled", code: 1, timedOut: false });
+          return;
+        }
+        const onAbort = () => {
+          cancelled = true;
+          ProcessManager.getInstance().killProcess(child, "SIGKILL");
+        };
+        ctx.signal.addEventListener("abort", onAbort, { once: true });
+        child.once("close", () => {
+          ctx.signal?.removeEventListener("abort", onAbort);
+          unregister?.();
+        });
+      } else {
+        child.once("close", () => unregister?.());
+      }
+
       // Ensure the process is killed if the timeout elapses.
-      child.on("error", () =>
-        resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false }),
-      );
+      child.on("error", () => {
+        unregister?.();
+        resolve({ stdout: "", stderr: "failed to start", code: 1, timedOut: false });
+      });
     });
 
-    const clip = (s: string) =>
-      s.length > MAX_OUTPUT_CHARS
-        ? s.slice(0, MAX_OUTPUT_CHARS) + "\n… output truncated."
-        : s;
-
-    const sections = [`$ ${command}`, `exit code: ${code}${timedOut ? " (timed out)" : ""}`];
+    const isCancelled = Boolean(cancelled || ctx.signal?.aborted);
+    const sections = [
+      `$ ${command}`,
+      isCancelled
+        ? "exit code: cancelled"
+        : `exit code: ${code}${timedOut ? " (timed out)" : ""}`,
+    ];
     if (stdout.trim()) {
-      sections.push(`stdout:\n${clip(stdout)}`);
+      sections.push(`stdout:\n${truncateHeadTail(stdout, MAX_OUTPUT_CHARS)}`);
     }
     if (stderr.trim()) {
-      sections.push(`stderr:\n${clip(stderr)}`);
+      sections.push(`stderr:\n${truncateHeadTail(stderr, MAX_OUTPUT_CHARS)}`);
     }
 
     return {
       content: sections.join("\n\n"),
-      isError: code !== 0,
-      summary: `\`${command}\` exited ${code}${timedOut ? " (timeout)" : ""}`,
+      isError: code !== 0 || isCancelled,
+      summary: isCancelled
+        ? `\`${command}\` cancelled`
+        : `\`${command}\` exited ${code}${timedOut ? " (timeout)" : ""}`,
     };
   },
 };

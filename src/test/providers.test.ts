@@ -18,6 +18,7 @@ import {
   buildProviderClient,
   type ProviderDetectionResult,
 } from "../llm/ProviderClient";
+import { LLMClient } from "../llm/LLMClient";
 
 // ---------------------------------------------------------------------------
 // Minimal global fetch mock (replaced per-test via globalThis.fetch)
@@ -444,7 +445,11 @@ suite("Provider: runtime fallback", () => {
 
   test("does not fall back on 401 auth errors (bad key should fail fast)", async () => {
     let callCount = 0;
-    (globalThis as any).fetch = async () => {
+    (globalThis as any).fetch = async (input: any) => {
+      const url = typeof input === "string" ? input : input?.url || input?.toString() || "";
+      if (url.includes("/models") || url.includes("/key")) {
+        return makeMockResponse(200, { data: [] });
+      }
       callCount++;
       return makeMockResponse(401, { error: "Unauthorized" });
     };
@@ -554,5 +559,266 @@ suite("Provider: runtime configuration", () => {
     client.setModel("custom/preserved-model");
     client.setBaseUrl("https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1");
     assert.strictEqual(client.model, "custom/preserved-model");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Token budget request payload verification
+// ---------------------------------------------------------------------------
+
+suite("Provider: token budget request payload", () => {
+  teardown(() => restoreFetch());
+
+  test("OpenRouter request body contains max_tokens = 16384 and stream = true by default", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const client = new ProviderClient(OPENROUTER_PROVIDER, "test-key");
+    const gen = client.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.stream, true);
+    assert.strictEqual(capturedBody.max_tokens, 16384);
+  });
+
+  test("OpenRouter request body respects custom maxTokens in StreamOptions", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const client = new ProviderClient(OPENROUTER_PROVIDER, "test-key");
+    const gen = client.stream([{ role: "user", content: "hi" }], { maxTokens: 8192 });
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.stream, true);
+    assert.strictEqual(capturedBody.max_tokens, 8192);
+  });
+
+  test("LLMClient direct chat/completions sends max_tokens = 16384 and stream = true", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const llm = new LLMClient({
+      baseUrl: "https://openrouter.ai/api/v1/",
+      model: "deepseek/deepseek-v4.1-flash",
+      apiKey: "test-key",
+    });
+    const gen = llm.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.stream, true);
+    assert.strictEqual(capturedBody.max_tokens, 16384);
+  });
+
+  test("LLMClient.fromProviderClient passes maxTokens to delegated stream", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const providerClient = new ProviderClient(OPENROUTER_PROVIDER, "test-key");
+    const llm = LLMClient.fromProviderClient(providerClient, "test-key", 4096);
+    const gen = llm.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.stream, true);
+    assert.strictEqual(capturedBody.max_tokens, 4096);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Exact model request payload & runtime model switching
+// ---------------------------------------------------------------------------
+
+suite("Provider: exact model request and runtime switching", () => {
+  teardown(() => restoreFetch());
+
+  test("OpenRouter request body contains exact DeepSeek model ID when DeepSeek is active", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const client = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "deepseek/deepseek-v4.1-flash" },
+      "test-key",
+    );
+    const gen = client.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.model, "deepseek/deepseek-v4.1-flash");
+  });
+
+  test("OpenRouter request body contains exact Qwen model ID when Qwen is active", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const client = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "qwen/qwen3-coder" },
+      "test-key",
+    );
+    const gen = client.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.model, "qwen/qwen3-coder");
+    assert.notStrictEqual(capturedBody.model, "deepseek/deepseek-v4.1-flash");
+  });
+
+  test("OpenRouter request body contains exact unknown/custom model ID without DeepSeek fallback", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const client = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "provider/custom-model-id" },
+      "test-key",
+    );
+    const gen = client.stream([{ role: "user", content: "hi" }]);
+    await gen.next();
+
+    assert.ok(capturedBody, "Request body should have been captured");
+    assert.strictEqual(capturedBody.model, "provider/custom-model-id");
+  });
+
+  test("Runtime model switch dynamically updates LLMClient request model", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const providerClient = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "deepseek/deepseek-v4.1-flash" },
+      "test-key",
+    );
+    const llm = LLMClient.fromProviderClient(providerClient, "test-key");
+
+    // First request: DeepSeek
+    const gen1 = llm.stream([{ role: "user", content: "first" }]);
+    await gen1.next();
+    assert.strictEqual(capturedBody.model, "deepseek/deepseek-v4.1-flash");
+
+    // Runtime switch to Qwen: /model qwen/qwen3-coder
+    llm.setModel("qwen/qwen3-coder");
+    assert.strictEqual(llm.getModel(), "qwen/qwen3-coder");
+    assert.strictEqual(providerClient.model, "qwen/qwen3-coder");
+
+    // Second request: Qwen
+    const gen2 = llm.stream([{ role: "user", content: "second" }]);
+    await gen2.next();
+    assert.strictEqual(capturedBody.model, "qwen/qwen3-coder");
+
+    // Runtime switch back to DeepSeek: /model deepseek/deepseek-chat
+    llm.setModel("deepseek/deepseek-chat");
+    assert.strictEqual(llm.getModel(), "deepseek/deepseek-chat");
+    assert.strictEqual(providerClient.model, "deepseek/deepseek-chat");
+
+    // Third request: DeepSeek V3
+    const gen3 = llm.stream([{ role: "user", content: "third" }]);
+    await gen3.next();
+    assert.strictEqual(capturedBody.model, "deepseek/deepseek-chat");
+  });
+
+  test("Model selection is independent of the API key", async () => {
+    let capturedBody: any = null;
+    (globalThis as any).fetch = async (_input: string | URL, init?: RequestInit) => {
+      if (init?.body) {
+        capturedBody = JSON.parse(init.body as string);
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: sseStream(["[DONE]"]),
+      } as Response;
+    };
+
+    const apiKey = "sk-or-v1-same-fixed-key";
+
+    // Same API key with DeepSeek
+    const clientDeepSeek = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "deepseek/deepseek-v4.1-flash" },
+      apiKey,
+    );
+    const genA = clientDeepSeek.stream([{ role: "user", content: "ping" }]);
+    await genA.next();
+    assert.strictEqual(capturedBody.model, "deepseek/deepseek-v4.1-flash");
+
+    // Same API key with Qwen
+    const clientQwen = new ProviderClient(
+      { ...OPENROUTER_PROVIDER, model: "qwen/qwen3-coder" },
+      apiKey,
+    );
+    const genB = clientQwen.stream([{ role: "user", content: "ping" }]);
+    await genB.next();
+    assert.strictEqual(capturedBody.model, "qwen/qwen3-coder");
   });
 });

@@ -1,6 +1,13 @@
 import * as vscode from "vscode";
-import { resolveModelId } from "./shared/models";
+import {
+  DEFAULT_MAX_TOKENS,
+  getMaxTokens,
+  resolveMaxTokens,
+  resolveModelId,
+} from "./shared/models";
 import { resolveModeId, type ModeId } from "./shared/modes";
+
+export { DEFAULT_MAX_TOKENS, getMaxTokens, resolveMaxTokens };
 
 /** SecretStorage key under which the Lightning API key is stored. */
 const API_KEY_SECRET = "claudeAgent.apiKey";
@@ -10,8 +17,9 @@ const KEY_MODEL = "claudeAgent.model";
 const KEY_MODE = "claudeAgent.mode";
 const KEY_BASE_URL = "claudeAgent.baseUrl";
 const KEY_TERMINAL_AUTO = "claudeAgent.terminalAutoRun";
+const KEY_MAX_TOKENS = "claudeAgent.maxTokens";
 
-export const DEFAULT_BASE_URL = "https://lightning.ai/api/v1/";
+export const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/";
 
 /**
  * Thrown when no API key has been configured yet. The SidebarProvider catches
@@ -19,7 +27,7 @@ export const DEFAULT_BASE_URL = "https://lightning.ai/api/v1/";
  */
 export class MissingApiKeyError extends Error {
   constructor() {
-    super("No API key configured for Axiom.");
+    super("No OpenRouter API key configured for Axiom.");
     this.name = "MissingApiKeyError";
   }
 }
@@ -29,6 +37,7 @@ export interface ResolvedConfig {
   baseUrl: string;
   model: string;
   apiKey: string;
+  maxTokens: number;
 }
 
 /** Normalize a base URL to exactly one trailing slash. */
@@ -40,6 +49,10 @@ function normalizeBaseUrl(raw: string): string {
 // ---- persisted settings (globalState) ----
 
 export function getModelId(context: vscode.ExtensionContext): string {
+  const envModel = process.env.MODEL?.trim() || process.env.AI_MODEL?.trim();
+  if (envModel) {
+    return resolveModelId(envModel);
+  }
   return resolveModelId(context.globalState.get<string>(KEY_MODEL));
 }
 
@@ -64,12 +77,18 @@ export async function setModeId(
 export function getBaseUrl(context: vscode.ExtensionContext, apiKey?: string): string {
   const envUrl =
     process.env.AI_BASE_URL?.trim() ||
+    process.env.OPENROUTER_BASE_URL?.trim() ||
+    process.env.BASE_URL?.trim() ||
     process.env.DEEPSEEK_BASE_URL?.trim() ||
     process.env.OPENAI_BASE_URL?.trim();
   if (envUrl) {
     return normalizeBaseUrl(envUrl);
   }
-  const key = apiKey || process.env.AI_API_KEY?.trim() || "";
+  const key =
+    apiKey ||
+    process.env.OPENROUTER_API_KEY?.trim() ||
+    process.env.AI_API_KEY?.trim() ||
+    "";
   if (key.startsWith("nvapi-")) {
     return "https://integrate.api.nvidia.com/v1/";
   }
@@ -97,12 +116,30 @@ export async function setTerminalAutoRun(
   await context.globalState.update(KEY_TERMINAL_AUTO, value);
 }
 
+/** Get the configured token output budget (persisted or environment variable fallback). */
+export function getMaxTokensConfig(context?: vscode.ExtensionContext): number {
+  const persisted = context?.globalState?.get<number>(KEY_MAX_TOKENS);
+  return getMaxTokens(persisted);
+}
+
+/** Store a user-defined max token budget in globalState. */
+export async function setMaxTokensConfig(
+  context: vscode.ExtensionContext,
+  value: number,
+): Promise<void> {
+  await context.globalState.update(KEY_MAX_TOKENS, resolveMaxTokens(value));
+}
+
 // ---- API key (Environment or SecretStorage) ----
 
 export async function getApiKey(
   context: vscode.ExtensionContext,
 ): Promise<string | undefined> {
-  const envKey = process.env.AI_API_KEY?.trim();
+  const envKey =
+    process.env.OPENROUTER_API_KEY?.trim() ||
+    process.env.AI_API_KEY?.trim() ||
+    process.env.DEEPSEEK_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim();
   if (envKey) {
     return envKey;
   }
@@ -112,11 +149,8 @@ export async function getApiKey(
 export async function hasApiKey(
   context: vscode.ExtensionContext,
 ): Promise<boolean> {
-  const envKey = process.env.AI_API_KEY?.trim();
-  if (envKey) {
-    return true;
-  }
-  return !!(await context.secrets.get(API_KEY_SECRET));
+  const key = await getApiKey(context);
+  return !!key;
 }
 
 /** Store (or clear) the API key in SecretStorage. */
@@ -147,6 +181,7 @@ export async function resolveConfig(
     baseUrl: getBaseUrl(context, apiKey),
     model: getModelId(context),
     apiKey,
+    maxTokens: getMaxTokensConfig(context),
   };
 }
 
@@ -158,8 +193,8 @@ export async function promptAndStoreApiKey(
   context: vscode.ExtensionContext,
 ): Promise<boolean> {
   const value = await vscode.window.showInputBox({
-    title: "Axiom — Lightning API Key",
-    prompt: "Paste your Lightning API key. It is stored securely in VS Code SecretStorage.",
+    title: "Axiom — OpenRouter API Key",
+    prompt: "Paste your OpenRouter API key (sk-or-v1-...). Stored securely in VS Code SecretStorage.",
     password: true,
     ignoreFocusOut: true,
   });

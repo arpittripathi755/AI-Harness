@@ -1,14 +1,51 @@
 #!/bin/bash
 set -e
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Save explicit environment variables so .env acts as a fallback rather than clobbering shell exports
+_SAVED_AI_API_KEY="$AI_API_KEY"
+_SAVED_OPENROUTER_API_KEY="$OPENROUTER_API_KEY"
+_SAVED_MODEL="$MODEL"
+_SAVED_AI_MODEL="$AI_MODEL"
+_SAVED_MAX_TOKENS="$MAX_TOKENS"
+_SAVED_AI_MAX_TOKENS="$AI_MAX_TOKENS"
+_SAVED_BASE_URL="$BASE_URL"
+_SAVED_AI_BASE_URL="$AI_BASE_URL"
+
+# Load default environment variables from .env file if present
+if [ -f "$REPO_DIR/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$REPO_DIR/.env"
+  set +a
+elif [ -f "./.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "./.env"
+  set +a
+fi
+
+# Restore explicit shell environment variables
+[ -n "$_SAVED_AI_API_KEY" ] && export AI_API_KEY="$_SAVED_AI_API_KEY"
+[ -n "$_SAVED_OPENROUTER_API_KEY" ] && export OPENROUTER_API_KEY="$_SAVED_OPENROUTER_API_KEY"
+[ -n "$_SAVED_MODEL" ] && export MODEL="$_SAVED_MODEL"
+[ -n "$_SAVED_AI_MODEL" ] && export AI_MODEL="$_SAVED_AI_MODEL"
+[ -n "$_SAVED_MAX_TOKENS" ] && export MAX_TOKENS="$_SAVED_MAX_TOKENS"
+[ -n "$_SAVED_AI_MAX_TOKENS" ] && export AI_MAX_TOKENS="$_SAVED_AI_MAX_TOKENS"
+[ -n "$_SAVED_BASE_URL" ] && export BASE_URL="$_SAVED_BASE_URL"
+[ -n "$_SAVED_AI_BASE_URL" ] && export AI_BASE_URL="$_SAVED_AI_BASE_URL"
+
 # Verify required API key
-if [ -z "$AI_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
-  echo "ERROR: AI_API_KEY environment variable is not set."
-  echo "Please run: export AI_API_KEY=\"<your-api-key>\""
+if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+  echo "ERROR: OPENROUTER_API_KEY or AI_API_KEY environment variable is not set."
+  echo "Please run: export OPENROUTER_API_KEY=\"<your-api-key>\" (or export AI_API_KEY=\"<your-api-key>\")"
   exit 1
 fi
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "$AI_API_KEY" ] && [ -n "$OPENROUTER_API_KEY" ]; then
+  export AI_API_KEY="$OPENROUTER_API_KEY"
+fi
 
 # Always ensure build artifacts are up to date
 echo "Compiling Axiom TUI..."
@@ -24,11 +61,15 @@ EOF
 echo "cd \"$REPO_DIR\"" >> "$RUNNER"
 echo "export PATH=\"$PATH\"" >> "$RUNNER"
 echo "export AI_API_KEY=\"$AI_API_KEY\"" >> "$RUNNER"
+[ -n "$OPENROUTER_API_KEY" ] && echo "export OPENROUTER_API_KEY=\"$OPENROUTER_API_KEY\"" >> "$RUNNER"
 
 [ -n "$AI_BASE_URL" ] && echo "export AI_BASE_URL=\"$AI_BASE_URL\"" >> "$RUNNER"
+[ -n "$OPENROUTER_BASE_URL" ] && echo "export OPENROUTER_BASE_URL=\"$OPENROUTER_BASE_URL\"" >> "$RUNNER"
+[ -n "$BASE_URL" ] && echo "export BASE_URL=\"$BASE_URL\"" >> "$RUNNER"
 [ -n "$DEEPSEEK_BASE_URL" ] && echo "export DEEPSEEK_BASE_URL=\"$DEEPSEEK_BASE_URL\"" >> "$RUNNER"
 [ -n "$OPENAI_BASE_URL" ] && echo "export OPENAI_BASE_URL=\"$OPENAI_BASE_URL\"" >> "$RUNNER"
 [ -n "$AI_MODEL" ] && echo "export AI_MODEL=\"$AI_MODEL\"" >> "$RUNNER"
+[ -n "$MODEL" ] && echo "export MODEL=\"$MODEL\"" >> "$RUNNER"
 [ -n "$DEEPSEEK_API_KEY" ] && echo "export DEEPSEEK_API_KEY=\"$DEEPSEEK_API_KEY\"" >> "$RUNNER"
 [ -n "$OPENAI_API_KEY" ] && echo "export OPENAI_API_KEY=\"$OPENAI_API_KEY\"" >> "$RUNNER"
 [ -n "$REPO" ] && echo "export REPO=\"$REPO\"" >> "$RUNNER"
@@ -37,6 +78,8 @@ echo "export AXIOM_AUTONOMOUS=\"${AXIOM_AUTONOMOUS:-1}\"" >> "$RUNNER"
 [ -n "$AXIOM_HEADLESS" ] && echo "export AXIOM_HEADLESS=\"$AXIOM_HEADLESS\"" >> "$RUNNER"
 echo "export AXIOM_SKIP_PR=\"${AXIOM_SKIP_PR:-1}\"" >> "$RUNNER"
 [ -n "$AXIOM_MOCK_PR" ] && echo "export AXIOM_MOCK_PR=\"$AXIOM_MOCK_PR\"" >> "$RUNNER"
+[ -n "$MAX_TOKENS" ] && echo "export MAX_TOKENS=\"$MAX_TOKENS\"" >> "$RUNNER"
+[ -n "$AI_MAX_TOKENS" ] && echo "export AI_MAX_TOKENS=\"$AI_MAX_TOKENS\"" >> "$RUNNER"
 
 HAS_ARGS=0
 for arg in "$@"; do
