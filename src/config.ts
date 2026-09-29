@@ -132,14 +132,23 @@ export async function setMaxTokensConfig(
 
 // ---- API key (Environment or SecretStorage) ----
 
+function cleanEnvKey(val?: string): string | undefined {
+  if (!val) {
+    return undefined;
+  }
+  const cleaned = val.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 export async function getApiKey(
   context: vscode.ExtensionContext,
 ): Promise<string | undefined> {
-  const envKey =
-    process.env.OPENROUTER_API_KEY?.trim() ||
-    process.env.AI_API_KEY?.trim() ||
-    process.env.DEEPSEEK_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim();
+  const envKey = cleanEnvKey(
+    process.env.OPENROUTER_API_KEY ||
+    process.env.AI_API_KEY ||
+    process.env.DEEPSEEK_API_KEY ||
+    process.env.OPENAI_API_KEY
+  );
   if (envKey) {
     return envKey;
   }

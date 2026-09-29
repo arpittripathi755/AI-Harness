@@ -12,6 +12,7 @@ _SAVED_MAX_TOKENS="$MAX_TOKENS"
 _SAVED_AI_MAX_TOKENS="$AI_MAX_TOKENS"
 _SAVED_BASE_URL="$BASE_URL"
 _SAVED_AI_BASE_URL="$AI_BASE_URL"
+_SAVED_INPUT_TOKEN_BUDGET="$INPUT_TOKEN_BUDGET"
 
 # Load default environment variables from .env file if present
 if [ -f "$REPO_DIR/.env" ]; then
@@ -35,6 +36,7 @@ fi
 [ -n "$_SAVED_AI_MAX_TOKENS" ] && export AI_MAX_TOKENS="$_SAVED_AI_MAX_TOKENS"
 [ -n "$_SAVED_BASE_URL" ] && export BASE_URL="$_SAVED_BASE_URL"
 [ -n "$_SAVED_AI_BASE_URL" ] && export AI_BASE_URL="$_SAVED_AI_BASE_URL"
+[ -n "$_SAVED_INPUT_TOKEN_BUDGET" ] && export INPUT_TOKEN_BUDGET="$_SAVED_INPUT_TOKEN_BUDGET"
 
 # Verify required API key
 if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
@@ -42,6 +44,15 @@ if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_K
   echo "Please run: export OPENROUTER_API_KEY=\"<your-api-key>\" (or export AI_API_KEY=\"<your-api-key>\")"
   exit 1
 fi
+
+clean_val() {
+  local val="$1"
+  val="${val#[\"\'“”]}"
+  val="${val%[\"\'“”]}"
+  echo "$val"
+}
+[ -n "$AI_API_KEY" ] && AI_API_KEY="$(clean_val "$AI_API_KEY")"
+[ -n "$OPENROUTER_API_KEY" ] && OPENROUTER_API_KEY="$(clean_val "$OPENROUTER_API_KEY")"
 
 if [ -z "$AI_API_KEY" ] && [ -n "$OPENROUTER_API_KEY" ]; then
   export AI_API_KEY="$OPENROUTER_API_KEY"
@@ -76,10 +87,12 @@ echo "export AI_API_KEY=\"$AI_API_KEY\"" >> "$RUNNER"
 [ -n "$AXIOM_FRESH_SESSION" ] && echo "export AXIOM_FRESH_SESSION=\"$AXIOM_FRESH_SESSION\"" >> "$RUNNER"
 echo "export AXIOM_AUTONOMOUS=\"${AXIOM_AUTONOMOUS:-1}\"" >> "$RUNNER"
 [ -n "$AXIOM_HEADLESS" ] && echo "export AXIOM_HEADLESS=\"$AXIOM_HEADLESS\"" >> "$RUNNER"
-echo "export AXIOM_SKIP_PR=\"${AXIOM_SKIP_PR:-1}\"" >> "$RUNNER"
+echo "export AXIOM_SKIP_PR=\"${AXIOM_SKIP_PR:-0}\"" >> "$RUNNER"
 [ -n "$AXIOM_MOCK_PR" ] && echo "export AXIOM_MOCK_PR=\"$AXIOM_MOCK_PR\"" >> "$RUNNER"
 [ -n "$MAX_TOKENS" ] && echo "export MAX_TOKENS=\"$MAX_TOKENS\"" >> "$RUNNER"
 [ -n "$AI_MAX_TOKENS" ] && echo "export AI_MAX_TOKENS=\"$AI_MAX_TOKENS\"" >> "$RUNNER"
+[ -n "$INPUT_TOKEN_BUDGET" ] && echo "export INPUT_TOKEN_BUDGET=\"$INPUT_TOKEN_BUDGET\"" >> "$RUNNER"
+[ -n "$DAXIOM_MAX_TOOL_CALLS" ] && echo "export DAXIOM_MAX_TOOL_CALLS=\"$DAXIOM_MAX_TOOL_CALLS\"" >> "$RUNNER"
 
 HAS_ARGS=0
 for arg in "$@"; do

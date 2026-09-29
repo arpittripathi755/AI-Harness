@@ -515,7 +515,8 @@ export class ChatSession {
         const currentModel = phaseModelOverride ?? this.getActiveModel();
 
         const inputBudget = getInputTokenBudget();
-        const outgoingMessages = compactHistory(this.messages, inputBudget);
+        this.messages = compactHistory(this.messages, inputBudget);
+        const outgoingMessages = this.messages;
 
         const gen = this.client.stream(outgoingMessages, {
           signal: controller.signal,

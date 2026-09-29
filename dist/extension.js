@@ -821,7 +821,8 @@ class ChatSession {
                 const phaseModelOverride = (0, tokenBudget_1.getPhaseModelOverride)(callPhase);
                 const currentModel = phaseModelOverride ?? this.getActiveModel();
                 const inputBudget = (0, contextBudget_1.getInputTokenBudget)();
-                const outgoingMessages = (0, contextBudget_1.compactHistory)(this.messages, inputBudget);
+                this.messages = (0, contextBudget_1.compactHistory)(this.messages, inputBudget);
+                const outgoingMessages = this.messages;
                 const gen = this.client.stream(outgoingMessages, {
                     signal: controller.signal,
                     tools: toolDefs,
@@ -2088,9 +2089,9 @@ exports.getPhaseMaxTokens = getPhaseMaxTokens;
 exports.getPhaseModelOverride = getPhaseModelOverride;
 const models_1 = __webpack_require__(5);
 exports.PHASE_BUDGET = {
-    tool_decision: 1024,
+    tool_decision: 2048, // raised: model needs room to reason + emit tool calls
     edit: 4096,
-    explain: 1536,
+    explain: 2048, // raised: summary turns were being cut off
     plan: 2048,
 };
 /**
@@ -3014,7 +3015,11 @@ class TaskMemory {
         }
         // 3. Files Read
         if (this.filesRead.size > 0) {
-            sections.push(`• Files Inspected / Read:\n  - ${Array.from(this.filesRead).join("\n  - ")}`);
+            const readList = Array.from(this.filesRead);
+            const displayList = readList.length > 15
+                ? [...readList.slice(-15), `... (+${readList.length - 15} earlier files)`]
+                : readList;
+            sections.push(`• Files Inspected / Read:\n  - ${displayList.join("\n  - ")}`);
         }
         // 4. Files Modified
         if (this.filesModified.size > 0) {
@@ -3026,19 +3031,22 @@ class TaskMemory {
         }
         // 5. Exploration & Findings
         if (this.keyFindings.length > 0) {
-            sections.push(`• Key Repository Findings:\n  - ${this.keyFindings.join("\n  - ")}`);
+            const findings = this.keyFindings.slice(-6);
+            sections.push(`• Key Repository Findings:\n  - ${findings.join("\n  - ")}`);
         }
         // 6. Command & Test Results
         if (this.commandResults.length > 0) {
-            sections.push(`• Command / Test Results:\n  - ${this.commandResults.join("\n  - ")}`);
+            const cmds = this.commandResults.slice(-5);
+            sections.push(`• Command / Test Results:\n  - ${cmds.join("\n  - ")}`);
         }
         // 7. Errors Encountered (if any)
         if (this.errorsEncountered.length > 0) {
-            sections.push(`• Errors / Issues Encountered (address these if still unresolved):\n  - ${this.errorsEncountered.join("\n  - ")}`);
+            const errors = this.errorsEncountered.slice(-5);
+            sections.push(`• Errors / Issues Encountered (address these if still unresolved):\n  - ${errors.join("\n  - ")}`);
         }
         // 8. Recent Actions Taken
         if (this.actionsTaken.length > 0) {
-            const recent = this.actionsTaken.slice(-6);
+            const recent = this.actionsTaken.slice(-5);
             sections.push(`• Recent Actions Taken in Current Task:\n  ${recent.join("\n  ")}`);
         }
         if (sections.length === 0) {
@@ -3724,11 +3732,18 @@ async function setMaxTokensConfig(context, value) {
     await context.globalState.update(KEY_MAX_TOKENS, (0, models_1.resolveMaxTokens)(value));
 }
 // ---- API key (Environment or SecretStorage) ----
+function cleanEnvKey(val) {
+    if (!val) {
+        return undefined;
+    }
+    const cleaned = val.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+    return cleaned.length > 0 ? cleaned : undefined;
+}
 async function getApiKey(context) {
-    const envKey = process.env.OPENROUTER_API_KEY?.trim() ||
-        process.env.AI_API_KEY?.trim() ||
-        process.env.DEEPSEEK_API_KEY?.trim() ||
-        process.env.OPENAI_API_KEY?.trim();
+    const envKey = cleanEnvKey(process.env.OPENROUTER_API_KEY ||
+        process.env.AI_API_KEY ||
+        process.env.DEEPSEEK_API_KEY ||
+        process.env.OPENAI_API_KEY);
     if (envKey) {
         return envKey;
     }
@@ -3993,7 +4008,7 @@ const vscode = __importStar(__webpack_require__(1));
 const fsutil_1 = __webpack_require__(23);
 const fsutil_2 = __webpack_require__(23);
 const workspaceSafety_1 = __webpack_require__(25);
-const MAX_ENTRIES = 500;
+const MAX_ENTRIES = parseInt(process.env.LIST_FILES_MAX_ENTRIES || "150", 10);
 exports.listFilesTool = {
     name: "list_files",
     description: "List files and directories inside the workspace as a tree. Use this to " +
@@ -4201,7 +4216,7 @@ function getSearchMaxResults() {
             return n;
         }
     }
-    return 200;
+    return 40;
 }
 function getSearchMaxFiles() {
     const val = process.env.SEARCH_MAX_FILES;
@@ -4487,6 +4502,22 @@ exports.readFileTool = {
             ? await ctx.changeManager.readEffective(relPath)
             : await (0, fsutil_1.readText)(uri);
         const allLines = text.split("\n");
+        const isExplicitRange = args.start_line !== undefined || args.end_line !== undefined;
+        const maxUnranged = parseInt(process.env.MAX_READ_FILE_LINES || "250", 10);
+        if (!isExplicitRange && allLines.length > maxUnranged) {
+            const headCount = 160;
+            const tailCount = 40;
+            const omitted = allLines.length - headCount - tailCount;
+            const headSlice = allLines.slice(0, headCount);
+            const tailSlice = allLines.slice(allLines.length - tailCount);
+            const numberedHead = (0, fsutil_1.numberLines)(headSlice.join("\n"), 1);
+            const numberedTail = (0, fsutil_1.numberLines)(tailSlice.join("\n"), allLines.length - tailCount + 1);
+            const content = `${relPath} (total ${allLines.length} lines; showing lines 1-${headCount} and ${allLines.length - tailCount + 1}-${allLines.length})\n${numberedHead}\n... [${omitted} lines omitted; use start_line and end_line to inspect specific sections] ...\n${numberedTail}`;
+            return {
+                content,
+                summary: `Read ${relPath} (sampled ${headCount + tailCount} of ${allLines.length} lines)`,
+            };
+        }
         const start = Math.max(1, (0, fsutil_1.optionalNumber)(args, "start_line", 1));
         const end = Math.min(allLines.length, (0, fsutil_1.optionalNumber)(args, "end_line", allLines.length));
         const slice = allLines.slice(start - 1, end).join("\n");
@@ -4684,7 +4715,7 @@ const readline = __importStar(__webpack_require__(31));
 const fsutil_1 = __webpack_require__(23);
 const types_1 = __webpack_require__(24);
 const workspaceSafety_1 = __webpack_require__(25);
-const MAX_MATCHES_PER_FILE = 10;
+const MAX_MATCHES_PER_FILE = 5;
 const CONCURRENCY_LIMIT = 8;
 const MAX_DEPTH = 8;
 function matchesGlob(filePath, glob) {
@@ -5777,7 +5808,7 @@ const fsutil_1 = __webpack_require__(23);
 const contextBudget_1 = __webpack_require__(15);
 const processManager_1 = __webpack_require__(40);
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_OUTPUT_CHARS = 20_000;
+const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_COMMAND_OUTPUT_CHARS || "6000", 10);
 exports.runCommandTool = {
     name: "run_command",
     mutates: true,

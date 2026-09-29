@@ -4,7 +4,7 @@ import { getIgnoredDirs } from "../fsutil";
 import { optionalNumber } from "../fsutil";
 import { checkBroadWorkspaceWarning } from "../workspaceSafety";
 
-const MAX_ENTRIES = 500;
+const MAX_ENTRIES = parseInt(process.env.LIST_FILES_MAX_ENTRIES || "150", 10);
 
 export const listFilesTool: Tool = {
   name: "list_files",

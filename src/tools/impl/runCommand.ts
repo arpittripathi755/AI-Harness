@@ -6,7 +6,7 @@ import { truncateHeadTail } from "../../llm/contextBudget";
 import { ProcessManager } from "../../cli/processManager";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_OUTPUT_CHARS = 20_000;
+const MAX_OUTPUT_CHARS = parseInt(process.env.MAX_COMMAND_OUTPUT_CHARS || "6000", 10);
 
 export const runCommandTool: Tool = {
   name: "run_command",

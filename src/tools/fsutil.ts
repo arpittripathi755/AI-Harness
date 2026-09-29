@@ -84,7 +84,7 @@ export function getSearchMaxResults(): number {
       return n;
     }
   }
-  return 200;
+  return 40;
 }
 
 export function getSearchMaxFiles(): number {

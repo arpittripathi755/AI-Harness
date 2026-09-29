@@ -281,8 +281,12 @@ export class TaskMemory {
 
     // 3. Files Read
     if (this.filesRead.size > 0) {
+      const readList = Array.from(this.filesRead);
+      const displayList = readList.length > 15
+        ? [...readList.slice(-15), `... (+${readList.length - 15} earlier files)`]
+        : readList;
       sections.push(
-        `• Files Inspected / Read:\n  - ${Array.from(this.filesRead).join("\n  - ")}`,
+        `• Files Inspected / Read:\n  - ${displayList.join("\n  - ")}`,
       );
     }
 
@@ -297,28 +301,31 @@ export class TaskMemory {
 
     // 5. Exploration & Findings
     if (this.keyFindings.length > 0) {
+      const findings = this.keyFindings.slice(-6);
       sections.push(
-        `• Key Repository Findings:\n  - ${this.keyFindings.join("\n  - ")}`,
+        `• Key Repository Findings:\n  - ${findings.join("\n  - ")}`,
       );
     }
 
     // 6. Command & Test Results
     if (this.commandResults.length > 0) {
+      const cmds = this.commandResults.slice(-5);
       sections.push(
-        `• Command / Test Results:\n  - ${this.commandResults.join("\n  - ")}`,
+        `• Command / Test Results:\n  - ${cmds.join("\n  - ")}`,
       );
     }
 
     // 7. Errors Encountered (if any)
     if (this.errorsEncountered.length > 0) {
+      const errors = this.errorsEncountered.slice(-5);
       sections.push(
-        `• Errors / Issues Encountered (address these if still unresolved):\n  - ${this.errorsEncountered.join("\n  - ")}`,
+        `• Errors / Issues Encountered (address these if still unresolved):\n  - ${errors.join("\n  - ")}`,
       );
     }
 
     // 8. Recent Actions Taken
     if (this.actionsTaken.length > 0) {
-      const recent = this.actionsTaken.slice(-6);
+      const recent = this.actionsTaken.slice(-5);
       sections.push(`• Recent Actions Taken in Current Task:\n  ${recent.join("\n  ")}`);
     }
 

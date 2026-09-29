@@ -17,7 +17,7 @@ import {
 import { ToolError } from "../types";
 import { checkBroadWorkspaceWarning } from "../workspaceSafety";
 
-const MAX_MATCHES_PER_FILE = 10;
+const MAX_MATCHES_PER_FILE = 5;
 const CONCURRENCY_LIMIT = 8;
 const MAX_DEPTH = 8;
 

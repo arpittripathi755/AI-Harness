@@ -46,13 +46,21 @@ import {
 } from "./llm/ProviderClient";
 import { CANONICAL_MODEL } from "./llm/providers";
 
+function cleanKey(val?: string): string | undefined {
+  if (!val) {
+    return undefined;
+  }
+  const cleaned = val.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 function getCliApiKey(): string | undefined {
   // OPENROUTER_API_KEY or AI_API_KEY — never logged or displayed.
-  return (
-    process.env.OPENROUTER_API_KEY?.trim() ||
-    process.env.AI_API_KEY?.trim() ||
-    process.env.DEEPSEEK_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim()
+  return cleanKey(
+    process.env.OPENROUTER_API_KEY ||
+    process.env.AI_API_KEY ||
+    process.env.DEEPSEEK_API_KEY ||
+    process.env.OPENAI_API_KEY
   );
 }
 
