@@ -69,14 +69,13 @@ function getCliApiKey(): string | undefined {
 async function main(): Promise<void> {
   const apiKey = getCliApiKey();
   if (!apiKey) {
-    console.error("┌──────────────────────────────────────────────────────────────┐");
-    console.error("│ ERROR: OPENROUTER_API_KEY or AI_API_KEY is not set.          │");
-    console.error("│                                                              │");
-    console.error("│ Please export your OpenRouter API key before running:        │");
-    console.error("│   export OPENROUTER_API_KEY=\"<your-api-key>\"                 │");
-    console.error("│   (or: export AI_API_KEY=\"<your-api-key>\")                  │");
-    console.error("│   make run                                                   │");
-    console.error("└──────────────────────────────────────────────────────────────┘");
+    console.error(`\n\x1b[91m┌─ CONFIGURATION ERROR ─────────────────────────────────────────┐\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m  ✘  No API key configured.                                     \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m                                                                \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m  Set one of these in your .env file:                            \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m    NVIDIA_API_KEY=nvapi-...                                    \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m    AI_API_KEY=...                                              \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m└────────────────────────────────────────────────────────────────┘\x1b[0m\n`);
     process.exit(1);
   }
 
