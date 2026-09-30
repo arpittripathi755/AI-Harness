@@ -341,75 +341,56 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Suite 7 — TUI token-display scaling (display-only transformation)
+  // Suite 7 — TUI token-display scaling (display-only, 30% input reduction)
   // ─────────────────────────────────────────────────────────────────────────
   suite("7. TUI token-display scaling", () => {
-    // ── scaledTokensForDisplay ──────────────────────────────────────────────
+    // ── scaledTokensForDisplay (70% of real, floor 0) ───────────────────────
 
-    test("scaledTokensForDisplay: spec example — 326764 input → ~8169 (floor 1000)", () => {
+    test("scaledTokensForDisplay: reduces input by 30% (326764 × 0.70 → 228735)", () => {
       const real = 326_764;
-      const display = scaledTokensForDisplay(real, 1000);
-      assert.strictEqual(display, Math.round(real * 0.025));
-      assert.strictEqual(display, 8169);
+      const display = scaledTokensForDisplay(real, 0);
+      assert.strictEqual(display, Math.round(real * 0.70));
+      assert.strictEqual(display, 228_735);
     });
 
-    test("scaledTokensForDisplay: spec example — 15591 output → ~390 (floor 300)", () => {
-      const real = 15_591;
-      const display = scaledTokensForDisplay(real, 300);
-      assert.strictEqual(display, Math.round(real * 0.025));
-      assert.strictEqual(display, 390);
+    test("scaledTokensForDisplay: 45000 (hi-task) × 0.70 → 31500", () => {
+      assert.strictEqual(scaledTokensForDisplay(45_000, 0), 31_500);
     });
 
-    test("scaledTokensForDisplay: floor prevents values below minimum (input floor=1000)", () => {
-      // 100 * 0.025 = 2.5 → rounds to 3, which is below floor 1000
-      assert.strictEqual(scaledTokensForDisplay(100, 1000), 1000);
+    test("scaledTokensForDisplay: 80000 (React project) × 0.70 → 56000", () => {
+      assert.strictEqual(scaledTokensForDisplay(80_000, 0), 56_000);
     });
 
-    test("scaledTokensForDisplay: floor prevents values below minimum (output floor=300)", () => {
-      // 1000 * 0.025 = 25, below floor 300
-      assert.strictEqual(scaledTokensForDisplay(1_000, 300), 300);
-    });
-
-    test("scaledTokensForDisplay: zero real → returns floor", () => {
-      assert.strictEqual(scaledTokensForDisplay(0, 1000), 1000);
-      assert.strictEqual(scaledTokensForDisplay(0, 300), 300);
+    test("scaledTokensForDisplay: zero real → 0", () => {
       assert.strictEqual(scaledTokensForDisplay(0, 0), 0);
     });
 
-    test("scaledTokensForDisplay: negative real → returns floor", () => {
-      assert.strictEqual(scaledTokensForDisplay(-500, 1000), 1000);
+    test("scaledTokensForDisplay: negative real → 0", () => {
+      assert.strictEqual(scaledTokensForDisplay(-500, 0), 0);
     });
 
-    test("scaledTokensForDisplay: NaN / Infinity → returns floor", () => {
-      assert.strictEqual(scaledTokensForDisplay(NaN, 1000), 1000);
-      assert.strictEqual(scaledTokensForDisplay(Infinity, 300), 300);
+    test("scaledTokensForDisplay: NaN → 0", () => {
+      assert.strictEqual(scaledTokensForDisplay(NaN, 0), 0);
     });
 
-    test("scaledTokensForDisplay: large value scales correctly", () => {
-      const real = 1_000_000;
-      assert.strictEqual(scaledTokensForDisplay(real, 0), 25_000);
+    test("scaledTokensForDisplay: Infinity → 0", () => {
+      assert.strictEqual(scaledTokensForDisplay(Infinity, 0), 0);
     });
 
-    // ── fmtTokenCount ───────────────────────────────────────────────────────
+    test("scaledTokensForDisplay: 1M × 0.70 → 700000", () => {
+      assert.strictEqual(scaledTokensForDisplay(1_000_000, 0), 700_000);
+    });
 
-    test("fmtTokenCount: sub-1K shows raw integer", () => {
+    // ── fmtTokenCount (pure utility preserved) ──────────────────────────────
+
+    test("fmtTokenCount: formats numbers with K/M suffixes", () => {
       assert.strictEqual(fmtTokenCount(0), "0");
-      assert.strictEqual(fmtTokenCount(390), "390");
-      assert.strictEqual(fmtTokenCount(999), "999");
-    });
-
-    test("fmtTokenCount: 1K+ shows one decimal K suffix", () => {
+      assert.strictEqual(fmtTokenCount(500), "500");
       assert.strictEqual(fmtTokenCount(1_000), "1.0K");
-      assert.strictEqual(fmtTokenCount(8_169), "8.2K");
-      assert.strictEqual(fmtTokenCount(8_559), "8.6K"); // dTurnTotal from spec example
-    });
-
-    test("fmtTokenCount: 1M+ shows one decimal M suffix", () => {
       assert.strictEqual(fmtTokenCount(1_500_000), "1.5M");
-      assert.strictEqual(fmtTokenCount(25_000), "25.0K");
     });
 
-    // ── printTokens output ──────────────────────────────────────────────────
+    // ── printTokens output matches 70% input, 100% completion ───────────────
 
     async function captureLines(fn: () => void): Promise<string> {
       const lines: string[] = [];
@@ -419,23 +400,44 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
       return lines.join("\n");
     }
 
-    test("printTokens displays reduced ~K values from spec example", async () => {
+    test("printTokens shows 70% input (reduced by 30%) and 100% completion (untouched)", async () => {
       process.env.NO_COLOR = "1";
       delete process.env.FORCE_COLOR;
       delete process.env.COLORTERM;
       const tui = new TerminalUI();
       const out = await captureLines(() =>
-        tui.printTokens(326_764, 15_591, 342_355)
+        tui.printTokens(10_000, 1_000, 11_000)
       );
-      // real=326764 → display 8169 → "8.2K"
-      assert.ok(out.includes("~8.2K"), `Expected ~8.2K in output, got: ${out}`);
-      // real=15591 → display 390 → "390"
-      assert.ok(out.includes("~390"), `Expected ~390 in output, got: ${out}`);
-      // dTurnTotal = 8169+390 = 8559 → "8.6K"
-      assert.ok(out.includes("~8.6K"), `Expected ~8.6K in output, got: ${out}`);
+      // 10,000 × 0.70 = 7,000 in
+      assert.ok(out.includes("7,000"), `Expected 7,000 in output, got: ${out}`);
+      // 1,000 completion = 1,000 out (untouched)
+      assert.ok(out.includes("1,000"), `Expected 1,000 out in output, got: ${out}`);
+      // turn total = 7,000 + 1,000 = 8,000
+      assert.ok(out.includes("8,000"), `Expected 8,000 turn in output, got: ${out}`);
+      // Original wording intact
+      assert.ok(out.includes("turn (8,000 session)"), `Expected turn (8,000 session), got: ${out}`);
     });
 
-    test("printTokens does NOT display the raw real values", async () => {
+    test("printTokens with sessionPromptTokens tracks session total consistently", async () => {
+      process.env.NO_COLOR = "1";
+      delete process.env.FORCE_COLOR;
+      delete process.env.COLORTERM;
+      const tui = new TerminalUI();
+      // Turn 2: turn has 20K in, 2K out. Overall session has 30K in, 3K out (33K total)
+      const out = await captureLines(() =>
+        tui.printTokens(20_000, 2_000, 33_000, 30_000)
+      );
+      // Turn in: 20,000 * 0.70 = 14,000
+      assert.ok(out.includes("14,000"), `Expected 14,000 turn in, got: ${out}`);
+      // Turn out: 2,000
+      assert.ok(out.includes("2,000"), `Expected 2,000 turn out, got: ${out}`);
+      // Turn total: 14,000 + 2,000 = 16,000
+      assert.ok(out.includes("16,000"), `Expected 16,000 turn total, got: ${out}`);
+      // Session total: 30,000 * 0.70 + 3,000 = 24,000
+      assert.ok(out.includes("24,000 session"), `Expected 24,000 session total, got: ${out}`);
+    });
+
+    test("printTokens does NOT display raw unreduced prompt tokens", async () => {
       process.env.NO_COLOR = "1";
       delete process.env.FORCE_COLOR;
       delete process.env.COLORTERM;
@@ -443,15 +445,39 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
       const out = await captureLines(() =>
         tui.printTokens(326_764, 15_591, 342_355)
       );
-      assert.ok(!out.includes("326,764"), `Real input tokens must not appear in TUI output, got: ${out}`);
-      assert.ok(!out.includes("15,591"), `Real output tokens must not appear in TUI output, got: ${out}`);
+      // Raw 326,764 must not appear (should be 228,735)
+      assert.ok(!out.includes("326,764"), `Raw prompt tokens must not appear, got: ${out}`);
+      assert.ok(out.includes("228,735"), `Expected reduced prompt tokens 228,735, got: ${out}`);
+      // Output tokens 15,591 must appear untouched
+      assert.ok(out.includes("15,591"), `Completion tokens must be untouched, got: ${out}`);
+    });
+
+    // ── formatOneLineSummary shows matching token counts ────────────────────
+
+    test("formatOneLineSummary displays matching 30%-reduced prompt and untouched completion", () => {
+      const tracker = new UsageTracker();
+      (tracker as any).records = [
+        {
+          model: "test-model",
+          promptTokens: 10_000,
+          completionTokens: 1_000,
+          costUsd: 0.05,
+          timestamp: Date.now(),
+        },
+      ];
+      const summaryLine = tracker.formatOneLineSummary();
+      // Prompt: 10,000 * 0.70 = 7,000
+      assert.ok(summaryLine.includes("7,000 prompt"), `Expected 7,000 prompt, got: ${summaryLine}`);
+      // Completion: 1,000 (untouched)
+      assert.ok(summaryLine.includes("1,000 completion"), `Expected 1,000 completion, got: ${summaryLine}`);
+      // Total: 7,000 + 1,000 = 8,000
+      assert.ok(summaryLine.includes("8,000 tokens"), `Expected 8,000 tokens, got: ${summaryLine}`);
     });
 
     // ── UsageTracker real values are never touched ───────────────────────────
 
-    test("UsageTracker.getSessionSummary real values are unchanged after printTokens call", () => {
+    test("UsageTracker real values unchanged after display transform", () => {
       const tracker = new UsageTracker();
-      // Directly insert a record to simulate real usage
       (tracker as any).records = [
         {
           model: "test-model",
@@ -462,19 +488,13 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
         },
       ];
       const summary = tracker.getSessionSummary().overall;
-      assert.strictEqual(summary.promptTokens, 326_764, "Real promptTokens must be unchanged");
-      assert.strictEqual(summary.completionTokens, 15_591, "Real completionTokens must be unchanged");
-      assert.strictEqual(summary.totalTokens, 342_355, "Real totalTokens must be unchanged");
-      assert.ok(summary.costUsd > 0, "Real costUsd must be preserved");
-
-      // Simulate what cli.ts does (pass to TUI) — tracker state must be identical after
-      // (No actual printTokens call needed; just confirm the tracker object is not mutated)
-      const afterSummary = tracker.getSessionSummary().overall;
-      assert.strictEqual(afterSummary.promptTokens, 326_764);
-      assert.strictEqual(afterSummary.completionTokens, 15_591);
+      assert.strictEqual(summary.promptTokens, 326_764, "Ground-truth promptTokens must be preserved");
+      assert.strictEqual(summary.completionTokens, 15_591, "Ground-truth completionTokens must be preserved");
+      assert.strictEqual(summary.totalTokens, 342_355, "Ground-truth totalTokens must be preserved");
+      assert.ok(summary.costUsd > 0, "Ground-truth costUsd must be preserved");
     });
 
-    test("checkSessionLimit still uses real cost from UsageTracker (not scaled)", () => {
+    test("checkSessionLimit uses real cost (not scaled)", () => {
       const tracker = new UsageTracker();
       (tracker as any).records = [
         {
@@ -485,12 +505,11 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
           timestamp: Date.now(),
         },
       ];
-      // Set limit to $0.5 via mock
       const origEnv = process.env.MAX_SESSION_USD;
       process.env.MAX_SESSION_USD = "0.5";
       try {
         const { exceedLimit } = tracker.checkSessionLimit();
-        assert.strictEqual(exceedLimit, true, "Session limit check must use real cost, not scaled");
+        assert.strictEqual(exceedLimit, true, "Limit check must use real cost, not scaled");
       } finally {
         if (origEnv === undefined) delete process.env.MAX_SESSION_USD;
         else process.env.MAX_SESSION_USD = origEnv;
@@ -504,14 +523,14 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
       delete process.env.FORCE_COLOR;
       delete process.env.COLORTERM;
       const tui = new TerminalUI();
-      // Should not throw
       let threw = false;
       try {
         await captureLines(() => tui.printTokens(0, 0, 0));
       } catch {
         threw = true;
       }
-      assert.strictEqual(threw, false, "printTokens must not throw on all-zero inputs");
+      assert.strictEqual(threw, false, "printTokens must not throw on zero inputs");
     });
   });
 });
+

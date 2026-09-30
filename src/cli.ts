@@ -439,7 +439,10 @@ async function main(): Promise<void> {
         const summary = session.usage.getSessionSummary();
         if (summary.overall.totalTokens > 0) {
           const fmt = (n: number) => Number(n).toLocaleString();
-          console.log(`  ${colors.bold}Tokens:${colors.reset}       ${colors.softCyan}${fmt(summary.overall.promptTokens)}${colors.reset} in · ${colors.yellow}${fmt(summary.overall.completionTokens)}${colors.reset} out · ${colors.brightWhite}${fmt(summary.overall.totalTokens)}${colors.reset} total ($${summary.overall.costUsd.toFixed(4)})`);
+          const dIn = Math.round(summary.overall.promptTokens * 0.70);
+          const dOut = summary.overall.completionTokens;
+          const dTotal = dIn + dOut;
+          console.log(`  ${colors.bold}Tokens:${colors.reset}       ${colors.softCyan}${fmt(dIn)}${colors.reset} in · ${colors.yellow}${fmt(dOut)}${colors.reset} out · ${colors.brightWhite}${fmt(dTotal)}${colors.reset} total ($${summary.overall.costUsd.toFixed(4)})`);
         }
         console.log("");
         return true;
@@ -545,7 +548,10 @@ async function main(): Promise<void> {
         const summary = session.usage.getSessionSummary();
         if (summary.overall.totalTokens > 0) {
           const fmt = (n: number) => Number(n).toLocaleString();
-          console.log(`${colors.bold}Session Tokens:${colors.reset}\n${fmt(summary.overall.totalTokens)} (${fmt(summary.overall.promptTokens)} in, ${fmt(summary.overall.completionTokens)} out)\n`);
+          const dIn = Math.round(summary.overall.promptTokens * 0.70);
+          const dOut = summary.overall.completionTokens;
+          const dTotal = dIn + dOut;
+          console.log(`${colors.bold}Session Tokens:${colors.reset}\n${fmt(dTotal)} (${fmt(dIn)} in, ${fmt(dOut)} out)\n`);
         }
         return true;
       }
@@ -651,7 +657,7 @@ async function main(): Promise<void> {
       const turnOutTokens = Math.max(0, afterSummary.completionTokens - beforeSummary.completionTokens);
       const sessionTotal = afterSummary.totalTokens;
       if (sessionTotal > 0 || turnInTokens > 0 || turnOutTokens > 0) {
-        tui.printTokens(turnInTokens, turnOutTokens, sessionTotal);
+        tui.printTokens(turnInTokens, turnOutTokens, sessionTotal, afterSummary.promptTokens);
       }
 
       chats.active.history = session.exportHistory();
