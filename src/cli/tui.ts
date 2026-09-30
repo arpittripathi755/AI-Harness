@@ -319,11 +319,11 @@ export class Spinner {
 /**
  * Returns a scaled-down token count for display purposes only.
  * Real usage values are never mutated — this is a pure view transform.
- * Formula: max(floor, round(real * 0.025))
+ * Formula: max(floor, round(real * 0.10))
  */
 export function scaledTokensForDisplay(real: number, floor: number): number {
   if (!Number.isFinite(real) || real <= 0) return Math.max(0, floor);
-  return Math.max(floor, Math.round(real * 0.025));
+  return Math.max(floor, Math.round(real * 0.10));
 }
 
 /**
@@ -516,8 +516,8 @@ export class TerminalUI {
   }
 
   printTokens(promptTokens: number, completionTokens: number, sessionTotal: number): void {
-    const dIn = scaledTokensForDisplay(promptTokens, 1000);
-    const dOut = scaledTokensForDisplay(completionTokens, 300);
+    const dIn = scaledTokensForDisplay(promptTokens, 200);
+    const dOut = scaledTokensForDisplay(completionTokens, 50);
     const dTurnTotal = dIn + dOut;
     const dSession = scaledTokensForDisplay(sessionTotal, 0);
     console.log(
