@@ -6,6 +6,7 @@ import {
   Spinner,
   colors,
   stripAnsi,
+  formatAssistantText,
 } from "../cli/tui";
 
 suite("TerminalUI & Color System (TUI Fixes)", () => {
@@ -158,6 +159,7 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
           await tui.printBanner("test/model", "TestProvider", { showInfo: true });
           await tui.printBanner("test/model", "TestProvider", { showInfo: false });
           tui.printHeader(true, "test/model", "/test/workspace", "TestProvider");
+          tui.printUserPrompt("Test user prompt message for width alignment verification");
           tui.printFooter("What would you like to build?");
           tui.printError("This is a long error message that will wrap across lines to test borders");
           tui.printPhase("EXPLORING");
@@ -231,6 +233,7 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
       const output = await captureOutput(async () => {
         await tui.printBanner("model", "provider", { showInfo: false });
         tui.printHeader(false, "model", "/path", "provider");
+        tui.printUserPrompt("test prompt");
         tui.printFooter("prompt");
         tui.printError("error");
         tui.printSuccess("success");
@@ -243,6 +246,7 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
         tui.printAssistantStart();
         tui.printAssistantDelta("delta");
         tui.printAssistantDone();
+        tui.printTokens(100, 50, 150);
       });
 
       for (const line of output) {
@@ -290,6 +294,31 @@ suite("TerminalUI & Color System (TUI Fixes)", () => {
         });
         delete process.env.AXIOM_COLOR;
       }
+    });
+  });
+
+  suite("6. Formatting and highlights", () => {
+    test("formatAssistantText formats URLs with blue and underline in truecolor mode", () => {
+      process.env.AXIOM_COLOR = "truecolor";
+      const formatted = formatAssistantText("Visit https://example.com/docs for details");
+      assert.ok(formatted.includes("https://example.com/docs"), "Must include URL");
+      assert.ok(formatted.includes("\x1b[34m"), "Must include blue color code");
+      assert.ok(formatted.includes("\x1b[4m"), "Must include underline code");
+    });
+
+    test("formatAssistantText highlights inline code in bright yellow", () => {
+      process.env.AXIOM_COLOR = "truecolor";
+      const formatted = formatAssistantText("Check `src/index.ts` file");
+      assert.ok(formatted.includes("`\x1b[93msrc/index.ts\x1b[0m`"), "Must wrap inline code in yellow");
+    });
+
+    test("formatAssistantText highlights keywords (Important, Warning, Tip, Note)", () => {
+      process.env.AXIOM_COLOR = "truecolor";
+      const formatted = formatAssistantText("Important: Note: Warning: Tip:");
+      assert.ok(formatted.includes("Important:"));
+      assert.ok(formatted.includes("Warning:"));
+      assert.ok(formatted.includes("Tip:"));
+      assert.ok(formatted.includes("Note:"));
     });
   });
 });

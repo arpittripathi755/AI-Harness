@@ -21,27 +21,37 @@ const COLOR_LEVEL = detectColorLevel(process.env, !!process.stdout.isTTY);
 const USE_COLOR = COLOR_LEVEL !== "none";
 
 export const colors = {
-  reset: USE_COLOR ? "\x1b[0m" : "",
-  bold: USE_COLOR ? "\x1b[1m" : "",
-  dim: USE_COLOR ? "\x1b[2m" : "",
-  italic: USE_COLOR ? "\x1b[3m" : "",
-  underline: USE_COLOR ? "\x1b[4m" : "",
-  black: USE_COLOR ? "\x1b[30m" : "",
-  red: USE_COLOR ? "\x1b[31m" : "",
-  green: USE_COLOR ? "\x1b[32m" : "",
-  yellow: USE_COLOR ? "\x1b[33m" : "",
-  blue: USE_COLOR ? "\x1b[34m" : "",
-  magenta: USE_COLOR ? "\x1b[35m" : "",
-  cyan: USE_COLOR ? "\x1b[36m" : "",
-  white: USE_COLOR ? "\x1b[37m" : "",
-  brightBlack: USE_COLOR ? "\x1b[90m" : "",
-  brightRed: USE_COLOR ? "\x1b[91m" : "",
-  brightGreen: USE_COLOR ? "\x1b[92m" : "",
-  brightYellow: USE_COLOR ? "\x1b[93m" : "",
-  brightBlue: USE_COLOR ? "\x1b[94m" : "",
-  brightMagenta: USE_COLOR ? "\x1b[95m" : "",
-  brightCyan: USE_COLOR ? "\x1b[96m" : "",
-  brightWhite: USE_COLOR ? "\x1b[97m" : "",
+  get reset() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[0m" : ""; },
+  get bold() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[1m" : ""; },
+  get dim() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[2m" : ""; },
+  get italic() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[3m" : ""; },
+  get underline() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[4m" : ""; },
+  get black() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[30m" : ""; },
+  get red() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[31m" : ""; },
+  get green() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[32m" : ""; },
+  get yellow() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[33m" : ""; },
+  get blue() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[34m" : ""; },
+  get magenta() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[35m" : ""; },
+  get cyan() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[36m" : ""; },
+  get white() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[37m" : ""; },
+  get brightBlack() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[90m" : ""; },
+  get brightRed() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[91m" : ""; },
+  get brightGreen() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[92m" : ""; },
+  get brightYellow() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[93m" : ""; },
+  get brightBlue() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[94m" : ""; },
+  get brightMagenta() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[95m" : ""; },
+  get brightCyan() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[96m" : ""; },
+  get brightWhite() { return detectColorLevel(process.env, !!process.stdout.isTTY) !== "none" ? "\x1b[97m" : ""; },
+  get softCyan() {
+    const level = detectColorLevel(process.env, !!process.stdout.isTTY);
+    if (level === "none") return "";
+    return rgbFor(level, 110, 190, 225);
+  },
+  get axiomRed() {
+    const level = detectColorLevel(process.env, !!process.stdout.isTTY);
+    if (level === "none") return "";
+    return rgbFor(level, 220, 50, 30);
+  },
 };
 
 const CUBE = [0, 95, 135, 175, 215, 255];
@@ -57,7 +67,46 @@ export function rgbFor(level: ColorLevel, r: number, g: number, b: number): stri
 }
 
 function rgb(r: number, g: number, b: number): string {
-  return rgbFor(COLOR_LEVEL, r, g, b);
+  const level = detectColorLevel(process.env, !!process.stdout.isTTY);
+  return rgbFor(level, r, g, b);
+}
+
+export function formatAssistantText(text: string): string {
+  if (detectColorLevel(process.env, !!process.stdout.isTTY) === "none") {
+    return text;
+  }
+
+  // 1. Highlight URLs in blue with underline: https://... or http://...
+  let formatted = text.replace(
+    /(https?:\/\/[^\s\)\],>"']+)/g,
+    `${colors.blue}${colors.underline}$1${colors.reset}`
+  );
+
+  // 2. Highlight inline code in bright yellow: `code`
+  formatted = formatted.replace(
+    /`([^`\n]+)`/g,
+    `\`${colors.brightYellow}$1${colors.reset}\``
+  );
+
+  // 3. Highlight Important, Warning, Note, Tip, Suggestion keywords
+  formatted = formatted.replace(
+    /\b(IMPORTANT|Important):/g,
+    `${colors.bold}${colors.brightYellow}$1:${colors.reset}`
+  );
+  formatted = formatted.replace(
+    /\b(WARNING|Warning|CAUTION|Caution):/g,
+    `${colors.bold}${colors.brightRed}$1:${colors.reset}`
+  );
+  formatted = formatted.replace(
+    /\b(TIP|Tip|SUGGESTION|Suggestion):/g,
+    `${colors.bold}${colors.softCyan}$1:${colors.reset}`
+  );
+  formatted = formatted.replace(
+    /\b(NOTE|Note):/g,
+    `${colors.bold}${colors.brightBlue}$1:${colors.reset}`
+  );
+
+  return formatted;
 }
 
 export function getTerminalWidth(): number {
@@ -221,7 +270,15 @@ export class Spinner {
     if (!this.active) return;
     const frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
     const f = frames[this.frame++ % frames.length];
-    process.stdout.write(`\r\x1b[2K  ${colors.blue}${f}${colors.reset}  ${colors.dim}${this.label}${colors.reset}`);
+    let spinColor = colors.blue;
+    if (this.label.includes("Read") || this.label.includes("List")) {
+      spinColor = colors.softCyan;
+    } else if (this.label.includes("Edit") || this.label.includes("Creat") || this.label.includes("Delet")) {
+      spinColor = colors.yellow;
+    } else if (this.label.includes("Run")) {
+      spinColor = colors.brightGreen;
+    }
+    process.stdout.write(`\r\x1b[2K  ${spinColor}${f}${colors.reset}  ${colors.dim}${this.label}${colors.reset}`);
   }
 }
 
@@ -235,9 +292,11 @@ export class TerminalUI {
     return getTerminalWidth();
   }
 
-  private titleRule(title: string, open = false): string {
+  private titleRule(title: string, open = false, borderColor?: string): string {
     const dashes = Math.max(0, this.width - stripAnsi(title).length - (open ? 2 : 3));
-    return `┌─ ${title} ${"─".repeat(dashes)}${open ? "" : "┐"}`;
+    const c = borderColor ?? "";
+    const r = c ? colors.reset : "";
+    return `${c}┌─ ${r}${title}${c} ${"─".repeat(dashes)}${open ? "" : "┐"}${r}`;
   }
 
   async printBanner(modelName: string, providerName?: string, opts?: { showInfo?: boolean }): Promise<void> {
@@ -383,6 +442,33 @@ export class TerminalUI {
     return `${colors.dim}${colors.brightBlack}│${colors.reset} ${colors.brightCyan}${colors.bold}❯${colors.reset} `;
   }
 
+  printUserPrompt(prompt: string): void {
+    const promptColor = colors.softCyan;
+    if (process.stdout.columns && process.stdout.columns < 52) {
+      console.log(`\n${promptColor}${colors.bold}YOU:${colors.reset} ${promptColor}${prompt}${colors.reset}\n`);
+      return;
+    }
+    const w = this.width;
+    const lines = wrapText(prompt, w - 6);
+    console.log("");
+    const dashes = Math.max(0, w - 6);
+    console.log(`${colors.dim}${colors.brightBlack}┌─ ${colors.reset}${promptColor}${colors.bold}YOU${colors.reset} ${colors.dim}${colors.brightBlack}${"─".repeat(dashes)}┐${colors.reset}`);
+    for (const line of lines) {
+      const rightPadding = Math.max(0, w - 2 - stripAnsi(line).length);
+      console.log(`${colors.dim}${colors.brightBlack}│${colors.reset}  ${promptColor}${line}${colors.reset}${" ".repeat(rightPadding)}${colors.dim}${colors.brightBlack}│${colors.reset}`);
+    }
+    console.log(`${colors.dim}${colors.brightBlack}└${"─".repeat(w)}┘${colors.reset}`);
+    console.log("");
+  }
+
+  printTokens(promptTokens: number, completionTokens: number, sessionTotal: number): void {
+    const fmt = (n: number) => Number(n).toLocaleString();
+    const turnTotal = promptTokens + completionTokens;
+    console.log(
+      `  ${colors.dim}Tokens: ${colors.softCyan}${fmt(promptTokens)}${colors.dim} in · ${colors.yellow}${fmt(completionTokens)}${colors.dim} out · ${colors.brightWhite}${fmt(turnTotal)}${colors.dim} turn (${fmt(sessionTotal)} session)${colors.reset}\n`
+    );
+  }
+
   printToolStart(name: string, title: string): void {
     if (this.assistantActive) {
       console.log("");
@@ -395,6 +481,7 @@ export class TerminalUI {
       case "web_search":
       case "web_fetch":
         icon = "◎";
+        break;
       case "list_files":
         icon = "◈";
         break;
@@ -456,7 +543,8 @@ export class TerminalUI {
     this.spinner.stopSilent();
     if (!this.assistantActive) {
       console.log("");
-      console.log(`${this.titleRule(`${colors.red}AXIOM${colors.reset}`, true)}`);
+      console.log(`${this.titleRule(`${colors.bold}AXIOM${colors.reset}`, true, colors.axiomRed)}`);
+      console.log("");
       this.assistantActive = true;
     }
   }
@@ -465,14 +553,14 @@ export class TerminalUI {
     if (!this.assistantActive) {
       this.printAssistantStart();
     }
-    process.stdout.write(delta);
+    process.stdout.write(formatAssistantText(delta));
   }
 
   printAssistantDone(): void {
     if (this.assistantActive) {
       const w = this.width;
       process.stdout.write('\n');
-      console.log(`${colors.dim}└${'─'.repeat(w + 1)}${colors.reset}`);
+      console.log(`${colors.axiomRed}└${'─'.repeat(w + 1)}${colors.reset}`);
       console.log("");
       this.assistantActive = false;
     }
