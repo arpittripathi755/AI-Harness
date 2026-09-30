@@ -1,7 +1,7 @@
 import * as React from "react";
+import { MODELS } from "../../shared/models";
 import { MODES } from "../../shared/modes";
 import { Dropdown } from "./Dropdown";
-import { ModelSelector } from "./ui/model-selector";
 
 interface ToolbarProps {
   modelId: string;
@@ -10,7 +10,7 @@ interface ToolbarProps {
   onModeChange: (modeId: string) => void;
 }
 
-/** Compact model/mode selector row using the shadcn ModelSelector with provider logos. */
+/** Compact model/mode selector row, docked just above the composer. */
 export function Toolbar({
   modelId,
   modeId,
@@ -19,10 +19,17 @@ export function Toolbar({
 }: ToolbarProps) {
   return (
     <div className="toolbar">
-      <div className="toolbar-model-wrap">
-        <span className="dropdown-label">Model</span>
-        <ModelSelector value={modelId} onChange={onModelChange} />
-      </div>
+      <Dropdown
+        label="Model"
+        value={modelId}
+        title="Model used for API requests"
+        options={MODELS.map((m) => ({
+          value: m.apiModelId,
+          label: m.displayName,
+          group: m.provider,
+        }))}
+        onChange={onModelChange}
+      />
       <Dropdown
         label="Mode"
         value={modeId}

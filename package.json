@@ -21,7 +21,7 @@
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
-      "secondarySidebar": [
+      "activitybar": [
         {
           "id": "claudeAgent",
           "title": "Axiom",
@@ -76,7 +76,6 @@
     "@types/react-dom": "^19.2.3",
     "@types/vscode": "^1.106.0",
     "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0",
     "css-loader": "^7.1.4",
     "eslint": "^10.5.0",
     "style-loader": "^4.0.0",
@@ -91,15 +90,8 @@
     "serialize-javascript": "^7.0.6"
   },
   "dependencies": {
-    "@radix-ui/react-select": "^2.3.7",
-    "clsx": "^2.1.1",
-    "lucide-react": "^1.48.0",
-    "motion": "^13.4.6",
-    "ogl": "^1.0.11",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-markdown": "^10.1.0",
-    "tailwind-merge": "^3.7.0",
-    "thinking-orbs": "^0.3.2"
+    "react-markdown": "^10.1.0"
   }
 }
