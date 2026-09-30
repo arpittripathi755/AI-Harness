@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("claude-agent.open", () => {
       // Reveal the chat view (VS Code auto-generates the `<viewId>.focus` command).
-      vscode.commands.executeCommand("claudeAgent.chat.focus");
+      return vscode.commands.executeCommand("claudeAgent.chat.focus");
     }),
     vscode.commands.registerCommand("claude-agent.apiSettings", () => {
       vscode.commands.executeCommand("claudeAgent.chat.focus");
@@ -31,8 +31,6 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Automatically reveal the Axiom chat view in the sidebar on startup.
-  vscode.commands.executeCommand("claude-agent.open");
-} 
+}
 
 export function deactivate() {}
