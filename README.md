@@ -69,11 +69,19 @@ Hard software engineering tasks graded against **hidden regression test suites**
 
 ## Quickstart & Evaluation Flow
 
+```bash
+git clone https://github.com/arpittripathi755/AI-Harness.git
+cd AI-Harness
+export AI_API_KEY="your-api-key"
+make setup
+make run
+```
+
 ### 1. Set Your Credential
 Axiom requires only one API key from any OpenAI-compatible provider (OpenRouter, DeepSeek, AWS Bedrock, NVIDIA NIM):
 
 ```bash
-export AI_API_KEY="sk-or-v1-..."      # The single authoritative API key
+export AI_API_KEY="your-api-key"
 # Fallbacks accepted: OPENROUTER_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, NVIDIA_API_KEY
 ```
 
@@ -187,9 +195,8 @@ Modern inference providers (DeepSeek, OpenRouter, Anthropic) provide steep cost 
 ### 4. Self-Healing Credit Affordability & 402 Recovery
 Running out of API credit mid-task causes abrupt failures in most agents. Axiom features built-in credit resilience:
 - **Balance Probing**: Monitors credit balance against the OpenRouter `/api/v1/key` endpoint.
-- **Clamped Output Token Reservations**: Before sending a request, calculates maximum affordable tokens:
-  $$\text{effectiveMaxTokens} = \min\left(\text{phaseBudget}, \left\lfloor \frac{\text{limit\_remaining} \times 0.9}{\text{completionPricePerToken}} \right\rfloor\right)$$
-- **402 Auto-Recovery**: If a provider returns HTTP 402 with `"can only afford N tokens"`, Axiom intercepts the error, parses $N$, resets `max_tokens = Math.floor(N * 0.9)`, and retries the turn immediately. The user never sees a crash.
+- **Clamped Output Token Reservations**: Before sending a request, calculates the maximum number of tokens Axiom can actually afford. The effective output limit is capped to `Math.floor((limit_remaining * 0.9) / completionPricePerToken)`, keeping a 10% safety margin below the remaining balance.
+- **402 Auto-Recovery**: If a provider returns HTTP 402 with `"can only afford N tokens"`, Axiom intercepts the error, parses `N`, resets `max_tokens = Math.floor(N * 0.9)`, and retries the turn immediately. The user never sees a crash.
 
 ### 5. Reasoning-Aware Output Floor & Escalation
 Modern reasoning models (DeepSeek V4, R1) generate internal thoughts before producing tool calls:
@@ -371,8 +378,3 @@ AI-Harness/
 └── package.json                      # Extension manifest & script definitions
 ```
 
----
-
-## License
-
-MIT © [Arpit Tripathi](https://github.com/arpittripathi755) & Contributors. Designed for autonomous software engineering.
