@@ -425,8 +425,8 @@ export class TerminalUI {
     const mid = `├${'─'.repeat(w)}┤`;
     const bottom = `└${'─'.repeat(w)}┘`;
 
-    const axiomRed = rgb(220, 50, 30);
-    const titleLeft = `  ${axiomRed}◆ AXIOM${colors.reset}`;
+    const axiomRed = colors.axiomRed;
+    const titleLeft = `  ${axiomRed}${colors.bold}◆ AXIOM${colors.reset}`;
     
     const autoEditBadge = autoEdit
       ? `${colors.brightGreen}${colors.bold}▸ AUTO EDIT${colors.reset}  `
@@ -444,7 +444,7 @@ export class TerminalUI {
       return;
     }
 
-    console.log(`${colors.dim}${colors.brightBlack}${top}${colors.reset}`);
+    console.log(`${axiomRed}${top}${colors.reset}`);
     console.log(`${colors.dim}${colors.brightBlack}│${colors.reset}${padBetween(titleLeft, autoEditBadge, w)}${colors.dim}${colors.brightBlack}│${colors.reset}`);
     console.log(`${colors.dim}${colors.brightBlack}${mid}${colors.reset}`);
     console.log(`${colors.dim}${colors.brightBlack}│${colors.reset}${colors.dim}${padBetween(infoLeft, infoRight, w)}${colors.reset}${colors.dim}${colors.brightBlack}│${colors.reset}`);
@@ -469,11 +469,11 @@ export class TerminalUI {
       return;
     }
     console.log(`${colors.dim}  ${promptPlaceholder}${colors.reset}`);
-    console.log(`${colors.dim}${colors.brightBlack}${this.titleRule("YOUR TASK", true)}${colors.reset}`);
+    console.log(`${this.titleRule(`${colors.bold}${colors.softCyan}YOUR TASK${colors.reset}`, true, colors.softCyan)}`);
   }
 
   printPromptPrefix(): string {
-    return `${colors.dim}${colors.brightBlack}│${colors.reset} ${colors.brightCyan}${colors.bold}❯${colors.reset} `;
+    return `${colors.softCyan}│${colors.reset} ${colors.softCyan}${colors.bold}❯${colors.reset} ${colors.softCyan}`;
   }
 
   printUserPrompt(prompt: string): void {
@@ -486,12 +486,12 @@ export class TerminalUI {
     const lines = wrapText(prompt, w - 6);
     console.log("");
     const dashes = Math.max(0, w - 6);
-    console.log(`${colors.dim}${colors.brightBlack}┌─ ${colors.reset}${promptColor}${colors.bold}YOU${colors.reset} ${colors.dim}${colors.brightBlack}${"─".repeat(dashes)}┐${colors.reset}`);
+    console.log(`${promptColor}┌─ ${colors.bold}YOU${colors.reset} ${promptColor}${"─".repeat(dashes)}┐${colors.reset}`);
     for (const line of lines) {
       const rightPadding = Math.max(0, w - 2 - stripAnsi(line).length);
-      console.log(`${colors.dim}${colors.brightBlack}│${colors.reset}  ${promptColor}${line}${colors.reset}${" ".repeat(rightPadding)}${colors.dim}${colors.brightBlack}│${colors.reset}`);
+      console.log(`${promptColor}│${colors.reset}  ${promptColor}${line}${colors.reset}${" ".repeat(rightPadding)}${promptColor}│${colors.reset}`);
     }
-    console.log(`${colors.dim}${colors.brightBlack}└${"─".repeat(w)}┘${colors.reset}`);
+    console.log(`${promptColor}└${"─".repeat(w)}┘${colors.reset}`);
     console.log("");
   }
 

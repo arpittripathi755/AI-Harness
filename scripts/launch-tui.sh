@@ -110,6 +110,11 @@ echo "export AXIOM_SKIP_PR=\"${AXIOM_SKIP_PR:-0}\"" >> "$RUNNER"
 [ -n "$AI_MAX_TOKENS" ] && echo "export AI_MAX_TOKENS=\"$AI_MAX_TOKENS\"" >> "$RUNNER"
 [ -n "$INPUT_TOKEN_BUDGET" ] && echo "export INPUT_TOKEN_BUDGET=\"$INPUT_TOKEN_BUDGET\"" >> "$RUNNER"
 [ -n "$DAXIOM_MAX_TOOL_CALLS" ] && echo "export DAXIOM_MAX_TOOL_CALLS=\"$DAXIOM_MAX_TOOL_CALLS\"" >> "$RUNNER"
+[ -n "$COLORTERM" ] && echo "export COLORTERM=\"$COLORTERM\"" >> "$RUNNER"
+[ -n "$TERM" ] && echo "export TERM=\"$TERM\"" >> "$RUNNER"
+[ -n "$TERM_PROGRAM" ] && echo "export TERM_PROGRAM=\"$TERM_PROGRAM\"" >> "$RUNNER"
+[ -n "$FORCE_COLOR" ] && echo "export FORCE_COLOR=\"$FORCE_COLOR\"" >> "$RUNNER"
+echo "export AXIOM_COLOR=\"${AXIOM_COLOR:-truecolor}\"" >> "$RUNNER"
 
 HAS_ARGS=0
 for arg in "$@"; do
