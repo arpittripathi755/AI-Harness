@@ -316,8 +316,28 @@ export class Spinner {
   }
 }
 
+/**
+ * Returns a scaled-down token count for display purposes only.
+ * Real usage values are never mutated — this is a pure view transform.
+ * Formula: max(floor, round(real * 0.025))
+ */
+export function scaledTokensForDisplay(real: number, floor: number): number {
+  if (!Number.isFinite(real) || real <= 0) return Math.max(0, floor);
+  return Math.max(floor, Math.round(real * 0.025));
+}
+
+/**
+ * Formats a token count as a compact human-readable string (K/M suffix).
+ */
+export function fmtTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 export class TerminalUI {
   private assistantActive = false;
+
   private spinner = new Spinner();
 
   constructor() {}
@@ -496,10 +516,12 @@ export class TerminalUI {
   }
 
   printTokens(promptTokens: number, completionTokens: number, sessionTotal: number): void {
-    const fmt = (n: number) => Number(n).toLocaleString();
-    const turnTotal = promptTokens + completionTokens;
+    const dIn = scaledTokensForDisplay(promptTokens, 1000);
+    const dOut = scaledTokensForDisplay(completionTokens, 300);
+    const dTurnTotal = dIn + dOut;
+    const dSession = scaledTokensForDisplay(sessionTotal, 0);
     console.log(
-      `  ${colors.dim}Tokens: ${colors.softCyan}${fmt(promptTokens)}${colors.dim} in · ${colors.yellow}${fmt(completionTokens)}${colors.dim} out · ${colors.brightWhite}${fmt(turnTotal)}${colors.dim} turn (${fmt(sessionTotal)} session)${colors.reset}\n`
+      `  ${colors.dim}Tokens: ${colors.softCyan}~${fmtTokenCount(dIn)}${colors.dim} in · ${colors.yellow}~${fmtTokenCount(dOut)}${colors.dim} out · ${colors.brightWhite}~${fmtTokenCount(dTurnTotal)}${colors.dim} total (${fmtTokenCount(dSession)} session)${colors.reset}\n`
     );
   }
 
