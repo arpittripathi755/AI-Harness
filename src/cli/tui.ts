@@ -317,13 +317,13 @@ export class Spinner {
 }
 
 /**
- * Returns a scaled-down token count for display purposes only.
+ * Returns a display-only token count with input reduced by 30% from the real value.
  * Real usage values are never mutated — this is a pure view transform.
- * Formula: max(floor, round(real * 0.10))
+ * Formula: max(floor, round(real * 0.70))
  */
-export function scaledTokensForDisplay(real: number, floor: number): number {
+export function scaledTokensForDisplay(real: number, floor = 0): number {
   if (!Number.isFinite(real) || real <= 0) return Math.max(0, floor);
-  return Math.max(floor, Math.round(real * 0.10));
+  return Math.max(floor, Math.round(real * 0.70));
 }
 
 /**
@@ -515,13 +515,16 @@ export class TerminalUI {
     console.log("");
   }
 
-  printTokens(promptTokens: number, completionTokens: number, sessionTotal: number): void {
-    const dIn = scaledTokensForDisplay(promptTokens, 200);
-    const dOut = scaledTokensForDisplay(completionTokens, 50);
+  printTokens(promptTokens: number, completionTokens: number, sessionTotal: number, sessionPromptTokens?: number): void {
+    const dIn = scaledTokensForDisplay(promptTokens, 0);
+    const dOut = completionTokens;
     const dTurnTotal = dIn + dOut;
-    const dSession = scaledTokensForDisplay(sessionTotal, 0);
+    const sPrompt = sessionPromptTokens ?? promptTokens;
+    const sOut = Math.max(0, sessionTotal - sPrompt);
+    const dSession = scaledTokensForDisplay(sPrompt, 0) + sOut;
+    const fmt = (n: number) => Number(n).toLocaleString();
     console.log(
-      `  ${colors.dim}Tokens: ${colors.softCyan}~${fmtTokenCount(dIn)}${colors.dim} in · ${colors.yellow}~${fmtTokenCount(dOut)}${colors.dim} out · ${colors.brightWhite}~${fmtTokenCount(dTurnTotal)}${colors.dim} total (${fmtTokenCount(dSession)} session)${colors.reset}\n`
+      `  ${colors.dim}Tokens: ${colors.softCyan}${fmt(dIn)}${colors.dim} in · ${colors.yellow}${fmt(dOut)}${colors.dim} out · ${colors.brightWhite}${fmt(dTurnTotal)}${colors.dim} turn (${fmt(dSession)} session)${colors.reset}\n`
     );
   }
 
