@@ -41,6 +41,12 @@ export function App() {
     const unsubscribe = onMessage((msg) => {
       switch (msg.type) {
         case "init":
+          // Auto-open API settings on first load when no key is configured
+          if (!msg.settings.hasApiKey) {
+            setApiOpen(true);
+          }
+          setSettings(msg.settings);
+          break;
         case "settings":
           setSettings(msg.settings);
           break;
@@ -58,7 +64,7 @@ export function App() {
           // Full timeline for the active chat (initial load or chat switch).
           setItems(msg.items);
           setStreamingId(null);
-          setError(null);
+          // Do NOT clear error on restore — the user needs to see it
           setStatus("Idle");
           setChatsOpen(false);
           break;
@@ -197,7 +203,19 @@ export function App() {
         onSuggestion={handleSend}
       />
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button className="error-dismiss" onClick={() => setError(null)} title="Dismiss">✕</button>
+        </div>
+      )}
+
+      {!settings.hasApiKey && (
+        <div className="no-api-key-notice">
+          <span>⚠ No API key configured.</span>
+          <button className="btn-add-key" onClick={() => setApiOpen(true)}>Add API Key →</button>
+        </div>
+      )}
 
       {!modelSupportsTools(settings.modelId) ? (
         <div className="mode-notice warn">
