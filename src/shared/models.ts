@@ -148,6 +148,58 @@ export const MODELS: ModelInfo[] = [
     supportsTools: true,
     supportsVision: false,
   },
+
+  // ==========================================
+  // Anthropic / Claude Models (via OpenRouter)
+  // ==========================================
+  {
+    displayName: "Claude Sonnet 4.5",
+    apiModelId: "anthropic/claude-sonnet-4-5",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Sonnet 4.5 (Thinking)",
+    apiModelId: "anthropic/claude-sonnet-4-5:thinking",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Opus 4.5",
+    apiModelId: "anthropic/claude-opus-4-5",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude 3.7 Sonnet",
+    apiModelId: "anthropic/claude-3.7-sonnet",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude 3.7 Sonnet (Thinking)",
+    apiModelId: "anthropic/claude-3.7-sonnet:thinking",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
+  {
+    displayName: "Claude Haiku 3.5",
+    apiModelId: "anthropic/claude-haiku-3-5",
+    provider: "Anthropic",
+    contextLength: 200000,
+    supportsTools: true,
+    supportsVision: true,
+  },
 ];
 
 /**
@@ -340,6 +392,42 @@ export function resolveModelId(apiModelId: string | undefined): string {
   }
   if (candidate === "qwen-plus") {
     return "qwen/qwen-plus";
+  }
+
+  // Aliases for Anthropic / Claude models
+  if (
+    candidate === "claude-sonnet-4-5" ||
+    candidate === "claude-sonnet-4.5" ||
+    candidate === "claude-sonnet-4-5:thinking" ||
+    candidate === "claude-sonnet-4.5:thinking" ||
+    candidate === "claude-sonnet-4.5-thinking"
+  ) {
+    if (candidate.includes("thinking")) {
+      return "anthropic/claude-sonnet-4-5:thinking";
+    }
+    return "anthropic/claude-sonnet-4-5";
+  }
+  if (
+    candidate === "claude-opus-4-5" ||
+    candidate === "claude-opus-4.5"
+  ) {
+    return "anthropic/claude-opus-4-5";
+  }
+  if (
+    candidate === "claude-3.7-sonnet" ||
+    candidate === "claude-3.7-sonnet:thinking" ||
+    candidate === "claude-3.7-sonnet-thinking"
+  ) {
+    if (candidate.includes("thinking")) {
+      return "anthropic/claude-3.7-sonnet:thinking";
+    }
+    return "anthropic/claude-3.7-sonnet";
+  }
+  if (
+    candidate === "claude-haiku-3-5" ||
+    candidate === "claude-haiku-3.5"
+  ) {
+    return "anthropic/claude-haiku-3-5";
   }
 
   // If an explicit model name was supplied (e.g. any custom OpenRouter model slug),
