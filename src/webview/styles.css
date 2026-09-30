@@ -246,15 +246,6 @@ body {
   flex: 1;
   padding-top: 3px;
 }
-.msg-user .msg-text {
-  color: #6ebed7;
-  font-weight: 500;
-}
-.msg-assistant .msg-content {
-  border-left: 2px solid #dc321e;
-  border-radius: 0 6px 6px 0;
-  padding-left: 10px;
-}
 .msg-body {
   line-height: 1.6;
   word-wrap: break-word;
@@ -294,10 +285,7 @@ body {
   padding-left: 22px;
 }
 .msg-body li { margin: 3px 0; }
-.msg-body a {
-  color: #4a9eff;
-  text-decoration: underline;
-}
+.msg-body a { color: var(--vscode-textLink-foreground); }
 
 .cursor {
   animation: blink 1s step-start infinite;

@@ -6,9 +6,6 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Save explicit environment variables so .env acts as a fallback rather than clobbering shell exports
 _SAVED_AI_API_KEY="$AI_API_KEY"
 _SAVED_OPENROUTER_API_KEY="$OPENROUTER_API_KEY"
-_SAVED_NVIDIA_API_KEY="$NVIDIA_API_KEY"
-_SAVED_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
-_SAVED_OPENAI_API_KEY="$OPENAI_API_KEY"
 _SAVED_MODEL="$MODEL"
 _SAVED_AI_MODEL="$AI_MODEL"
 _SAVED_MAX_TOKENS="$MAX_TOKENS"
@@ -33,9 +30,6 @@ fi
 # Restore explicit shell environment variables
 [ -n "$_SAVED_AI_API_KEY" ] && export AI_API_KEY="$_SAVED_AI_API_KEY"
 [ -n "$_SAVED_OPENROUTER_API_KEY" ] && export OPENROUTER_API_KEY="$_SAVED_OPENROUTER_API_KEY"
-[ -n "$_SAVED_NVIDIA_API_KEY" ] && export NVIDIA_API_KEY="$_SAVED_NVIDIA_API_KEY"
-[ -n "$_SAVED_DEEPSEEK_API_KEY" ] && export DEEPSEEK_API_KEY="$_SAVED_DEEPSEEK_API_KEY"
-[ -n "$_SAVED_OPENAI_API_KEY" ] && export OPENAI_API_KEY="$_SAVED_OPENAI_API_KEY"
 [ -n "$_SAVED_MODEL" ] && export MODEL="$_SAVED_MODEL"
 [ -n "$_SAVED_AI_MODEL" ] && export AI_MODEL="$_SAVED_AI_MODEL"
 [ -n "$_SAVED_MAX_TOKENS" ] && export MAX_TOKENS="$_SAVED_MAX_TOKENS"
@@ -45,8 +39,8 @@ fi
 [ -n "$_SAVED_INPUT_TOKEN_BUDGET" ] && export INPUT_TOKEN_BUDGET="$_SAVED_INPUT_TOKEN_BUDGET"
 
 # Verify required API key
-if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$NVIDIA_API_KEY" ]; then
-  echo "ERROR: OPENROUTER_API_KEY, AI_API_KEY, or NVIDIA_API_KEY environment variable is not set."
+if [ -z "$AI_API_KEY" ] && [ -z "$OPENROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+  echo "ERROR: OPENROUTER_API_KEY or AI_API_KEY environment variable is not set."
   if [ ! -f "$ENV_FILE" ]; then
     echo "Checked .env file at $ENV_FILE: file is missing."
   elif [ ! -s "$ENV_FILE" ]; then
@@ -66,12 +60,9 @@ clean_val() {
 }
 [ -n "$AI_API_KEY" ] && AI_API_KEY="$(clean_val "$AI_API_KEY")"
 [ -n "$OPENROUTER_API_KEY" ] && OPENROUTER_API_KEY="$(clean_val "$OPENROUTER_API_KEY")"
-[ -n "$NVIDIA_API_KEY" ] && NVIDIA_API_KEY="$(clean_val "$NVIDIA_API_KEY")"
 
 if [ -z "$AI_API_KEY" ] && [ -n "$OPENROUTER_API_KEY" ]; then
   export AI_API_KEY="$OPENROUTER_API_KEY"
-elif [ -z "$AI_API_KEY" ] && [ -n "$NVIDIA_API_KEY" ]; then
-  export AI_API_KEY="$NVIDIA_API_KEY"
 fi
 
 # Always ensure build artifacts are up to date
@@ -89,7 +80,6 @@ echo "cd \"$REPO_DIR\"" >> "$RUNNER"
 echo "export PATH=\"$PATH\"" >> "$RUNNER"
 echo "export AI_API_KEY=\"$AI_API_KEY\"" >> "$RUNNER"
 [ -n "$OPENROUTER_API_KEY" ] && echo "export OPENROUTER_API_KEY=\"$OPENROUTER_API_KEY\"" >> "$RUNNER"
-[ -n "$NVIDIA_API_KEY" ] && echo "export NVIDIA_API_KEY=\"$NVIDIA_API_KEY\"" >> "$RUNNER"
 
 [ -n "$AI_BASE_URL" ] && echo "export AI_BASE_URL=\"$AI_BASE_URL\"" >> "$RUNNER"
 [ -n "$OPENROUTER_BASE_URL" ] && echo "export OPENROUTER_BASE_URL=\"$OPENROUTER_BASE_URL\"" >> "$RUNNER"
