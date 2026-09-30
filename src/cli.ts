@@ -436,6 +436,11 @@ async function main(): Promise<void> {
           console.log(`  ${colors.bold}GitHub Repo:${colors.reset}  ${repoDetails.owner}/${repoDetails.repo} (${repoDetails.defaultBranch})`);
         }
         console.log(`  ${colors.bold}GitHub Auth:${colors.reset}  ${auth.authenticated ? `Logged in as @${auth.username}` : `Not authenticated (${auth.error})`}`);
+        const summary = session.usage.getSessionSummary();
+        if (summary.overall.totalTokens > 0) {
+          const fmt = (n: number) => Number(n).toLocaleString();
+          console.log(`  ${colors.bold}Tokens:${colors.reset}       ${colors.softCyan}${fmt(summary.overall.promptTokens)}${colors.reset} in · ${colors.yellow}${fmt(summary.overall.completionTokens)}${colors.reset} out · ${colors.brightWhite}${fmt(summary.overall.totalTokens)}${colors.reset} total ($${summary.overall.costUsd.toFixed(4)})`);
+        }
         console.log("");
         return true;
       }
@@ -537,6 +542,11 @@ async function main(): Promise<void> {
         console.log(`${colors.bold}API Key:${colors.reset}\n${apiKey ? `${colors.green}Configured ✓${colors.reset}` : `${colors.red}Missing ✗${colors.reset}`}\n`);
         console.log(`${colors.bold}Auto Edit:${colors.reset}\n${allowMutations ? "ON" : "OFF"}\n`);
         console.log(`${colors.bold}Workspace:${colors.reset}\n${currentWorkspacePath}\n`);
+        const summary = session.usage.getSessionSummary();
+        if (summary.overall.totalTokens > 0) {
+          const fmt = (n: number) => Number(n).toLocaleString();
+          console.log(`${colors.bold}Session Tokens:${colors.reset}\n${fmt(summary.overall.totalTokens)} (${fmt(summary.overall.promptTokens)} in, ${fmt(summary.overall.completionTokens)} out)\n`);
+        }
         return true;
       }
       if (cmd === "/models") {
@@ -618,6 +628,9 @@ async function main(): Promise<void> {
 
     // Normal task execution
     try {
+      tui.printUserPrompt(trimmed);
+      const beforeSummary = session.usage.getSessionSummary().overall;
+
       await session.send(trimmed, {
         onAssistantStart: () => tui.printAssistantStart(),
         onAssistantDelta: (_id, delta) => tui.printAssistantDelta(delta),
@@ -632,6 +645,14 @@ async function main(): Promise<void> {
           tui.printError(err);
         },
       });
+
+      const afterSummary = session.usage.getSessionSummary().overall;
+      const turnInTokens = Math.max(0, afterSummary.promptTokens - beforeSummary.promptTokens);
+      const turnOutTokens = Math.max(0, afterSummary.completionTokens - beforeSummary.completionTokens);
+      const sessionTotal = afterSummary.totalTokens;
+      if (sessionTotal > 0 || turnInTokens > 0 || turnOutTokens > 0) {
+        tui.printTokens(turnInTokens, turnOutTokens, sessionTotal);
+      }
 
       chats.active.history = session.exportHistory();
       chats.active.taskMemory = session.exportTaskMemory();
