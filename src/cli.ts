@@ -55,11 +55,10 @@ function cleanKey(val?: string): string | undefined {
 }
 
 function getCliApiKey(): string | undefined {
-  // OPENROUTER_API_KEY, AI_API_KEY, or NVIDIA_API_KEY — never logged or displayed.
+  // OPENROUTER_API_KEY or AI_API_KEY — never logged or displayed.
   return cleanKey(
     process.env.OPENROUTER_API_KEY ||
     process.env.AI_API_KEY ||
-    process.env.NVIDIA_API_KEY ||
     process.env.DEEPSEEK_API_KEY ||
     process.env.OPENAI_API_KEY
   );
@@ -731,7 +730,6 @@ async function main(): Promise<void> {
   rl.prompt();
 
   rl.on("line", async (line) => {
-    process.stdout.write(colors.reset);
     const trimmed = line.trim();
     if (
       trimmed === "/exit" ||
