@@ -29,9 +29,22 @@ import type {
 import {
   CANONICAL_MODEL,
   PROVIDER_PRIORITY,
+  getModelMaxTokens,
   type ProviderConfig,
 } from "./providers";
 import { fetchWithRetry } from "./http";
+import { type CallPhase, getPhaseMaxTokens, getReasoningFloor } from "./tokenBudget";
+import { buildEndpointUrl } from "./endpointUtils";
+import {
+  getAffordableTokens,
+  fetchKeyInfo,
+  fetchModelPrices,
+  invalidateKeyInfoCache,
+  AFFORDABILITY_SAFETY_MARGIN,
+  MIN_RETRY_AFFORDABLE_TOKENS,
+} from "./affordability";
+import { classify402 } from "./classify402";
+import { withGate } from "./singleFlight";
 
 // ---------------------------------------------------------------------------
 // Public interface
@@ -40,7 +53,11 @@ import { fetchWithRetry } from "./http";
 export interface StreamOptions {
   signal?: AbortSignal;
   tools?: ToolDefinition[];
+  maxTokens?: number;
+  phase?: CallPhase;
   onRetry?: (waitMs: number, attempt: number) => void;
+  /** Optional model override for this stream request. */
+  model?: string;
 }
 
 export interface ProviderStatus {
@@ -118,7 +135,7 @@ async function probeProvider(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<string | null> {
-  const url = `${provider.baseUrl}chat/completions`;
+  const url = buildEndpointUrl(provider.baseUrl, "chat/completions");
   const body = JSON.stringify({
     model: provider.model,
     messages: [{ role: "user", content: "ping" }],
@@ -156,6 +173,20 @@ async function probeProvider(
     detail = text.slice(0, 200).replace(apiKey, "[REDACTED]");
   } catch {
     /* ignore read failures */
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return `${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.`;
+  }
+  if (
+    response.status === 404 ||
+    detail.toLowerCase().includes("model not found") ||
+    detail.toLowerCase().includes("no endpoints found")
+  ) {
+    return `Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model.`;
+  }
+  if (response.status === 429) {
+    return `${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your credits.`;
   }
 
   return `${provider.name} request failed: ${response.status} ${response.statusText}${detail ? ` — ${detail}` : ""}`;
@@ -242,39 +273,354 @@ async function safeReadText(response: Response): Promise<string> {
  * Stream a chat/completions request for a given provider config.
  * Yields StreamEvents (text deltas) and returns the completed AssistantTurn.
  */
+// ---------------------------------------------------------------------------
+// Cancelable sleep helper (internal to this module)
+// ---------------------------------------------------------------------------
+
+function sleepCancelable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    if (signal) {
+      signal.addEventListener("abort", onAbort);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reservation fraction guard (Phase 4)
+// ---------------------------------------------------------------------------
+
+/** Default: request must not consume more than 50% of remaining balance. */
+const DEFAULT_MAX_RESERVATION_FRACTION = 0.5;
+const MIN_GUARDED_MAX_TOKENS = 512;
+
+function getMaxReservationFraction(): number {
+  const raw = process.env.MAX_RESERVATION_FRACTION;
+  if (!raw) {
+    return DEFAULT_MAX_RESERVATION_FRACTION;
+  }
+  const v = parseFloat(raw);
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_MAX_RESERVATION_FRACTION;
+}
+
+/**
+ * Optionally lower maxTokens so the estimated reservation is within the
+ * configured fraction of the key's remaining balance.
+ * Fails open on any error — never throws.
+ */
+async function clampForReservation(
+  apiModelId: string,
+  apiKey: string,
+  baseUrl: string,
+  requestedMaxTokens: number,
+  floor = 0,
+): Promise<number> {
+  try {
+    const [keyInfo, prices] = await Promise.all([
+      fetchKeyInfo(apiKey, baseUrl),
+      fetchModelPrices(baseUrl),
+    ]);
+    if (!keyInfo || keyInfo.limitRemaining === null || keyInfo.limitRemaining <= 0) {
+      return requestedMaxTokens; // unlimited or unknown — leave as-is
+    }
+    const completionPrice =
+      prices?.[apiModelId] ??
+      (prices
+        ? (Object.values(prices).reduce((a: number, b: number) => a + b, 0) /
+          Math.max(Object.keys(prices).length, 1) || null)
+        : null);
+    if (!completionPrice || completionPrice <= 0) {
+      return requestedMaxTokens; // no pricing data
+    }
+
+    if (floor > 0) {
+      const totalAffordable = Math.floor(
+        (keyInfo.limitRemaining * AFFORDABILITY_SAFETY_MARGIN) / completionPrice,
+      );
+      if (totalAffordable < floor) {
+        throw new Error(
+          `OpenRouter balance is too low: can only afford ${totalAffordable} tokens ` +
+            `(minimum required for reasoning is ${floor}). ` +
+            `Please add credits at https://openrouter.ai/settings/credits.`,
+        );
+      }
+    }
+
+    const fraction = getMaxReservationFraction();
+    const affordableBudget = keyInfo.limitRemaining * fraction;
+    const maxAffordableTokens = Math.floor(affordableBudget / completionPrice);
+    const minGuarded = floor > 0 ? floor : MIN_GUARDED_MAX_TOKENS;
+
+    if (maxAffordableTokens < requestedMaxTokens) {
+      if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+        console.debug(
+          `[Reservation] Lowering max_tokens from ${requestedMaxTokens} → ${Math.max(minGuarded, maxAffordableTokens)} ` +
+          `(balance $${keyInfo.limitRemaining.toFixed(4)}, fraction ${fraction}, price $${completionPrice}/tok)`,
+        );
+      }
+    }
+    return Math.max(minGuarded, Math.min(requestedMaxTokens, maxAffordableTokens));
+  } catch (err) {
+    if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+      throw err;
+    }
+    return requestedMaxTokens; // Fail open
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Core streaming function with gate + classify402 + in-flight retry
+// ---------------------------------------------------------------------------
+
+const MAX_IN_FLIGHT_RETRIES = 2;
+
 async function* streamFromProvider(
   provider: ProviderConfig,
   apiKey: string,
   messages: ChatMessage[],
-  { signal, tools, onRetry }: StreamOptions = {},
+  { signal, tools, maxTokens, phase, onRetry, model }: StreamOptions = {},
 ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
+  const targetModel = model ?? provider.model;
+  let effectiveMaxTokens = phase
+    ? getPhaseMaxTokens(phase, targetModel, maxTokens)
+    : getModelMaxTokens(targetModel, maxTokens);
+
+  // Affordability pre-clamp (existing behavior)
+  if (provider.baseUrl.includes("openrouter.ai") && apiKey) {
+    const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
+    try {
+      const affordable = await getAffordableTokens(targetModel, apiKey, provider.baseUrl);
+      if (Number.isFinite(affordable)) {
+        if (floor > 0 && affordable < floor) {
+          throw new Error(
+            `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+              `(minimum required for reasoning is ${floor}). ` +
+              `Please add credits at https://openrouter.ai/settings/credits.`,
+          );
+        }
+        if (affordable > 0) {
+          effectiveMaxTokens = Math.min(effectiveMaxTokens, affordable);
+        }
+      }
+    } catch (err) {
+      if (floor > 0 && err instanceof Error && err.message.includes("OpenRouter balance is too low")) {
+        throw err;
+      }
+      // Fail open on other affordability errors
+    }
+
+    // Phase 4: reservation fraction guard
+    effectiveMaxTokens = await clampForReservation(
+      targetModel,
+      apiKey,
+      provider.baseUrl,
+      effectiveMaxTokens,
+      floor,
+    );
+  }
+
   const body: ChatCompletionRequest = {
-    model: provider.model,
+    model: targetModel,
     messages,
     stream: true,
+    max_tokens: effectiveMaxTokens,
   };
+  // TODO: Prompt Caching Breakpoint
+  // When OpenRouter / Anthropic structured cache_control markers (e.g. { type: "ephemeral" })
+  // are supported in request message content blocks, attach cache_control to the stable prefix
+  // message here to trigger provider-side KV prompt caching.
   if (tools && tools.length > 0) {
     body.tools = tools;
     body.tool_choice = "auto";
   }
 
-  const response = await fetchWithRetry(
-    `${provider.baseUrl}chat/completions`,
-    {
-      method: "POST",
-      headers: buildHeaders(provider, apiKey),
-      body: JSON.stringify(body),
-    },
-    { signal, onRetry },
+  // Phase 3: single-flight gate — acquire before sending the initial request.
+  // The gate is released as soon as we have a settled Response (ok or error),
+  // so the stream body can be consumed without holding the gate.
+  let response = await withGate(() =>
+    fetchWithRetry(
+      buildEndpointUrl(provider.baseUrl, "chat/completions"),
+      {
+        method: "POST",
+        headers: buildHeaders(provider, apiKey),
+        body: JSON.stringify(body),
+      },
+      { signal, onRetry },
+    )
   );
+
+  // Phase 1 + 2: classify 402s and handle in-flight budget retries
+  if (response.status === 402 || (!response.ok && !response.body)) {
+    const detail = await safeReadText(response);
+
+    if (response.status === 402) {
+      invalidateKeyInfoCache();
+      const classified = classify402(detail, response.headers, apiKey);
+
+      if (classified.kind === "max_tokens_unaffordable") {
+        // ── Existing behavior: single retry with floor(N * 0.9) ──────────
+        const affordable = classified.affordableTokens!;
+        const floor = (phase === "tool_decision" || phase === "edit") ? getReasoningFloor() : 0;
+        const minRequired = floor > 0 ? floor : MIN_RETRY_AFFORDABLE_TOKENS;
+        if (affordable < minRequired) {
+          throw new Error(
+            `OpenRouter balance is too low: can only afford ${affordable} tokens ` +
+              `(minimum required is ${minRequired}). ` +
+              `Please add credits at https://openrouter.ai/settings/credits.` +
+              `${classified.message ? ` Detail: ${classified.message}` : ""}`,
+          );
+        }
+        const retryTokens = Math.floor(affordable * 0.9);
+        const retryBody: ChatCompletionRequest = { ...body, max_tokens: retryTokens };
+        const retryResponse = await withGate(() =>
+          fetchWithRetry(
+            buildEndpointUrl(provider.baseUrl, "chat/completions"),
+            {
+              method: "POST",
+              headers: buildHeaders(provider, apiKey),
+              body: JSON.stringify(retryBody),
+            },
+            { signal, onRetry, retries: 0 },
+          )
+        );
+        if (retryResponse.ok && retryResponse.body) {
+          response = retryResponse;
+        } else {
+          const retryDetail = await safeReadText(retryResponse);
+          const safeRetryDetail = retryDetail.replace(apiKey, "[REDACTED]");
+          throw new Error(
+            `${provider.name} request failed (402 Payment Required) after retry: ` +
+              `${safeRetryDetail || retryResponse.statusText}`,
+          );
+        }
+      } else if (classified.kind === "in_flight_budget") {
+        // ── New: in-flight budget retry with Retry-After + halved tokens ─
+        let currentMaxTokens = body.max_tokens ?? effectiveMaxTokens;
+        let lastResponse: Response = response;
+
+        for (let attempt = 1; attempt <= MAX_IN_FLIGHT_RETRIES; attempt++) {
+          const waitSecs = classified.retryAfterSeconds ?? 20;
+          onRetry?.(
+            waitSecs * 1000,
+            attempt,
+          );
+          // Show visible status (surfaced to UI via onRetry callback)
+          console.log(
+            `[DAXIOM] OpenRouter in-flight budget full; waiting ${waitSecs}s, ` +
+              `then retrying (attempt ${attempt}/${MAX_IN_FLIGHT_RETRIES})...`,
+          );
+
+          // Cancelable wait
+          await sleepCancelable(waitSecs * 1000, signal);
+
+          // Halve max_tokens on retry (min 512) to lower the reservation
+          currentMaxTokens = Math.max(512, Math.floor(currentMaxTokens / 2));
+          const retryBody: ChatCompletionRequest = {
+            ...body,
+            max_tokens: currentMaxTokens,
+          };
+
+          lastResponse = await withGate(() =>
+            fetchWithRetry(
+              buildEndpointUrl(provider.baseUrl, "chat/completions"),
+              {
+                method: "POST",
+                headers: buildHeaders(provider, apiKey),
+                body: JSON.stringify(retryBody),
+              },
+              { signal, onRetry, retries: 0 },
+            )
+          );
+
+          if (lastResponse.ok && lastResponse.body) {
+            response = lastResponse;
+            break;
+          }
+
+          // Still failing — reclassify to see if it's still in-flight
+          if (lastResponse.status === 402) {
+            const retryDetail = await safeReadText(lastResponse);
+            const retryClassified = classify402(retryDetail, lastResponse.headers, apiKey);
+            if (retryClassified.kind === "in_flight_budget" && attempt < MAX_IN_FLIGHT_RETRIES) {
+              // Update wait time from new response and loop again
+              Object.assign(classified, { retryAfterSeconds: retryClassified.retryAfterSeconds });
+              continue;
+            }
+          }
+
+          if (attempt >= MAX_IN_FLIGHT_RETRIES) {
+            // Exhausted retries — surface clear actionable message
+            throw new Error(
+              `OpenRouter in-flight budget cap reached after ${MAX_IN_FLIGHT_RETRIES} retries. ` +
+                `Your account's in-flight limit is likely too low. ` +
+                `Adding even a small amount of credit raises the ceiling: ` +
+                `https://openrouter.ai/settings/credits . ` +
+                `Your session is intact — re-run the last step to try again.`,
+            );
+          }
+        }
+      } else {
+        // ── Class 3: insufficient_credits — no retry ─────────────────────
+        throw new Error(
+          `${provider.name} credit check failed (402 Payment Required). ` +
+            `Please add credits at https://openrouter.ai/settings/credits.` +
+            `${classified.message ? ` Detail: ${classified.message}` : ""}`,
+        );
+      }
+    }
+  }
 
   if (!response.ok || !response.body) {
     const detail = await safeReadText(response);
-    // Ensure the API key never appears in error messages
     const safeDetail = detail.replace(apiKey, "[REDACTED]");
+    let errMessage = "";
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed.error?.message) {
+        errMessage = parsed.error.message.replace(apiKey, "[REDACTED]");
+      }
+    } catch {
+      errMessage = safeDetail;
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `${provider.name} authentication failed (${response.status} ${response.statusText}). Check your OpenRouter API key.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+      );
+    }
+    if (
+      response.status === 404 ||
+      errMessage.toLowerCase().includes("model not found") ||
+      errMessage.toLowerCase().includes("no endpoints found")
+    ) {
+      throw new Error(
+        `Model not found on ${provider.name}: ${provider.model}. Please select a valid OpenRouter model (run /models).${errMessage ? ` Detail: ${errMessage}` : ""}`,
+      );
+    }
+    if (response.status === 429) {
+      throw new Error(
+        `${provider.name} rate limit exceeded (429 Rate Limited). Please try again later or check your OpenRouter credits.${errMessage ? ` Detail: ${errMessage}` : ""}`,
+      );
+    }
+
     throw new Error(
       `${provider.name} request failed (${response.status} ${response.statusText})` +
-        (safeDetail ? `: ${safeDetail}` : ""),
+        (errMessage ? `: ${errMessage}` : ""),
     );
   }
 
@@ -284,6 +630,7 @@ async function* streamFromProvider(
   let content = "";
   const toolAcc = new ToolCallAccumulator();
   let finishReason: string | null = null;
+  let providerUsage: AssistantTurn["usage"] | undefined;
 
   try {
     while (true) {
@@ -304,7 +651,10 @@ async function* streamFromProvider(
 
         for (const chunk of parseSseEvent(rawEvent)) {
           if (chunk === DONE_SENTINEL) {
-            return { content, toolCalls: toolAcc.finalize(), finishReason };
+            return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+          }
+          if ((chunk as ChatCompletionChunk).usage) {
+            providerUsage = (chunk as ChatCompletionChunk).usage;
           }
           const choice = (chunk as ChatCompletionChunk).choices?.[0];
           if (!choice) {
@@ -328,7 +678,7 @@ async function* streamFromProvider(
     reader.releaseLock();
   }
 
-  return { content, toolCalls: toolAcc.finalize(), finishReason };
+  return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,9 +781,15 @@ export class ProviderClient {
         primaryErr?.message?.includes("401") ||
         primaryErr?.message?.includes("403") ||
         primaryErr?.message?.includes("Unauthorized") ||
-        primaryErr?.message?.includes("Forbidden");
+        primaryErr?.message?.includes("Forbidden") ||
+        primaryErr?.message?.includes("authentication failed");
 
-      if (isAuthError || !this.fallbackProvider || this.didFallback) {
+      const isModelNotFoundError =
+        primaryErr?.message?.includes("404") ||
+        primaryErr?.message?.includes("Model not found") ||
+        primaryErr?.message?.includes("No endpoints found");
+
+      if (isAuthError || isModelNotFoundError || !this.fallbackProvider || this.didFallback) {
         throw primaryErr;
       }
 

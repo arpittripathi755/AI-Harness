@@ -7,15 +7,18 @@ import type {
   ToolCall,
   ToolDefinition,
 } from "./types";
-import { modelApi } from "../shared/models";
+import { getModelMaxTokens, modelApi } from "../shared/models";
 import { streamResponses } from "./responses";
 import { fetchWithRetry } from "./http";
 import type { ProviderClient } from "./ProviderClient";
+import { type CallPhase, getPhaseMaxTokens } from "./tokenBudget";
+import { buildEndpointUrl } from "./endpointUtils";
 
 export interface LLMClientOptions {
   baseUrl: string;
   model: string;
   apiKey: string;
+  maxTokens?: number;
 }
 
 export interface StreamOptions {
@@ -23,6 +26,11 @@ export interface StreamOptions {
   tools?: ToolDefinition[];
   /** Notified when a request is retried after a rate limit / transient error. */
   onRetry?: (waitMs: number, attempt: number) => void;
+  maxTokens?: number;
+  /** Phase of the turn for adaptive token budgeting. */
+  phase?: CallPhase;
+  /** Optional model override for this stream request. */
+  model?: string;
 }
 
 /**
@@ -32,11 +40,13 @@ export interface StreamOptions {
  */
 export class LLMClient {
   private model: string;
+  private maxTokens?: number;
   /** Optional delegate; when set, all stream() calls route through this. */
   private providerClient: ProviderClient | undefined;
 
   constructor(private readonly opts: LLMClientOptions) {
     this.model = opts.model;
+    this.maxTokens = opts.maxTokens;
     this.opts.baseUrl = this.normalizeEndpoint(opts.baseUrl, opts.apiKey);
   }
 
@@ -47,11 +57,13 @@ export class LLMClient {
   static fromProviderClient(
     providerClient: ProviderClient,
     apiKey: string,
+    maxTokens?: number,
   ): LLMClient {
     const instance = new LLMClient({
       baseUrl: providerClient.providerBaseUrl,
-      model: providerClient.canonicalModel,
+      model: providerClient.model,
       apiKey,
+      maxTokens,
     });
     instance.providerClient = providerClient;
     return instance;
@@ -69,6 +81,11 @@ export class LLMClient {
   setModel(model: string): void {
     this.model = model;
     this.providerClient?.setModel(model);
+  }
+
+  /** Update the maximum tokens generated per request. */
+  setMaxTokens(maxTokens: number): void {
+    this.maxTokens = maxTokens;
   }
 
   /** Update the base URL / API key for subsequent requests. */
@@ -145,24 +162,33 @@ export class LLMClient {
    */
   async *stream(
     messages: ChatMessage[],
-    { signal, tools, onRetry }: StreamOptions = {},
+    { signal, tools, onRetry, maxTokens, phase, model }: StreamOptions = {},
   ): AsyncGenerator<StreamEvent, AssistantTurn, unknown> {
+    const activeModel = model ?? this.model;
+    const rawTokens = maxTokens ?? this.maxTokens;
+    const effectiveMaxTokens = phase
+      ? getPhaseMaxTokens(phase, activeModel, rawTokens)
+      : rawTokens;
+
     // Delegate to ProviderClient when one is active (dual-provider path)
     if (this.providerClient) {
       return yield* this.providerClient.stream(messages, {
         signal,
         tools,
         onRetry,
+        maxTokens: effectiveMaxTokens,
+        phase,
+        model: activeModel,
       });
     }
 
     // Models that require the OpenAI Responses API (e.g. GPT-5.5) use a separate
     // adapter. The chat/completions path below is unchanged for every other model.
-    if (modelApi(this.model) === "responses") {
+    if (modelApi(activeModel) === "responses") {
       return yield* streamResponses({
         baseUrl: this.opts.baseUrl,
         apiKey: this.opts.apiKey,
-        model: this.model,
+        model: activeModel,
         messages,
         tools,
         signal,
@@ -171,7 +197,7 @@ export class LLMClient {
     }
 
     const effectiveModel = this.resolveModelForEndpoint(
-      this.model,
+      activeModel,
       this.opts.baseUrl,
     );
 
@@ -179,6 +205,9 @@ export class LLMClient {
       model: effectiveModel,
       messages,
       stream: true,
+      max_tokens: phase
+        ? effectiveMaxTokens
+        : getModelMaxTokens(activeModel, effectiveMaxTokens),
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
@@ -186,7 +215,7 @@ export class LLMClient {
     }
 
     const response = await fetchWithRetry(
-      `${this.opts.baseUrl}chat/completions`,
+      buildEndpointUrl(this.opts.baseUrl, "chat/completions"),
       {
         method: "POST",
         headers: {
@@ -213,6 +242,7 @@ export class LLMClient {
     let content = "";
     const toolAcc = new ToolCallAccumulator();
     let finishReason: string | null = null;
+    let providerUsage: AssistantTurn["usage"] | undefined;
 
     try {
       while (true) {
@@ -229,7 +259,10 @@ export class LLMClient {
 
           for (const chunk of parseSseEvent(rawEvent)) {
             if (chunk === DONE) {
-              return { content, toolCalls: toolAcc.finalize(), finishReason };
+              return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
+            }
+            if (chunk.usage) {
+              providerUsage = chunk.usage;
             }
             const choice = chunk.choices?.[0];
             if (!choice) {
@@ -253,7 +286,7 @@ export class LLMClient {
       reader.releaseLock();
     }
 
-    return { content, toolCalls: toolAcc.finalize(), finishReason };
+    return { content, toolCalls: toolAcc.finalize(), finishReason, usage: providerUsage };
   }
 }
 

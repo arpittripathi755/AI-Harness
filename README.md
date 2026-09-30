@@ -161,14 +161,29 @@ Daxiom uses a deterministic configuration hierarchy:
   deepseek/deepseek-v4.1-flash
   ```
 
+* **Verified DeepSeek Models**:
+  * `deepseek/deepseek-v4.1-flash` (DeepSeek V4.1 Flash — 1M context)
+  * `deepseek/deepseek-v4-pro` (DeepSeek V4 Pro — 1M context)
+  * `deepseek/deepseek-v4-flash` (DeepSeek V4 Flash — 1M context)
+  * `deepseek/deepseek-chat` (DeepSeek V3 — 163k context)
+  * `deepseek/deepseek-r1` (DeepSeek R1 — 64k context)
+
+* **Verified Qwen Models**:
+  * `qwen/qwen3-coder` (Qwen3 Coder 480B — 262k context)
+  * `qwen/qwen3-coder-plus` (Qwen3 Coder Plus — 1M context)
+  * `qwen/qwen3-coder-flash` (Qwen3 Coder Flash — 1M context)
+  * `qwen/qwen3.8-flash` (Qwen3.8 Flash — 1M context)
+  * `qwen/qwen-2.5-72b-instruct` (Qwen2.5 72B Instruct — 32k context)
+  * `qwen/qwen-plus` (Qwen Plus — 1M context)
+
 * **Supported Provider Endpoints**:
   * **OpenRouter**:
     ```text
-    https://openrouter.ai/api/v1
+    https://openrouter.ai/api/v1/
     ```
   * **AWS Bedrock** (OpenAI-compatible runtime):
     ```text
-    https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1
+    https://bedrock-runtime.ap-south-1.amazonaws.com/openai/v1/
     ```
 
 ### Environment Variables Template
@@ -176,10 +191,85 @@ Daxiom uses a deterministic configuration hierarchy:
 You can copy `.env.example` as a template for local environment variables:
 
 ```env
-AI_API_KEY=
+OPENROUTER_API_KEY=
+# or AI_API_KEY=
 MODEL=deepseek/deepseek-v4.1-flash
-BASE_URL=https://openrouter.ai/api/v1
+BASE_URL=https://openrouter.ai/api/v1/
+MAX_TOKENS=16384
+AI_MAX_TOKENS=
+INPUT_TOKEN_BUDGET=24000
+MAX_SESSION_USD=
+MAX_TOOL_TURNS=25
+PHASE_MODEL_OVERRIDE=
 ```
+
+---
+
+## Token Budget & Cost Controls
+
+Daxiom employs an adaptive, affordability-aware token budgeting and cost control architecture designed to eliminate OpenRouter HTTP 402 credit errors, optimize LLM spend, and maintain maximum prompt caching efficiency.
+
+### 1. Per-Phase Output Token Budgets
+
+Completion requests are dynamically budgeted according to the active execution phase:
+
+| Call Phase | Default Budget | Description |
+|---|---|---|
+| `tool_decision` | 1,024 tokens | Selecting which tool to execute (exploring, reading, searching, verifying) |
+| `edit` | 4,096 tokens | Writing code, creating files, applying edits or multi-edit patches |
+| `explain` | 1,536 tokens | User-facing summaries, task explanations, and final reports |
+| `plan` | 2,048 tokens | Architecture analysis and step-by-step implementation plans |
+
+### 2. Output Budget Resolution Order
+
+When resolving completion token limits (`effectiveMaxTokens`), each step can **only lower** the budget, never raise it:
+1. **Phase Default / Explicit Override**: Starts with `override` (if supplied) or `PHASE_BUDGET[phase]`.
+2. **Environment Ceiling**: Capped by the hard ceiling defined in `MAX_TOKENS` or `AI_MAX_TOKENS` (if set). Environment variables establish an upper ceiling rather than an inflexible global constant.
+3. **Model Output Limit**: Capped by the model's native `maxOutputTokens` from its metadata.
+4. **Affordability Clamping**: In OpenRouter environments, clamped to `Math.floor((limit_remaining * 0.9) / completionPricePerToken)` based on remaining key balance.
+5. **Safe Validation**: Validated through `resolveMaxTokens` to guarantee a positive integer fallback on NaN, non-integer, or invalid values.
+
+### 3. OpenRouter HTTP 402 Fallback & Auto-Retry
+
+When an OpenRouter request encounters an HTTP 402 (Insufficient Credits / Balance Limit Exceeded):
+1. **Affordability Parsing**: If the response body matches `can only afford (\d+)`, Daxiom parses the affordable token amount $N$.
+2. **Single Retry**: Sets `max_tokens = Math.floor(N * 0.9)` (applying a 10% safety margin) and retries the request **exactly once**.
+3. **Sane Minimum Threshold**: If $N < 256$, Daxiom does not retry; it immediately surfaces a clear error informing the user that their balance is too low.
+4. **Cache Invalidation**: On a 402 response, the in-memory `/key` balance cache is invalidated immediately to ensure up-to-date accounting.
+5. **Loop Prevention**: If the single retry also encounters a 402, the request fails without looping.
+
+### 4. Token-Based Input Context Management
+
+- **Token Estimation**: Fast tokenizer heuristic ($tokens \approx \lceil characters / 3.5 \rceil$).
+- **Head & Tail Output Truncation**: Commands executed via `run_command` preserve the first 6,000 characters and the last 12,000 characters (where test runner failures and compiler diagnostics reside), replacing the middle with `\n… [N lines omitted] …\n`.
+- **History Compaction (`compactHistory`)**:
+  - When estimated conversation tokens exceed 70% of `INPUT_TOKEN_BUDGET` (default: 24,000 tokens), older tool execution results are condensed into single-line stubs: `[tool result omitted: read_file src/a.ts (~1,200 tokens). Re-read if needed.]`.
+  - The system prompt and the last 3 turns are always preserved verbatim.
+  - If still over budget, oldest turns are pruned while strictly maintaining tool-call and tool-result pairing.
+
+### 5. Cache-Friendly Prompt Layout
+
+To maximize KV prompt cache hit rates on OpenRouter and modern LLMs:
+- **Stable Prefix**: Core directives, mode rules, tool efficiency instructions, and web safety rules are placed first and are byte-identical across turns.
+- **Volatile Suffix**: Dynamic variables (active working memory, ephemeral task phase) are placed at the end of the prompt.
+
+### 6. Loop & Safety Guards
+
+- **Turn Cap (`MAX_TOOL_TURNS`)**: The agent loop allows up to 25 tool turn round-trips by default. Upon reaching the limit, the agent stops executing tools and provides a clear summary of what was completed and what remains.
+- **Duplicate Tool Caching**: Redundant calls to read-only tools (`read_file`, `list_files`, `search_workspace`, etc.) with identical arguments return cached results prefixed with `[duplicate call; returning earlier result]` without re-executing. Side-effecting tools (`run_command`, file modifications) are never cached. Any successful file mutation clears the read-only cache.
+- **Session Cost Guard (`MAX_SESSION_USD`)**: Optional dollar cap on session spending. Emits a warning when reaching 80% and halts the agent loop gracefully at 100%.
+
+### 7. Environment Variables Reference
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_TOKENS` | `16384` | Hard ceiling on output tokens per completion; caps per-phase budgets. |
+| `AI_MAX_TOKENS` | Unset | Alias for `MAX_TOKENS`. |
+| `INPUT_TOKEN_BUDGET` | `24000` | Input token threshold before older message compaction kicks in. |
+| `MAX_SESSION_USD` | Unset | Maximum session dollar spend. Warns at 80%, stops at 100%. |
+| `MAX_TOOL_TURNS` | `25` | Maximum number of tool-calling iterations before stopping with a summary. |
+| `PHASE_MODEL_OVERRIDE` | Unset | Optional JSON map of phase to model ID (e.g. `{"edit":"qwen/qwen-2.5-coder-32b-instruct"}`). |
+
 
 ---
 

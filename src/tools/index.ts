@@ -10,6 +10,7 @@ import { renameFileTool } from "./impl/renameFile";
 import { deleteFileTool } from "./impl/deleteFile";
 import { multiEditTool } from "./impl/multiEdit";
 import { runCommandTool } from "./impl/runCommand";
+import { gitCloneTool } from "./impl/gitClone";
 import { fetchGithubIssueTool } from "./impl/fetchGithubIssue";
 import { webSearchTool } from "./impl/webSearch";
 import { webFetchTool } from "./impl/webFetch";
@@ -36,6 +37,7 @@ export function createToolRegistry(): ToolRegistry {
     .register(editFileTool)
     .register(renameFileTool)
     .register(multiEditTool)
+    .register(gitCloneTool)
     // Destructive / side-effecting (require modal confirmation)
     .register(deleteFileTool)
     .register(runCommandTool);

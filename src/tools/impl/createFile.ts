@@ -30,6 +30,9 @@ export const createFileTool: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
+    if (ctx.signal?.aborted) {
+      throw new ToolError("Operation cancelled.");
+    }
     const rel = requireString(args, "path");
     const content = typeof args.content === "string" ? args.content : "";
     const overwrite = args.overwrite === true;

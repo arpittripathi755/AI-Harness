@@ -14,6 +14,39 @@ export interface ChangeSetEntry {
   stagedContent?: string;
 }
 
+export interface JournalEntry {
+  relPath: string;
+  absPath: string;
+  exists: boolean;
+  originalContent?: string;
+  originalMode?: number;
+  writtenContent?: string;
+  action: "create" | "edit" | "delete" | "rename";
+}
+
+export interface MaterializationJournal {
+  id: string;
+  timestamp: number;
+  workspaceRoot: string;
+  entries: JournalEntry[];
+}
+
+/**
+ * Recognizes standard test, build, lint, and verification commands.
+ */
+export function isVerificationCommand(cmd: string, repoTestCmd?: string): boolean {
+  if (!cmd || typeof cmd !== "string") {
+    return false;
+  }
+  const trimmed = cmd.trim();
+  if (repoTestCmd && trimmed.includes(repoTestCmd)) {
+    return true;
+  }
+  return /\b(npm\s+(?:run\s+)?(?:test|build|lint)|tsc|jest|vitest|pytest|cargo\s+test|go\s+test|yarn\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|bun\s+(?:run\s+)?(?:test|build|lint)|make\s+test)\b/i.test(
+    trimmed,
+  );
+}
+
 /**
  * Authoritative in-memory staging overlay for all file mutations.
  *
@@ -22,6 +55,8 @@ export interface ChangeSetEntry {
  * Physical disk writes occur strictly when the ChangeSet is accepted and applied.
  */
 export class ChangeManager {
+  private static materializationMutex: Promise<void> = Promise.resolve();
+
   private readonly staged = new Map<string, string>(); // relPath -> content
   private readonly originals = new Map<string, string>(); // relPath -> original text
   private readonly created = new Set<string>(); // relPath
@@ -36,6 +71,11 @@ export class ChangeManager {
     } else {
       this.workspaceRoot = workspaceRoot;
     }
+    this.recoverStaleJournals();
+  }
+
+  getWorkspaceFsPath(): string {
+    return this.workspaceRoot ? path.resolve(this.workspaceRoot.fsPath) : process.cwd();
   }
 
   private normalize(filePath: string): string {
@@ -513,6 +553,289 @@ export class ChangeManager {
     this.created.clear();
     this.deleted.clear();
     this.renames.clear();
+  }
+
+  /**
+   * Crash recovery: on first use or recovery check, detect stale materialization journals,
+   * restore recorded original state, and remove the journal.
+   */
+  recoverStaleJournals(): void {
+    try {
+      const rootPath = this.getWorkspaceFsPath();
+      const journalDir = path.join(rootPath, ".daxiom", "journal");
+      if (!fs.existsSync(journalDir)) {
+        return;
+      }
+      const files = fs.readdirSync(journalDir);
+      for (const file of files) {
+        if (!file.endsWith(".json")) {
+          continue;
+        }
+        const journalPath = path.join(journalDir, file);
+        try {
+          const raw = fs.readFileSync(journalPath, "utf-8");
+          const journal = JSON.parse(raw) as MaterializationJournal;
+          if (journal && Array.isArray(journal.entries)) {
+            for (let i = journal.entries.length - 1; i >= 0; i--) {
+              const entry = journal.entries[i];
+              if (!entry.exists) {
+                if (fs.existsSync(entry.absPath)) {
+                  fs.unlinkSync(entry.absPath);
+                }
+                this.cleanEmptyParents(path.dirname(entry.absPath), journal.workspaceRoot);
+              } else if (entry.originalContent !== undefined) {
+                fs.mkdirSync(path.dirname(entry.absPath), { recursive: true });
+                fs.writeFileSync(entry.absPath, entry.originalContent, "utf-8");
+                if (entry.originalMode !== undefined) {
+                  try {
+                    fs.chmodSync(entry.absPath, entry.originalMode);
+                  } catch {}
+                }
+              }
+            }
+          }
+          fs.unlinkSync(journalPath);
+          if (process.env.DEBUG_TOKEN_BUDGET === "1") {
+            console.log(`[ChangeManager] Crash recovery: restored state from stale journal ${file}`);
+          }
+        } catch {
+          // If a journal is corrupt, fail open
+          try {
+            fs.unlinkSync(journalPath);
+          } catch {}
+        }
+      }
+    } catch {
+      // Fail open
+    }
+  }
+
+  /**
+   * Execute an operation against a temporary physical materialization of staged edits.
+   * Serialized with a mutex. Restores original disk state in finally block.
+   */
+  async withMaterialized<T>(fn: () => Promise<T>): Promise<T> {
+    const isFlagOn = process.env.DAXIOM_STAGED_DISK_SYNC === "1";
+    if (!isFlagOn || !this.hasStaged()) {
+      return await fn();
+    }
+
+    const previousLock = ChangeManager.materializationMutex;
+    let releaseLock: () => void;
+    ChangeManager.materializationMutex = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+
+    await previousLock;
+    try {
+      return await this.performMaterialized(fn);
+    } finally {
+      releaseLock!();
+    }
+  }
+
+  private async performMaterialized<T>(fn: () => Promise<T>): Promise<T> {
+    const rootPath = this.getWorkspaceFsPath();
+    const affected = new Set<string>();
+    for (const rel of this.deleted) affected.add(rel);
+    for (const rel of this.created) affected.add(rel);
+    for (const rel of this.staged.keys()) affected.add(rel);
+    for (const [oldRel, newRel] of this.renames.entries()) {
+      affected.add(oldRel);
+      affected.add(newRel);
+    }
+
+    // Safety check: verify affected files have not been externally modified since staged
+    for (const rel of affected) {
+      if (this.originals.has(rel) && !this.created.has(rel)) {
+        const absPath = this.resolveUri(rel).fsPath;
+        if (fs.existsSync(absPath)) {
+          const currentDisk = fs.readFileSync(absPath, "utf-8");
+          const expectedOrig = this.originals.get(rel)!;
+          if (currentDisk !== expectedOrig) {
+            console.warn(
+              `[ChangeManager] Unsafe external modification detected on "${rel}". Aborting materialization to prevent overwrite.`,
+            );
+            return await fn(); // Fail open: do not overwrite
+          }
+        }
+      }
+    }
+
+    const journalDir = path.join(rootPath, ".daxiom", "journal");
+    fs.mkdirSync(journalDir, { recursive: true });
+    const journalId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const journalFile = path.join(journalDir, `${journalId}.json`);
+
+    const entries: JournalEntry[] = [];
+
+    // Capture pre-materialization snapshot for journal
+    for (const rel of affected) {
+      const absPath = this.resolveUri(rel).fsPath;
+      const exists = fs.existsSync(absPath);
+      let originalContent: string | undefined;
+      let originalMode: number | undefined;
+
+      if (exists) {
+        originalContent = fs.readFileSync(absPath, "utf-8");
+        try {
+          originalMode = fs.statSync(absPath).mode;
+        } catch {}
+      }
+
+      let action: "create" | "edit" | "delete" | "rename" = "edit";
+      let writtenContent: string | undefined;
+
+      if (this.deleted.has(rel)) {
+        action = "delete";
+      } else if (this.created.has(rel)) {
+        action = "create";
+        writtenContent = this.staged.get(rel) ?? "";
+      } else if (this.renames.has(rel)) {
+        action = "rename";
+      } else if (Array.from(this.renames.values()).includes(rel)) {
+        action = "rename";
+        writtenContent = this.staged.get(rel) ?? "";
+      } else if (this.staged.has(rel)) {
+        action = "edit";
+        writtenContent = this.staged.get(rel)!;
+      }
+
+      entries.push({
+        relPath: rel,
+        absPath,
+        exists,
+        originalContent,
+        originalMode,
+        writtenContent,
+        action,
+      });
+    }
+
+    const journalData: MaterializationJournal = {
+      id: journalId,
+      timestamp: Date.now(),
+      workspaceRoot: rootPath,
+      entries,
+    };
+
+    fs.writeFileSync(journalFile, JSON.stringify(journalData, null, 2), "utf-8");
+
+    // Apply materialization to disk
+    try {
+      // 1. Deletions (and rename old paths)
+      for (const rel of this.deleted) {
+        const absPath = this.resolveUri(rel).fsPath;
+        if (fs.existsSync(absPath)) {
+          fs.unlinkSync(absPath);
+        }
+      }
+      for (const oldRel of this.renames.keys()) {
+        const absPath = this.resolveUri(oldRel).fsPath;
+        if (fs.existsSync(absPath)) {
+          fs.unlinkSync(absPath);
+        }
+      }
+
+      // 2. Creates, edits, rename new paths
+      for (const [rel, content] of this.staged.entries()) {
+        if (this.deleted.has(rel)) continue;
+        const absPath = this.resolveUri(rel).fsPath;
+        fs.mkdirSync(path.dirname(absPath), { recursive: true });
+        fs.writeFileSync(absPath, content, "utf-8");
+      }
+    } catch (matErr) {
+      // If writing staged edits failed, restore immediately and fail open
+      this.restoreJournal(journalData, journalFile, journalDir);
+      throw matErr;
+    }
+
+    let result: T;
+    let execError: any = null;
+
+    try {
+      result = await fn();
+    } catch (err) {
+      execError = err;
+    } finally {
+      this.restoreJournal(journalData, journalFile, journalDir);
+    }
+
+    if (execError) {
+      throw execError;
+    }
+    return result!;
+  }
+
+  private restoreJournal(
+    journal: MaterializationJournal,
+    journalFile: string,
+    journalDir: string,
+  ): void {
+    for (let i = journal.entries.length - 1; i >= 0; i--) {
+      const entry = journal.entries[i];
+      // Check conflict rule: did the command modify the materialized file?
+      if (entry.writtenContent !== undefined && fs.existsSync(entry.absPath)) {
+        try {
+          const currentDisk = fs.readFileSync(entry.absPath, "utf-8");
+          if (currentDisk !== entry.writtenContent) {
+            const safeName = entry.relPath.replace(/[/\\?%*:|"<>]/g, "_");
+            const backupFile = path.join(
+              journalDir,
+              `conflict-${journal.id}-${safeName}.bak`,
+            );
+            fs.writeFileSync(backupFile, currentDisk, "utf-8");
+            console.warn(
+              `[ChangeManager] Conflict detected: "${entry.relPath}" was modified by verification command. Preserved backup at ${backupFile}`,
+            );
+          }
+        } catch {}
+      }
+
+      // Restore original state
+      try {
+        if (!entry.exists) {
+          if (fs.existsSync(entry.absPath)) {
+            fs.unlinkSync(entry.absPath);
+          }
+          this.cleanEmptyParents(path.dirname(entry.absPath), journal.workspaceRoot);
+        } else if (entry.originalContent !== undefined) {
+          fs.mkdirSync(path.dirname(entry.absPath), { recursive: true });
+          fs.writeFileSync(entry.absPath, entry.originalContent, "utf-8");
+          if (entry.originalMode !== undefined) {
+            try {
+              fs.chmodSync(entry.absPath, entry.originalMode);
+            } catch {}
+          }
+        }
+      } catch (rstErr: any) {
+        console.error(`[ChangeManager] Error restoring "${entry.relPath}":`, rstErr);
+      }
+    }
+
+    // Clean up journal file
+    try {
+      if (fs.existsSync(journalFile)) {
+        fs.unlinkSync(journalFile);
+      }
+    } catch {}
+  }
+
+  private cleanEmptyParents(dir: string, root: string): void {
+    let current = path.resolve(dir);
+    const resolvedRoot = path.resolve(root);
+    while (current.startsWith(resolvedRoot) && current !== resolvedRoot) {
+      try {
+        if (fs.existsSync(current) && fs.readdirSync(current).length === 0) {
+          fs.rmdirSync(current);
+          current = path.dirname(current);
+        } else {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
   }
 }
 

@@ -1,5 +1,20 @@
 #!/usr/bin/env node
 
+if (typeof (process as any).loadEnvFile === "function") {
+  try {
+    (process as any).loadEnvFile();
+  } catch {
+    /* ignore missing or unreadable .env file */
+  }
+}
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[DAXIOM ERROR] Unhandled promise rejection:", reason instanceof Error ? reason.stack || reason.message : reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[DAXIOM ERROR] Uncaught exception:", err instanceof Error ? err.stack || err.message : err);
+});
+
 import * as path from "path";
 import * as fs from "fs";
 import * as readline from "readline";
@@ -11,10 +26,14 @@ import { createToolRegistry } from "./tools";
 import type { ToolContext } from "./tools/types";
 import { ChangeManager } from "./tools/changes";
 import { resolvePathInWorkspace, toRelative } from "./tools/workspace";
+import { checkBroadWorkspaceWarning } from "./tools/workspaceSafety";
 import {
   getModelByApiId,
+  getModelDisplayName,
   MODELS,
   resolveModelId,
+  isOpenRouterModelId,
+  getMaxTokens,
 } from "./shared/models";
 import { TerminalUI, colors } from "./cli/tui";
 import { WorkspaceIsolation } from "./cli/workspaceIsolation";
@@ -27,12 +46,21 @@ import {
 } from "./llm/ProviderClient";
 import { CANONICAL_MODEL } from "./llm/providers";
 
+function cleanKey(val?: string): string | undefined {
+  if (!val) {
+    return undefined;
+  }
+  const cleaned = val.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 function getCliApiKey(): string | undefined {
-  // AI_API_KEY is the canonical credential — never logged or displayed.
-  return (
-    process.env.AI_API_KEY?.trim() ||
-    process.env.DEEPSEEK_API_KEY?.trim() ||
-    process.env.OPENAI_API_KEY?.trim()
+  // OPENROUTER_API_KEY or AI_API_KEY — never logged or displayed.
+  return cleanKey(
+    process.env.OPENROUTER_API_KEY ||
+    process.env.AI_API_KEY ||
+    process.env.DEEPSEEK_API_KEY ||
+    process.env.OPENAI_API_KEY
   );
 }
 
@@ -41,19 +69,36 @@ function getCliApiKey(): string | undefined {
 async function main(): Promise<void> {
   const apiKey = getCliApiKey();
   if (!apiKey) {
-    console.error("┌──────────────────────────────────────────────────────────────┐");
-    console.error("│ ERROR: AI_API_KEY environment variable is not set.           │");
-    console.error("│                                                              │");
-    console.error("│ Please export your API key before running:                   │");
-    console.error("│   export AI_API_KEY=\"<your-api-key>\"                         │");
-    console.error("│   make run                                                   │");
-    console.error("└──────────────────────────────────────────────────────────────┘");
+    console.error(`\n\x1b[91m┌─ CONFIGURATION ERROR ─────────────────────────────────────────┐\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m  ✘  No API key configured.                                     \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m                                                                \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m  Set one of these in your .env file:                            \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m    NVIDIA_API_KEY=nvapi-...                                    \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m│\x1b[0m    AI_API_KEY=...                                              \x1b[91m│\x1b[0m`);
+    console.error(`\x1b[91m└────────────────────────────────────────────────────────────────┘\x1b[0m\n`);
     process.exit(1);
   }
 
   // Deterministic configuration priority:
-  // Runtime command -> Session configuration -> Environment configuration -> Default configuration
-  const envModel = process.env.MODEL?.trim() || process.env.AI_MODEL?.trim();
+  // CLI argument (--model) -> Environment configuration (MODEL / AI_MODEL) -> Default configuration
+  let cliModel: string | undefined;
+  for (let i = 2; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === "--model" && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
+      cliModel = process.argv[i + 1].trim();
+    } else if (a.startsWith("--model=")) {
+      cliModel = a.slice("--model=".length).trim();
+    }
+  }
+
+  const configuredModel =
+    cliModel ||
+    process.env.MODEL?.trim() ||
+    process.env.AI_MODEL?.trim();
+
+  // Single authoritative source of truth for the active OpenRouter model ID
+  let activeModelId = configuredModel ? resolveModelId(configuredModel) : CANONICAL_MODEL;
+
   const envBaseUrl =
     process.env.BASE_URL?.trim() ||
     process.env.AI_BASE_URL?.trim() ||
@@ -64,7 +109,7 @@ async function main(): Promise<void> {
   console.log("Detecting LLM providers...");
   let providerClient: ProviderClient;
   try {
-    const detection = await detectProviders(apiKey, undefined, envBaseUrl, envModel);
+    const detection = await detectProviders(apiKey, undefined, envBaseUrl, activeModelId);
     for (const s of detection.statuses) {
       if (s.available) {
         console.log(`  ✓ ${s.name}: available`);
@@ -74,15 +119,13 @@ async function main(): Promise<void> {
       }
     }
     providerClient = buildProviderClient(detection, apiKey);
+    providerClient.setModel(activeModelId);
     console.log(`  → Using: ${providerClient.providerName}`);
   } catch (err: any) {
     console.error(`\n[DAXIOM] Fatal: ${err.message}`);
     process.exit(1);
   }
 
-  // Use the environment model or default canonical model as the active model ID.
-  // Declared as `let` so the /model slash command can switch it live.
-  let currentModelId = envModel ? resolveModelId(envModel) : CANONICAL_MODEL;
   let allowMutations = true; // Auto Edit is enabled by default in evaluation mode!
 
   // 1. Host / Application Root: where DAXIOM itself is installed.
@@ -123,6 +166,20 @@ async function main(): Promise<void> {
         resolvePathInWorkspace(input, root, async () => true),
       toRelative: (uri: vscode.Uri) => toRelative(root, uri),
       confirm: async () => true,
+      switchWorkspace: async (newPath: string) => {
+        const newRoot = vscode.Uri.file(newPath);
+        const folderName = path.basename(newPath);
+        (vscode.workspace as any).workspaceFolders = [
+          { uri: newRoot, name: folderName, index: 0 },
+        ];
+        toolContext = buildToolContext(newRoot);
+        if (session) {
+          session.setWorkspace(toolContext, folderName);
+        }
+        currentWorkspaceRoot = newRoot;
+        currentWorkspacePath = newPath;
+        tui.printNotice(`Workspace switched to: ${newPath}`);
+      },
     };
   }
 
@@ -138,11 +195,13 @@ async function main(): Promise<void> {
     currentChangeManager.clear();
   }
 
-  const modelInfo = getModelByApiId(currentModelId);
-  const modelDisplayName = modelInfo?.displayName ?? currentModelId;
-
   // Build the LLMClient wrapping the selected ProviderClient
-  const llmClientForSession = LLMClient.fromProviderClient(providerClient, apiKey);
+  const llmClientForSession = LLMClient.fromProviderClient(
+    providerClient,
+    apiKey,
+    getMaxTokens(),
+  );
+  llmClientForSession.setModel(activeModelId);
 
   let session = new (ChatSession as any)(
     llmClientForSession,
@@ -150,7 +209,7 @@ async function main(): Promise<void> {
     toolContext,
     path.basename(defaultWorkspace),
     allowMutations,
-    currentModelId,
+    activeModelId,
     chats.active.history,
   ) as ChatSession;
 
@@ -368,7 +427,7 @@ async function main(): Promise<void> {
         console.log(`\n${colors.bold}${colors.cyan}=== DAXIOM Status ===${colors.reset}`);
         console.log(`  ${colors.bold}Workspace:${colors.reset}    ${currentWorkspacePath}`);
         console.log(`  ${colors.bold}Phase:${colors.reset}        ${colors.yellow}${phase}${colors.reset}`);
-        console.log(`  ${colors.bold}Model:${colors.reset}        ${modelDisplayName} (${currentModelId})`);
+        console.log(`  ${colors.bold}Model:${colors.reset}        ${getModelDisplayName(activeModelId)} (${activeModelId})`);
         console.log(`  ${colors.bold}Mode:${colors.reset}         ${allowMutations ? "Auto Edit (Autonomous)" : "Plan (Read-Only)"}`);
         console.log(`  ${colors.bold}Files Read:${colors.reset}   ${readFiles.length > 0 ? readFiles.join(", ") : "(none)"}`);
         console.log(`  ${colors.bold}Staged:${colors.reset}       ${stagedEntries.length > 0 ? stagedEntries.map(e => `${e.path} (${e.type})`).join(", ") : "(none)"}`);
@@ -377,6 +436,11 @@ async function main(): Promise<void> {
           console.log(`  ${colors.bold}GitHub Repo:${colors.reset}  ${repoDetails.owner}/${repoDetails.repo} (${repoDetails.defaultBranch})`);
         }
         console.log(`  ${colors.bold}GitHub Auth:${colors.reset}  ${auth.authenticated ? `Logged in as @${auth.username}` : `Not authenticated (${auth.error})`}`);
+        const summary = session.usage.getSessionSummary();
+        if (summary.overall.totalTokens > 0) {
+          const fmt = (n: number) => Number(n).toLocaleString();
+          console.log(`  ${colors.bold}Tokens:${colors.reset}       ${colors.softCyan}${fmt(summary.overall.promptTokens)}${colors.reset} in · ${colors.yellow}${fmt(summary.overall.completionTokens)}${colors.reset} out · ${colors.brightWhite}${fmt(summary.overall.totalTokens)}${colors.reset} total ($${summary.overall.costUsd.toFixed(4)})`);
+        }
         console.log("");
         return true;
       }
@@ -424,15 +488,26 @@ async function main(): Promise<void> {
       if (cmd === "/model") {
         const targetModel = arg.trim();
         if (!targetModel) {
-          tui.printError("Usage: /model <model-name>");
+          tui.printError("Usage: /model <model-name>\nExamples:\n  /model deepseek/deepseek-chat\n  /model qwen/qwen3-coder\n  /model deepseek/deepseek-v4.1-flash");
           return true;
         }
-        currentModelId = resolveModelId(targetModel);
-        process.env.MODEL = currentModelId;
-        process.env.AI_MODEL = currentModelId;
-        session.setModel(currentModelId);
-        providerClient.setModel(currentModelId);
-        tui.printSuccess(`Model changed to ${currentModelId}`);
+        activeModelId = resolveModelId(targetModel);
+        if (!isOpenRouterModelId(activeModelId)) {
+          tui.printError(
+            `Invalid model format: "${targetModel}". OpenRouter models must use the "provider/model-name" format.\n` +
+            `Type /models to view all verified OpenRouter models.`
+          );
+          return true;
+        }
+        process.env.MODEL = activeModelId;
+        process.env.AI_MODEL = activeModelId;
+        session.setModel(activeModelId);
+        providerClient.setModel(activeModelId);
+        llmClientForSession.setModel(activeModelId);
+
+        const displayName = getModelDisplayName(activeModelId);
+        tui.printHeader(allowMutations, displayName, currentWorkspacePath, providerClient.providerName);
+        tui.printSuccess(`Model switched to: ${displayName} (${activeModelId})`);
         return true;
       }
       if (cmd === "/base-url") {
@@ -461,16 +536,39 @@ async function main(): Promise<void> {
       if (cmd === "/config") {
         const activeBaseUrl = providerClient.providerBaseUrl.replace(/\/+$/, "");
         console.log(`\n${colors.bold}${colors.cyan}DAXIOM CONFIGURATION${colors.reset}\n`);
-        console.log(`${colors.bold}Model:${colors.reset}\n${currentModelId}\n`);
+        console.log(`${colors.bold}Model:${colors.reset}\n${getModelDisplayName(activeModelId)} (${activeModelId})\n`);
+        console.log(`${colors.bold}Max Tokens:${colors.reset}\n${getMaxTokens()}\n`);
         console.log(`${colors.bold}Base URL:${colors.reset}\n${activeBaseUrl}\n`);
         console.log(`${colors.bold}API Key:${colors.reset}\n${apiKey ? `${colors.green}Configured ✓${colors.reset}` : `${colors.red}Missing ✗${colors.reset}`}\n`);
         console.log(`${colors.bold}Auto Edit:${colors.reset}\n${allowMutations ? "ON" : "OFF"}\n`);
         console.log(`${colors.bold}Workspace:${colors.reset}\n${currentWorkspacePath}\n`);
+        const summary = session.usage.getSessionSummary();
+        if (summary.overall.totalTokens > 0) {
+          const fmt = (n: number) => Number(n).toLocaleString();
+          console.log(`${colors.bold}Session Tokens:${colors.reset}\n${fmt(summary.overall.totalTokens)} (${fmt(summary.overall.promptTokens)} in, ${fmt(summary.overall.completionTokens)} out)\n`);
+        }
         return true;
       }
       if (cmd === "/models") {
-        tui.printNotice("Available models:\n" +
-          MODELS.map((m) => `  - ${m.displayName} (${m.apiModelId})`).join("\n"));
+        const groups = new Map<string, typeof MODELS>();
+        for (const m of MODELS) {
+          const g = m.provider || "Other";
+          if (!groups.has(g)) {
+            groups.set(g, []);
+          }
+          groups.get(g)!.push(m);
+        }
+        let listStr = "Available registered models on OpenRouter:\n";
+        for (const [grp, list] of groups.entries()) {
+          listStr += `\n  ${colors.bold}${grp}${colors.reset}:\n`;
+          for (const m of list) {
+            const activeMark = m.apiModelId === activeModelId ? ` ${colors.green}(active)${colors.reset}` : "";
+            const ctxStr = m.contextLength ? ` [${Math.round(m.contextLength / 1024)}k ctx]` : "";
+            listStr += `    • ${colors.cyan}${m.displayName}${colors.reset} → \`${m.apiModelId}\`${ctxStr}${activeMark}\n`;
+          }
+        }
+        listStr += `\nSwitch model using: /model <model-id>`;
+        tui.printNotice(listStr);
         return true;
       }
       if (cmd === "/new") {
@@ -530,6 +628,9 @@ async function main(): Promise<void> {
 
     // Normal task execution
     try {
+      tui.printUserPrompt(trimmed);
+      const beforeSummary = session.usage.getSessionSummary().overall;
+
       await session.send(trimmed, {
         onAssistantStart: () => tui.printAssistantStart(),
         onAssistantDelta: (_id, delta) => tui.printAssistantDelta(delta),
@@ -544,6 +645,14 @@ async function main(): Promise<void> {
           tui.printError(err);
         },
       });
+
+      const afterSummary = session.usage.getSessionSummary().overall;
+      const turnInTokens = Math.max(0, afterSummary.promptTokens - beforeSummary.promptTokens);
+      const turnOutTokens = Math.max(0, afterSummary.completionTokens - beforeSummary.completionTokens);
+      const sessionTotal = afterSummary.totalTokens;
+      if (sessionTotal > 0 || turnInTokens > 0 || turnOutTokens > 0) {
+        tui.printTokens(turnInTokens, turnOutTokens, sessionTotal);
+      }
 
       chats.active.history = session.exportHistory();
       chats.active.taskMemory = session.exportTaskMemory();
@@ -574,11 +683,17 @@ async function main(): Promise<void> {
   }
 
   // Print TUI header with active workspace name (Desktop by default, or target repo if switched)
-  tui.printHeader(allowMutations, modelDisplayName, currentWorkspacePath, providerClient.providerName);
+  if (process.stdout.isTTY) {
+    await tui.printBanner(getModelDisplayName(activeModelId), providerClient.providerName, { showInfo: false });
+  }
+  tui.printHeader(allowMutations, getModelDisplayName(activeModelId), currentWorkspacePath, providerClient.providerName);
+  console.log(`${colors.dim}  Workspace: ${currentWorkspacePath}${colors.reset}\n`);
+  if (process.env.AXIOM_DEBUG === "1") {
+    console.log(`${colors.dim}  Application Root:  ${applicationRoot}${colors.reset}`);
+    console.log(`${colors.dim}  Default Workspace: ${defaultWorkspace}${colors.reset}\n`);
+  }
 
-  console.log(`${colors.dim}  Application Root:  ${applicationRoot}${colors.reset}`);
-  console.log(`${colors.dim}  Default Workspace: ${defaultWorkspace}${colors.reset}`);
-  console.log(`${colors.dim}  Active Workspace:  ${currentWorkspacePath}${colors.reset}\n`);
+  checkBroadWorkspaceWarning(currentWorkspacePath, (msg) => tui.printNotice(msg));
 
   // Check if non-interactive input was provided via command line arguments
   if (taskArgs.length > 0) {
@@ -604,7 +719,7 @@ async function main(): Promise<void> {
   }
 
   // Interactive TUI prompt
-  tui.printFooter("Enter task... (or /help)");
+  tui.printFooter("What would you like to build?  (or /help for commands)");
 
   rl = readline.createInterface({
     input: process.stdin,
@@ -641,7 +756,7 @@ async function main(): Promise<void> {
   });
 
   rl.on("close", () => {
-    console.log(`\n${colors.dim}Exiting Daxiom. Goodbye!${colors.reset}`);
+    console.log("\n" + colors.brightBlack + "  Exiting AXIOM. Goodbye." + colors.reset + "\n");
     process.exit(0);
   });
 }

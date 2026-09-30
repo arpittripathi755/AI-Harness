@@ -63,17 +63,30 @@ export class WorkspaceIsolation {
   /**
    * Clone `repoUrl` into `workspacePath`. Throws if git fails.
    */
-  static cloneRepository(repoUrl: string, workspacePath: string): void {
+  static cloneRepository(repoUrl: string, workspacePath: string, signal?: AbortSignal): void {
     const parent = path.dirname(workspacePath);
     const folderName = path.basename(workspacePath);
 
     fs.mkdirSync(parent, { recursive: true });
 
-    execSync(`git clone "${repoUrl}" "${folderName}"`, {
-      cwd: parent,
-      stdio: "inherit",
-      timeout: 120_000,
-    });
+    if (signal?.aborted) {
+      throw new Error("Clone cancelled.");
+    }
+
+    try {
+      execSync(`git clone "${repoUrl}" "${folderName}"`, {
+        cwd: parent,
+        stdio: "inherit",
+        timeout: 120_000,
+      });
+    } catch (err) {
+      if (fs.existsSync(workspacePath) && !WorkspaceIsolation.isGitRepo(workspacePath)) {
+        try {
+          fs.rmSync(workspacePath, { recursive: true, force: true });
+        } catch {}
+      }
+      throw err;
+    }
   }
 
   /**

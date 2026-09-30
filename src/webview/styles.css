@@ -246,8 +246,23 @@ body {
   flex: 1;
   padding-top: 3px;
 }
+.msg-user .msg-text {
+  color: #6ebed7;
+  font-weight: 500;
+}
+.msg-assistant .msg-content {
+  border-left: 2px solid #dc321e;
+  border-radius: 0 8px 8px 0;
+  padding: 8px 14px;
+  background: rgba(220, 50, 30, 0.03);
+}
+.msg-assistant .msg-body {
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.7;
+}
 .msg-body {
-  line-height: 1.6;
+  line-height: 1.65;
   word-wrap: break-word;
   overflow-wrap: anywhere;
 }
@@ -257,35 +272,44 @@ body {
 
 .msg-body p:first-child { margin-top: 0; }
 .msg-body p:last-child { margin-bottom: 0; }
-.msg-body p { margin: 0 0 10px; }
+.msg-body p { margin: 0 0 12px; }
 
 .msg-body pre {
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
   border: 1px solid var(--ca-border);
-  padding: 12px;
+  padding: 12px 14px;
   border-radius: 8px;
   overflow-x: auto;
-  margin: 10px 0;
+  margin: 12px 0;
 }
 .msg-body :not(pre) > code {
+  color: #f6c177;
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.14));
-  padding: 1px 5px;
+  padding: 2px 6px;
   border-radius: 4px;
+  font-weight: 500;
 }
 .msg-body code {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.9em;
 }
 .msg-body h1, .msg-body h2, .msg-body h3 {
-  margin: 16px 0 8px;
-  line-height: 1.3;
+  margin: 18px 0 10px;
+  line-height: 1.35;
+  font-weight: 600;
 }
 .msg-body ul, .msg-body ol {
-  margin: 0 0 10px;
-  padding-left: 22px;
+  margin: 0 0 12px;
+  padding-left: 24px;
 }
-.msg-body li { margin: 3px 0; }
-.msg-body a { color: var(--vscode-textLink-foreground); }
+.msg-body ul li::marker {
+  color: #4a9eff;
+}
+.msg-body li { margin: 4px 0; }
+.msg-body a {
+  color: #4a9eff;
+  text-decoration: underline;
+}
 
 .cursor {
   animation: blink 1s step-start infinite;
@@ -322,8 +346,8 @@ body {
   word-break: break-word;
 }
 .tool-running .tool-icon {
-  color: var(--ca-muted);
-  animation: spin 1.4s linear infinite;
+  color: #4a9eff;
+  animation: spin 1.2s linear infinite;
   display: inline-block;
 }
 .tool-ok .tool-icon { color: var(--vscode-charts-green, #3fb950); }

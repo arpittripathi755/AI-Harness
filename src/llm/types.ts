@@ -58,6 +58,7 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream: boolean;
+  max_tokens?: number;
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none";
 }
@@ -80,6 +81,17 @@ export interface ChatCompletionChunk {
     delta: ChatCompletionDelta;
     finish_reason: string | null;
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+    cached_tokens?: number;
+    reasoning_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+    [key: string]: unknown;
+  };
 }
 
 /** Event emitted while streaming an assistant turn. */
@@ -90,4 +102,15 @@ export interface AssistantTurn {
   content: string;
   toolCalls: ToolCall[];
   finishReason: string | null;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+    cached_tokens?: number;
+    reasoning_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+    completion_tokens_details?: { reasoning_tokens?: number };
+    [key: string]: unknown;
+  };
 }

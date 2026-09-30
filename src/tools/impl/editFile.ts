@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { Tool, ToolContext, ToolResult } from "../types";
+import { ToolError } from "../types";
 import { requireString } from "../fsutil";
 import { applyEdits, parseEditOp, readForEdit, writeText } from "../editCore";
 
@@ -34,6 +35,9 @@ export const editFileTool: Tool = {
   },
 
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
+    if (ctx.signal?.aborted) {
+      throw new ToolError("Operation cancelled.");
+    }
     let rel: string;
     try {
       rel = requireString(args, "path");

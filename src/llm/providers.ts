@@ -1,13 +1,22 @@
-/**
- * Canonical provider configuration for DAXIOM.
- *
- * This is the single source of truth for the evaluation model identifier
- * and the two supported provider endpoints. Nothing else in the codebase
- * should duplicate these strings.
- */
+import {
+  DEFAULT_MODEL_ID,
+  DEFAULT_MAX_TOKENS,
+  resolveMaxTokens,
+  getMaxTokens,
+  getModelMaxTokens,
+  getModelDisplayName,
+} from "../shared/models";
 
 /** The canonical DeepSeek evaluation model used across DAXIOM. */
-export const CANONICAL_MODEL = "deepseek/deepseek-v4.1-flash";
+export const CANONICAL_MODEL = DEFAULT_MODEL_ID;
+
+export {
+  DEFAULT_MAX_TOKENS,
+  resolveMaxTokens,
+  getMaxTokens,
+  getModelMaxTokens,
+  getModelDisplayName,
+};
 
 /** A provider configuration record. */
 export interface ProviderConfig {
