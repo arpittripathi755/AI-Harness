@@ -319,6 +319,9 @@ export function compactHistoryWithTaskMemory(
   });
 
   // 1. Threshold check
+  if (inputBudgetTokens <= 0 || !Number.isFinite(inputBudgetTokens)) {
+    return makeNoop("unlimited-budget");
+  }
   const hwThreshold = Math.floor(inputBudgetTokens * highWatermark);
   if (beforeTokens <= hwThreshold) {
     return makeNoop("below-threshold");

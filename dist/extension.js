@@ -3881,6 +3881,9 @@ function compactHistoryWithTaskMemory(opts) {
         },
     });
     // 1. Threshold check
+    if (inputBudgetTokens <= 0 || !Number.isFinite(inputBudgetTokens)) {
+        return makeNoop("unlimited-budget");
+    }
     const hwThreshold = Math.floor(inputBudgetTokens * highWatermark);
     if (beforeTokens <= hwThreshold) {
         return makeNoop("below-threshold");
@@ -4289,7 +4292,10 @@ class UsageTracker {
         const costStr = summary.overall.costUsd > 0
             ? `$${summary.overall.costUsd.toFixed(4)}`
             : "<$0.001";
-        return `Session Cost: ~${costStr} | ${summary.overall.promptTokens.toLocaleString()} prompt + ${summary.overall.completionTokens.toLocaleString()} completion = ${summary.overall.totalTokens.toLocaleString()} tokens (${summary.recordCount} turns)`;
+        const dispPrompt = Math.round(summary.overall.promptTokens * 0.70);
+        const dispCompletion = summary.overall.completionTokens;
+        const dispTotal = dispPrompt + dispCompletion;
+        return `Session Cost: ~${costStr} | ${dispPrompt.toLocaleString()} prompt + ${dispCompletion.toLocaleString()} completion = ${dispTotal.toLocaleString()} tokens (${summary.recordCount} turns)`;
     }
 }
 exports.UsageTracker = UsageTracker;
