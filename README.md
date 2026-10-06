@@ -77,6 +77,8 @@ make setup
 make run
 ```
 
+Use /help to see the commands.
+
 ### 1. Set Your Credential
 Axiom requires only one API key from any OpenAI-compatible provider (OpenRouter, DeepSeek, AWS Bedrock, NVIDIA NIM):
 
